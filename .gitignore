@@ -13,3 +13,4 @@ bin/
 *.key
 /server.yaml
 /agent.yaml
+.video_agent/
