@@ -1,0 +1,11 @@
+agent:
+  server: wss://你的服务器:443    # 服务器没开 tls 就写 ws://
+  agent_token: w2s-安装时生成的   # 直写 token（方便；更稳妥的给法在下面）
+  # agent_token_file: /etc/ws2ssh/token  # 从 0600 文件读 token（推荐；优先级低于上面的直写）
+                                        # 也可用环境变量 WS2SSH_AGENT_TOKEN
+  # shell: /bin/bash  # 不写用 $SHELL
+  # insecure: true    # 服务器用自签证书时才打开
+  # 被控端感知（默认开）：会话开始/结束弹桌面通知并 wall 广播给登录着的终端，
+  # 每个会话都写审计日志。
+  # quiet: true                          # 只关通知（审计日志仍写）
+  # audit_log: /var/log/ws2ssh-audit.log # 审计日志路径（默认 /var/lib/ws2ssh/audit.log 或 ~/.ws2ssh/audit.log）

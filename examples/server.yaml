@@ -1,0 +1,19 @@
+server:
+  http: ":8080"        # /health、/agent、/status
+  ssh: ":2222"         # SSH 入口
+  host_key: /var/lib/ws2ssh/ssh_host_key
+  users_db: /etc/ws2ssh/users.db    # 账号 SQLite 库（ws2ssh-server user 改的就是它）
+  users_key: /etc/ws2ssh/users.key  # token 加密密钥（不写则用 users.db 同名的 .key；务必备份）
+  audit_log: /var/lib/ws2ssh/server-audit.log  # 服务器审计：认证/agent/会话事件（16MB 轮转；/dev/null 关）
+  public_url: wss://ssh.example.com:443 # 写进 user add 生成的安装命令
+  # admin_token: 查 /status 用的管理口令（可选；账号 token 也能查）
+  # tls: true                  # 网页口走 HTTPS/WSS；不给 cert/key 会自动生成自签证书
+  # cert: /etc/ws2ssh/cert.pem # 正式证书（Let's Encrypt 等）配在这里
+  # key: /etc/ws2ssh/key.pem
+  # allow_ips: [10.0.0.0/8]    # 全局：谁能连 SSH；账号还可以再设自己的白名单
+  # idle_verify: 30m           # 绑了 TOTP 的账号挂机超过这么久，下次敲键重验验证码（0 关闭）
+  # max_sessions: 16           # 每台机器（每账号）并发 SSH 会话上限（0 不限）
+  # max_conns: 4096            # SSH/HTTP 各自并发连接总上限（0 不限）
+  # max_conns_per_ip: 64       # SSH 每来源 IP 并发连接上限（只对 SSH；0 不限）
+  # ssh_idle_timeout: 30m      # SSH 空闲超时（治未认证连接挂死；会断开空闲会话，慎开）
+  # ssh_max_timeout: 24h       # SSH 连接绝对寿命（0 不限）

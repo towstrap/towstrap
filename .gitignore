@@ -1,0 +1,4 @@
+/ws2ssh
+dist/
+*.tar.gz
+ssh_host_key
