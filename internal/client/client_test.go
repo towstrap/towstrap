@@ -76,6 +76,23 @@ func TestDefaultID(t *testing.T) {
 	}
 }
 
+// TestChildEnvDropsToken 远程会话的 shell 环境里不能有 agent token。
+func TestChildEnvDropsToken(t *testing.T) {
+	t.Setenv("WS2SSH_AGENT_TOKEN", "w2s-secret")
+	hasTerm := false
+	for _, kv := range childEnv() {
+		if strings.HasPrefix(kv, "WS2SSH_AGENT_TOKEN=") {
+			t.Fatal("子进程环境不应带 agent token")
+		}
+		if kv == "TERM=xterm-256color" {
+			hasTerm = true
+		}
+	}
+	if !hasTerm {
+		t.Fatal("子进程环境应有 TERM")
+	}
+}
+
 func TestBackoff(t *testing.T) {
 	cases := []struct {
 		cur, want time.Duration

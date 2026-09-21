@@ -2,3 +2,14 @@
 dist/
 *.tar.gz
 ssh_host_key
+/ws2ssh-server
+/ws2ssh-agent
+bin/
+*.pem
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.key
+/server.yaml
+/agent.yaml

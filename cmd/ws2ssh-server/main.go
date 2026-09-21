@@ -56,7 +56,7 @@ func usage() {
   --config 文件.yaml
   --http :8080                 网页口（/health、/agent、/status）
   --ssh :2222                  SSH 入口
-  --host-key ssh_host_key      SSH 主机密钥，没有会自动生成
+  --host-key 路径              SSH 主机密钥；默认和 users.db 同目录下的 ssh_host_key，不存在会自动生成
   --users-db users.db           账号 SQLite 库（user 子命令改的就是它）
   --users-key users.key         token 加密密钥；不写用 users.db 同名的 .key
   --admin-token TOKEN          查 /status 用的管理口令（可选）

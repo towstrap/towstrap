@@ -12,7 +12,9 @@ func TestAuthGuardLockAndEscalate(t *testing.T) {
 		base:          20 * time.Millisecond,
 		window:        time.Minute,
 		maxLock:       time.Hour,
-		entries:   make(map[string]*authEntry),
+		userThreshold: 100,
+		entries:       make(map[string]*authEntry),
+		userEntries:   make(map[string]*authEntry),
 	}
 	for i := 0; i < 2; i++ {
 		g.fail("alice", "1.2.3.4")
@@ -46,7 +48,9 @@ func TestAuthGuardPassResets(t *testing.T) {
 		base:          time.Hour,
 		window:        time.Minute,
 		maxLock:       time.Hour,
-		entries:   make(map[string]*authEntry),
+		userThreshold: 100,
+		entries:       make(map[string]*authEntry),
+		userEntries:   make(map[string]*authEntry),
 	}
 	g.fail("alice", "1.2.3.4")
 	g.fail("alice", "1.2.3.4")
@@ -63,7 +67,9 @@ func TestAuthGuardWindowDecay(t *testing.T) {
 		base:          time.Hour,
 		window:        30 * time.Millisecond,
 		maxLock:       time.Hour,
-		entries:   make(map[string]*authEntry),
+		userThreshold: 100,
+		entries:       make(map[string]*authEntry),
+		userEntries:   make(map[string]*authEntry),
 	}
 	g.fail("alice", "1.2.3.4")
 	time.Sleep(40 * time.Millisecond)
@@ -81,7 +87,9 @@ func TestAuthGuardEntryCap(t *testing.T) {
 		window:        time.Hour,
 		maxLock:       time.Hour,
 		maxEntries:    5,
-		entries:    make(map[string]*authEntry),
+		userThreshold: 1000,
+		entries:       make(map[string]*authEntry),
+		userEntries:   make(map[string]*authEntry),
 	}
 	for i := 0; i < 50; i++ {
 		g.fail(fmt.Sprintf("spray-user-%02d", i), "1.2.3.4")
@@ -91,5 +99,32 @@ func TestAuthGuardEntryCap(t *testing.T) {
 	g.mu.Unlock()
 	if n > g.maxEntries {
 		t.Fatalf("失败表应被压到上限以内: %d > %d", n, g.maxEntries)
+	}
+}
+
+// TestAuthGuardPerUserLock 第二道按账号汇总的门：换着 IP 打同一个账号，
+// 累计到 userThreshold 也锁定（挡只对单账号下手的分布式爆破）。
+func TestAuthGuardPerUserLock(t *testing.T) {
+	g := &authGuard{
+		threshold:     100, // 「账号|IP」这道别先触发，只看按账号那道
+		userThreshold: 50,
+		base:          time.Hour,
+		window:        time.Hour,
+		maxLock:       time.Hour,
+		entries:       make(map[string]*authEntry),
+		userEntries:   make(map[string]*authEntry),
+	}
+	for i := 1; i <= 50; i++ {
+		g.fail("alice", fmt.Sprintf("10.0.0.%d", i))
+	}
+	if g.allowed("alice", "10.0.0.99") {
+		t.Fatal("同一账号换 IP 累计 50 次失败应锁定")
+	}
+	if !g.allowed("other", "10.0.0.1") {
+		t.Fatal("别的账号不应被牵连")
+	}
+	g.pass("alice", "10.0.0.1")
+	if !g.allowed("alice", "10.0.0.99") {
+		t.Fatal("成功登录后按账号的锁也应清掉")
 	}
 }

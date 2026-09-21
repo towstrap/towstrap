@@ -165,7 +165,6 @@ func (a *agentConn) readLoop() {
 		if s == nil {
 			continue
 		}
-		slog.Info("dbg-srv: 收到消息", "t", msg.T, "id", msg.ID)
 		switch msg.T {
 		case proto.TypeOK:
 			a.signalReady(msg.ID, nil)

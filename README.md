@@ -65,6 +65,8 @@ cp examples/server.yaml server.yaml   # 按需改：地址、TLS、白名单、�
 ./ws2ssh-server --config server.yaml --max-conns 100
 ```
 
+SSH 主机密钥默认放在和 `users.db` 同目录的 `ssh_host_key`（即 `/etc/ws2ssh/ssh_host_key`），第一次启动自动生成；文件存在但读不了或解析失败会直接报错退出，**不会**静默换一把新钥匙——主机密钥一变，所有人的 ssh 客户端都会告警。
+
 启动时会回显一行**生效配置**（`http=... ssh=... tls=... max_sessions=... audit_log=...`，秘密只显示设没设）——排查「yaml 到底生效没」看这行就行。
 
 agent 同理支持 `--config agent.yaml`（见 `examples/agent.yaml`，包括从 0600 文件读 token）。`user add` 生成的安装命令用的是旗标，装好后换成配置文件更省心。
@@ -165,6 +167,8 @@ ws2ssh-server user set office --contact "值班：张三"
 
 自签证书 agent 校验不过，要加 `--insecure` 跳过校验（等于不验证服务器身份，只适合内网或临时用）。正式对外请用受信证书，agent 不要开 `--insecure`。
 
+**不要把 ws2ssh 放在 Nginx / 云负载均衡这类反向代理后面。** 服务器是按 TCP 连接的来源 IP 做判断的，经过代理后所有连接的来源都变成代理自己的地址：IP 白名单、`--agent-allow-ip`、每 IP 连接数、防爆破限速、`AGENT-IPCHANGE` 告警全部失效。需要 HTTPS 直接用 `--tls`，需要挡在前面的话用四层透传（保留来源 IP 的 TCP 转发）或云防火墙。
+
 ## 监控
 
 看谁在线：`GET /status`，请求头带 `X-Admin-Token`（server.yaml 的 `admin_token`）或任一有效 `X-Agent-Token`：
@@ -209,8 +213,8 @@ ws2ssh-agent ... --audit-log /var/log/w2s.log  # 换审计路径
 
 - **配置怎么给**：长久配置写 `server.yaml` / `agent.yaml`（`examples/` 里有全量注释模板，`--config` 加载，命令行旗标显式给过的项覆盖文件）；秘密（agent token）优先用 `--agent-token-file`（0600 文件）或环境变量 `WS2SSH_AGENT_TOKEN`，别把 token 写进配置文件。
 - 对外请开 `--tls`；明文 `ws://` 只适合本机或内网试跑。
-- **防爆破**：SSH 密码认证按「账号|来源 IP」限速——连续 5 次失败锁定 1 分钟，之后每多失败一次时长翻倍（封顶 1 小时）；锁定只影响这一个账号从这个 IP 的登录，攻击者刷失败锁不了别人。成功登录即清零；重启服务器清零。乱喷用户名的分布式爆破也撑不大失败表（65536 条上限，先清过期再淘汰最旧）。**不存在/停用账号的登录尝试也做一次同等耗时的 bcrypt 比较**——按响应时间枚举用户名不可行。
-- **token 别走命令行**：`--agent-token w2s-...` 会出现在 `ps` 里。用 `--agent-token-file 路径`（文件权限 0600）或环境变量 `WS2SSH_AGENT_TOKEN`，配置文件 `agent_token` 也行。
+- **防爆破**：SSH 密码认证按「账号|来源 IP」限速——连续 5 次失败锁定 1 分钟，之后每多失败一次时长翻倍（封顶 1 小时）；锁定只影响这一个账号从这个 IP 的登录，攻击者刷失败锁不了别人。另外按账号汇总一道更宽松的门（15 分钟内 50 次失败锁 1 分钟起、同样翻倍）：换着 IP 打同一个账号也会被锁——代价是有人能故意刷失败让某个账号暂时登不上，但他本来也进不来。成功登录即清零；重启服务器清零。乱喷用户名的分布式爆破也撑不大失败表（65536 条上限，先清过期再淘汰最旧）。**不存在/停用账号的登录尝试也做一次同等耗时的 bcrypt 比较**——按响应时间枚举用户名不可行。
+- **token 别走命令行**：`--agent-token w2s-...` 会出现在 `ps` 里。用 `--agent-token-file 路径`（文件权限 0600）或环境变量 `WS2SSH_AGENT_TOKEN`，配置文件 `agent_token` 也行。agent 给远程会话起 shell 时会把 `WS2SSH_AGENT_TOKEN` 从环境里去掉，SSH 进来的人 `env` 看不到它。
 - agent 建议用权限较小的账号跑，不要用 root。
 - 谁拿到某个账号的 token，就能把机器挂到那个用户名下；token 泄露就用 `user token 名字 --regen` 换掉——**对已经连着的旧 agent 立刻生效**（它再接会话会被拒，服务器最多 30 秒内把它踢下线），不用重启服务器。
 - 建号的机器和 SSH 登录进的机器是同一台：外人 `ssh office` 落到的是用 office 的 token 连上来的那台机器。

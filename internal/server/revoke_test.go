@@ -87,6 +87,76 @@ func TestNormalAccountPasswordResetsGuard(t *testing.T) {
 	}
 }
 
+// TestKbdTOTPWrongCodeCountsTowardLock 回归：kbd-interactive 通道「密码对 +
+// 验证码错」重复 5 次必须锁定——密码正确不能提前清零计数。
+func TestKbdTOTPWrongCodeCountsTowardLock(t *testing.T) {
+	dir := t.TempDir()
+	users, err := accounts.Open(filepath.Join(dir, "u.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer users.Close()
+	if _, err := users.Add("alice", "alicepw123", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	secret, _ := totp.Generate("ws2ssh", "alice")
+	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
+		t.Fatal(err)
+	}
+	ips, err := allow.Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Users: users, AllowIPs: ips})
+	addr := &net.TCPAddr{IP: net.ParseIP("1.2.3.4"), Port: 5555}
+
+	for i := 0; i < 5; i++ {
+		if !s.verifyPassword("alice", "alicepw123", addr, "kbd-interactive") {
+			t.Fatalf("第 %d 次：正确密码不应被拒", i+1)
+		}
+		if s.cfg.Users.VerifyTOTP("alice", "000000") {
+			t.Fatal("错误验证码不应通过")
+		}
+		s.guard.fail("alice", "1.2.3.4")
+	}
+	if s.guard.allowed("alice", "1.2.3.4") {
+		t.Fatal("5 次验证码错误后应锁定")
+	}
+	if s.verifyPassword("alice", "alicepw123", addr, "kbd-interactive") {
+		t.Fatal("锁定期内正确密码也不应通过")
+	}
+}
+
+// TestAccountAllowIPRejectCountsAsFail 回归：账号白名单外的来源即使密码正确
+// 也算一次失败、不能清零计数（否则白名单外的人能拿限速状态当密码 oracle）。
+func TestAccountAllowIPRejectCountsAsFail(t *testing.T) {
+	dir := t.TempDir()
+	users, err := accounts.Open(filepath.Join(dir, "u.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer users.Close()
+	if _, err := users.Add("carol", "carolpw123", []string{"9.9.9.9"}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	ips, err := allow.Parse(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(Config{Users: users, AllowIPs: ips})
+	addr := &net.TCPAddr{IP: net.ParseIP("1.2.3.4"), Port: 5555}
+
+	for i := 0; i < 4; i++ {
+		s.guard.fail("carol", "1.2.3.4")
+	}
+	if s.verifyPassword("carol", "carolpw123", addr, "password") {
+		t.Fatal("白名单外来源不应通过")
+	}
+	if s.guard.allowed("carol", "1.2.3.4") {
+		t.Fatal("白名单外的正确密码应计为失败并触发锁定，而不是清零")
+	}
+}
+
 // wsAttach 起一个把 WS 交给 hub 的测试服务器：每条连接按 query 里的
 // name/token 注册，然后挂住直到被服务端关闭。返回客户端连接。
 func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token string) *websocket.Conn) {

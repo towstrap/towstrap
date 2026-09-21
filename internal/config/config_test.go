@@ -49,7 +49,7 @@ server:
 
 func TestMergeServerDefaults(t *testing.T) {
 	m := MergeServer(Server{}, nil)
-	if m.HTTP != ":8080" || m.SSH != ":2222" || m.HostKey != "ssh_host_key" {
+	if m.HTTP != ":8080" || m.SSH != ":2222" || m.HostKey != "/etc/ws2ssh/ssh_host_key" {
 		t.Fatalf("%#v", m)
 	}
 	if m.UsersDB != "/etc/ws2ssh/users.db" {

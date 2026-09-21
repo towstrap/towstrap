@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -252,9 +253,22 @@ func (p *ptyFile) Close() error {
 	return nil
 }
 
+// childEnv 给远程会话起 shell 用的环境：剥掉 WS2SSH_AGENT_TOKEN——远程用户
+// 拿到的是本机 shell，没必要再把 agent 自己的凭据白送给他。
+func childEnv() []string {
+	env := make([]string, 0, 32)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "WS2SSH_AGENT_TOKEN=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "TERM=xterm-256color")
+}
+
 func (a *agent) openShell(msg proto.Msg) {
 	cmd := exec.Command(a.cfg.Shell)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = childEnv()
 	f, err := pty.Start(cmd)
 	if err != nil {
 		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})

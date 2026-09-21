@@ -446,6 +446,57 @@ func TestTOTPSecondFactor(t *testing.T) {
 	}
 }
 
+// TestTOTPWrongCodeLocksOut 回归：kbd-interactive 通道「密码对 + 验证码错」
+// 连续到阈值必须锁定——密码正确不能提前清零计数，否则验证码可以无限猜。
+func TestTOTPWrongCodeLocksOut(t *testing.T) {
+	srv, httpPort, sshPort, users := startServer(t)
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Token, "h1")
+	waitAgent(t, srv.Hub, "alice")
+
+	secret, _ := totp.Generate("ws2ssh", "alice")
+	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	dialOK := func(auth gossh.AuthMethod) bool {
+		cfg := &gossh.ClientConfig{
+			User:            "alice",
+			Auth:            []gossh.AuthMethod{auth},
+			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+			Timeout:         3 * time.Second,
+		}
+		c, err := gossh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", sshPort), cfg)
+		if err == nil {
+			_ = c.Close()
+			return true
+		}
+		return false
+	}
+	// 改第一位保证一定不是当前正确码，又不至于撞上相邻时间片的有效码
+	wrongCode := func() string {
+		c := totp.Code(secret, time.Now())
+		d := byte('0')
+		if c[0] == '0' {
+			d = '1'
+		}
+		return string(d) + c[1:]
+	}
+
+	for i := 0; i < 5; i++ {
+		if dialOK(kbdAuth("alicepw123", wrongCode)) {
+			t.Fatalf("第 %d 次：错误验证码不应登录", i+1)
+		}
+	}
+	// 阈值已到：正确密码 + 当前正确码也必须被锁在外面
+	if dialOK(kbdAuth("alicepw123", func() string { return totp.Code(secret, time.Now()) })) {
+		t.Fatal("连错 5 次验证码后应锁定，正确凭据也进不来")
+	}
+}
+
 // waitStepBoundary 等到下一个 30 秒 TOTP 时间片：防重放意味着登录用掉的片
 // 不能再用，测试里的重验必须等新片。
 func waitStepBoundary(t *testing.T) {

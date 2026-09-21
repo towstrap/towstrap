@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -152,7 +153,6 @@ func MergeServer(file Server, set map[string]string) Server {
 	out := Server{
 		HTTP:          ":8080",
 		SSH:           ":2222",
-		HostKey:       "ssh_host_key",
 		UsersDB:       "/etc/ws2ssh/users.db",
 		AdminToken:    file.AdminToken,
 		PublicURL:     file.PublicURL,
@@ -260,6 +260,11 @@ func MergeServer(file Server, set map[string]string) Server {
 	}
 	if v, ok := set["min-agent-version"]; ok {
 		out.MinAgentVersion = v
+	}
+	// 主机密钥默认跟着 users.db 走（同目录），不写死当前目录——服务常从
+	// 别的工作目录启动，密钥落哪得可预期。
+	if out.HostKey == "" {
+		out.HostKey = filepath.Join(filepath.Dir(out.UsersDB), "ssh_host_key")
 	}
 	return out
 }

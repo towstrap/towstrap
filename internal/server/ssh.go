@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -52,23 +53,29 @@ func (s *Server) startSSH() error {
 }
 
 // sshAuthOK 是纯密码路径：全局白名单 → 限速器 → 账号密码 → 账号白名单。
-// 绑了 TOTP 的账号在这里直接拒绝，而且**不碰限速器**——这一步很关键：
-// 如果先走 verifyPassword，密码正确时 guard.pass 会把 OTP 的失败计数清零，
-// 攻击者拿泄露的密码就能「每猜 4 次验证码重置一次」，把限速变成摆设。
-// TOTP 账号的密码校验和失败计数统一走 keyboard-interactive 通道。
+// 绑了 TOTP 的账号在这里直接拒绝，而且**不碰限速器**：TOTP 账号的密码校验
+// 和失败计数统一走 keyboard-interactive 通道。失败计数的清零只在整个登录
+// 流程（含验证码）全部通过后做——如果密码一对就清零，攻击者拿泄露的密码
+// 就能「每猜 4 次验证码重置一次」，把限速变成摆设。
 func (s *Server) sshAuthOK(user, password string, remote net.Addr) bool {
 	if acct, ok := s.cfg.Users.Get(user); ok && acct.TOTPEnabled {
+		// 不看密码也要烧一次 bcrypt：直接拒比密码错快得多，快慢一比就能
+		// 筛出「存在且绑了 TOTP」的账号。
+		s.cfg.Users.BurnPassword(password)
 		return false
 	}
 	if !s.verifyPassword(user, password, remote, "password") {
 		return false
 	}
+	s.guard.pass(user, hostOnly(remote.String()))
 	s.audit.Log("AUTH-OK", "user", user, "ip", hostOnly(remote.String()), "method", "password")
 	return true
 }
 
 // verifyPassword 校验密码并联动限速器：全局白名单 → 锁定检查 → 密码 →
-// 成功清零/失败计数 → 账号状态 → 账号自己的白名单。结果写审计日志。
+// 账号状态 → 账号自己的白名单。任何一步不过都计一次失败；这里**不**清零
+// 计数——清零只在整个登录流程（含 TOTP）全部通过后由调用方做，否则
+// 「密码对 + 验证码错」每轮都会把计数归零，限速形同虚设。结果写审计日志。
 func (s *Server) verifyPassword(user, password string, remote net.Addr, method string) bool {
 	ip := hostOnly(remote.String())
 	if !s.cfg.AllowIPs.AllowsAddr(remote) {
@@ -78,22 +85,26 @@ func (s *Server) verifyPassword(user, password string, remote net.Addr, method s
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "locked")
 		return false
 	}
-	if !s.cfg.Users.Verify(user, password) {
-		s.guard.fail(user, ip)
-		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "password")
-		return false
-	}
-	s.guard.pass(user, ip)
+	pwOK := s.cfg.Users.Verify(user, password)
 	acct, ok := s.cfg.Users.Get(user)
-	if !ok || acct.Disabled {
-		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "disabled")
+	reason := ""
+	switch {
+	case !pwOK:
+		reason = "password"
+	case !ok || acct.Disabled:
+		reason = "disabled"
+	default:
+		list, err := allow.Parse(acct.AllowIPs)
+		if err != nil || !list.AllowsAddr(remote) {
+			reason = "allow-ip"
+		}
+	}
+	if reason != "" {
+		s.guard.fail(user, ip)
+		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", reason)
 		return false
 	}
-	list, err := allow.Parse(acct.AllowIPs)
-	if err != nil {
-		return false
-	}
-	return list.AllowsAddr(remote)
+	return true
 }
 
 // handleKbdInteractive 键盘交互登录：先问密码，账号绑了 TOTP 再问验证码。
@@ -112,6 +123,7 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	}
 	acct, ok := s.cfg.Users.Get(user)
 	if !ok || !acct.TOTPEnabled {
+		s.guard.pass(user, ip)
 		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
 		return true // 没绑 TOTP：密码对了就行
 	}
@@ -124,6 +136,7 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", "kbd-interactive", "reason", "totp")
 		return false
 	}
+	s.guard.pass(user, ip)
 	s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive", "totp", "true")
 	return true
 }
@@ -285,12 +298,23 @@ func hostOnly(addr string) string {
 	return addr
 }
 
+// loadOrCreateHostKey 读 SSH 主机密钥，只有文件不存在才生成新的；读不了
+// 或解析不了就报错退出——静默换主机密钥等于让用户习惯性接受 host key
+// 变更警告。
 func loadOrCreateHostKey(path string) (gossh.Signer, error) {
 	if path == "" {
 		path = "ssh_host_key"
 	}
-	if raw, err := os.ReadFile(path); err == nil {
-		return gossh.ParsePrivateKey(raw)
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		signer, perr := gossh.ParsePrivateKey(raw)
+		if perr != nil {
+			return nil, fmt.Errorf("SSH 主机密钥 %s 解析失败（不会自动覆盖，请检查或删掉它再启动）: %w", path, perr)
+		}
+		return signer, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("读 SSH 主机密钥 %s: %w", path, err)
 	}
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)

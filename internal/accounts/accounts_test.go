@@ -26,6 +26,32 @@ func openTest(t *testing.T) *Store {
 	return s
 }
 
+// TestOpenTightensDBPerms Open 会把账号库文件（含 WAL 侧文件）收到 0600。
+func TestOpenTightensDBPerms(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "users.db")
+	s, err := Open(dbPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	st, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("账号库权限 = %o, want 600", st.Mode().Perm())
+	}
+	if _, err := s.Add("alice", "password12", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// -wal 不一定已经建出来（取决于 SQLite 何时落盘），在就必须也是 0600
+	if st, err := os.Stat(dbPath + "-wal"); err == nil && st.Mode().Perm() != 0o600 {
+		t.Fatalf("wal 文件权限 = %o, want 600", st.Mode().Perm())
+	}
+}
+
 func TestAddVerifyRemove(t *testing.T) {
 	s := openTest(t)
 	a, err := s.Add("alice", "password12", []string{"10.0.0.0/8"}, "", nil)

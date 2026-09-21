@@ -103,7 +103,17 @@ func Open(dbPath, keyPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化账号库: %w", err)
 	}
+	tightenPerms(dbPath)
 	return &Store{db: db, key: key, dbPath: dbPath}, nil
+}
+
+// tightenPerms 把账号库文件权限收到 0600：库里有 bcrypt 哈希和加密 token，
+// SQLite 按 umask 建文件（常见 0644），这里主动收紧。尽力而为——文件不存在
+// 或 chmod 失败都不影响启动。
+func tightenPerms(dbPath string) {
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal"} {
+		_ = os.Chmod(p, 0o600)
+	}
 }
 
 // Path 返回账号库文件路径。
@@ -576,6 +586,13 @@ func (s *Store) Verify(username, password string) bool {
 		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
+
+// BurnPassword 对 password 做一次和真实校验同样耗时的假 bcrypt 比较，返回值
+// 无意义。给那些「不看密码就要拒绝」的路径用（比如 TOTP 账号走纯密码通道），
+// 让它们的响应时间和密码错一样，不然快慢一比就能筛出特定账号。
+func (s *Store) BurnPassword(password string) {
+	_ = bcrypt.CompareHashAndPassword([]byte(dummyBcrypt), []byte(password))
 }
 
 // UsernameByToken 用 agent token 查账号；token 无效或账号停用时 ok 为 false。
