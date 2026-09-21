@@ -19,6 +19,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"ws2ssh/internal/allow"
+	"ws2ssh/internal/proto"
 )
 
 func (s *Server) startSSH() error {
@@ -32,6 +33,7 @@ func (s *Server) startSSH() error {
 		PasswordHandler: func(ctx glssh.Context, password string) bool {
 			return s.sshAuthOK(ctx.User(), password, ctx.RemoteAddr())
 		},
+		PublicKeyHandler:           s.handlePublicKey,
 		KeyboardInteractiveHandler: s.handleKbdInteractive,
 		Handler:                    s.handleSSH,
 		// IdleTimeout 随读写活动刷新，能治未认证连接挂死（Slowloris），
@@ -141,6 +143,58 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	return true
 }
 
+// authMethodKey 是 gliderlabs Context 里记「这次登录用了哪种认证」的键：
+// 公钥登录（给自动化用的）和密码类登录待遇不同——空闲重验只罩后者。
+type authMethodKey struct{}
+
+// handlePublicKey 公钥登录：全局白名单 → 账号白名单/停用 → 公钥匹配。
+// 不进限速器（客户端会依次试好几把钥匙，计失败会误锁；钥匙也猜不出来），
+// 也不写每次拒绝的审计（同样原因），只记成功。公钥登录不要求 TOTP——
+// 它就是给自动化用的第二种凭据，和 OpenSSH 的默认行为一致。
+func (s *Server) handlePublicKey(ctx glssh.Context, key glssh.PublicKey) bool {
+	user := ctx.User()
+	remote := ctx.RemoteAddr()
+	if !s.cfg.AllowIPs.AllowsAddr(remote) {
+		return false
+	}
+	if !s.sshPubKeyOK(user, key, remote) {
+		return false
+	}
+	ctx.SetValue(authMethodKey{}, "publickey")
+	s.audit.Log("AUTH-OK", "user", user, "ip", hostOnly(remote.String()),
+		"method", "publickey", "fp", gossh.FingerprintSHA256(key))
+	return true
+}
+
+// sshPubKeyOK 是 handlePublicKey 去掉 gliderlabs Context 的核心，方便单测：
+// 账号存在未停用、这把钥匙登记过、账号自己的白名单放行。
+func (s *Server) sshPubKeyOK(user string, key gossh.PublicKey, remote net.Addr) bool {
+	if !s.cfg.Users.VerifySSHKey(user, key) {
+		return false
+	}
+	acct, ok := s.cfg.Users.Get(user)
+	if !ok {
+		return false
+	}
+	list, err := allow.Parse(acct.AllowIPs)
+	if err != nil || !list.AllowsAddr(remote) {
+		return false
+	}
+	return true
+}
+
+// auditCmd 把会话命令压成审计字段：空命令记 "-"，超过 512 字节截断标记——
+// 每条命令都要进审计，但一行不能无限长。
+func auditCmd(cmd string) string {
+	if cmd == "" {
+		return "-"
+	}
+	if len(cmd) > 512 {
+		return cmd[:512] + "…(truncated)"
+	}
+	return cmd
+}
+
 // agentCredentialValid 复核一个已连接 agent 的凭据：账号还在、没停用，
 // 且它接入时用的 token 现在仍然映射到这个用户名（token 被 regen 换掉、
 // 账号被删/停用都会让这里为 false）。
@@ -162,10 +216,26 @@ func (s *Server) revokeStaleAgents() []string {
 }
 
 // handleSSH：SSH 用户名就是账号用户名，落到那台账号 token 关联的机器上。
+// 支持两种用法：申请 PTY 的交互终端，和无 PTY 的命令执行（ssh host '命令'、
+// ssh -T）——后者 stdout/stderr 分开、退出码原样带回，给 LLM/自动化用。
 func (s *Server) handleSSH(sess glssh.Session) {
 	username := sess.User()
 	from := username + "@" + hostOnly(sess.RemoteAddr().String())
+	ptyReq, winCh, isPty := sess.Pty()
+	cmd := sess.RawCommand()
+	mode := "exec"
+	if isPty {
+		mode = "pty"
+	}
 
+	// 命令混在 WebSocket 消息里发给 agent，超长会把 agent 那条连接打断——
+	// 服务器先挡住。
+	if len(cmd) > proto.MaxCommandBytes {
+		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "cmd-too-long")
+		_, _ = fmt.Fprintf(sess.Stderr(), "命令太长（上限 %d 字节）\n", proto.MaxCommandBytes)
+		_ = sess.Exit(1)
+		return
+	}
 	agent, err := s.Hub.Agent(username)
 	if err != nil {
 		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "offline")
@@ -183,7 +253,6 @@ func (s *Server) handleSSH(sess glssh.Session) {
 	}
 
 	cols, rows := 80, 24
-	ptyReq, winCh, isPty := sess.Pty()
 	if isPty {
 		if ptyReq.Window.Width > 0 {
 			cols = ptyReq.Window.Width
@@ -193,15 +262,17 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		}
 	}
 
-	sh, err := s.Hub.OpenShell(agent, cols, rows, from)
+	sh, err := s.Hub.OpenShell(agent, OpenReq{Cols: cols, Rows: rows, Pty: isPty, Cmd: cmd, From: from})
 	if err != nil {
 		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "open")
 		_, _ = sess.Write([]byte(err.Error() + "\n"))
 		_ = sess.Exit(1)
 		return
 	}
-	s.audit.Log("SESSION-START", "user", username, "from", from, "id", sh.id)
-	defer s.audit.Log("SESSION-END", "user", username, "from", from, "id", sh.id)
+	s.audit.Log("SESSION-START", "user", username, "from", from, "id", sh.id, "mode", mode, "cmd", auditCmd(cmd))
+	defer func() {
+		s.audit.Log("SESSION-END", "user", username, "from", from, "id", sh.id, "code", fmt.Sprintf("%d", sh.exitCode()))
+	}()
 
 	if isPty {
 		go func() {
@@ -213,16 +284,22 @@ func (s *Server) handleSSH(sess glssh.Session) {
 
 	in := io.Reader(sess)
 	// 绑了 TOTP 的账号加空闲重验：挂机超过阈值后，下一次敲键先要一个新验证码
-	// （挂着的输出不算使用；没绑 TOTP 的账号行为不变）。
-	if s.cfg.IdleVerify > 0 {
+	// （挂着的输出不算使用；没绑 TOTP 的账号行为不变）。只罩交互 PTY +
+	// 密码类登录——公钥是给自动化用的，exec 会话挂久了往 stdin 塞 TOTP
+	// 提示会毁掉脚本。
+	if s.cfg.IdleVerify > 0 && isPty && sess.Context().Value(authMethodKey{}) != "publickey" {
 		if acct, ok := s.cfg.Users.Get(username); ok && acct.TOTPEnabled {
 			in = newIdleGate(sess, s.cfg.IdleVerify, func() error {
 				return s.reverifyTOTP(sess, username, s.cfg.IdleVerify)
 			})
 		}
 	}
-	s.Hub.pipe(agent, sh, in, sess, sess.Context().Done())
-	_ = sess.Exit(0)
+	s.Hub.pipe(agent, sh, in, sess, sess.Stderr(), isPty, sess.Context().Done())
+	// agent 那边命令没起得来的原因（比如 shell 不存在）带给客户端
+	if m := sh.errText(); m != "" {
+		_, _ = fmt.Fprintln(sess.Stderr(), "agent: "+m)
+	}
+	_ = sess.Exit(sh.exitCode())
 }
 
 // idleGate 包住 SSH 会话的输入流：距上次敲键超过 limit 后，新到的第一笔输入

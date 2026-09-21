@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	gossh "golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
 	"ws2ssh/internal/allow"
@@ -40,6 +42,7 @@ type Account struct {
 	TOTPEnabled   bool      `json:"totp_enabled,omitempty"`    // 绑了 TOTP 验证器就要二因素登录
 	AgentAllowIPs []string  `json:"agent_allow_ips,omitempty"` // agent 连接的来源白名单；空 = 不限
 	AllowIPs      []string  `json:"allow_ips,omitempty"`       // 谁能 SSH 登录这个账号；空 = 不限
+	SSHKeys       []string  `json:"ssh_keys,omitempty"`        // SSH 公钥登录用的钥匙（authorized_keys 格式），给自动化用
 	Disabled      bool      `json:"disabled,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }
@@ -64,6 +67,7 @@ CREATE TABLE IF NOT EXISTS users (
 	agent_allow_ips TEXT    NOT NULL DEFAULT '',
 	agent_last_ip   TEXT    NOT NULL DEFAULT '',
 	allow_ips       TEXT    NOT NULL DEFAULT '',
+	ssh_pubkeys     TEXT    NOT NULL DEFAULT '',
 	disabled        INTEGER NOT NULL DEFAULT 0,
 	created_at      TEXT    NOT NULL
 );
@@ -103,8 +107,44 @@ func Open(dbPath, keyPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("初始化账号库: %w", err)
 	}
+	// 老库缺新列要 ALTER 补上——schema 里的 CREATE IF NOT EXISTS 管不了已存在的表。
+	if err := ensureColumn(db, "ssh_pubkeys", `ALTER TABLE users ADD COLUMN ssh_pubkeys TEXT NOT NULL DEFAULT ''`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("升级账号库: %w", err)
+	}
 	tightenPerms(dbPath)
 	return &Store{db: db, key: key, dbPath: dbPath}, nil
+}
+
+// ensureColumn 检查 users 表有没有 name 这一列，没有就执行 ddl（一句
+// ALTER TABLE ... ADD COLUMN）补上。给老版本建的库做平滑升级用。
+func ensureColumn(db *sql.DB, name, ddl string) error {
+	rows, err := db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			colName string
+			colType string
+			notNull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if colName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(ddl)
+	return err
 }
 
 // tightenPerms 把账号库文件权限收到 0600：库里有 bcrypt 哈希和加密 token，
@@ -474,7 +514,7 @@ func (s *Store) RegenToken(username string) (string, error) {
 // Get 返回账号副本。
 func (s *Store) Get(username string) (Account, bool) {
 	row := s.db.QueryRow(
-		`SELECT username, password_hash, token_enc, contact, totp_secret_enc, totp_last_step, agent_allow_ips, allow_ips, disabled, created_at
+		`SELECT username, password_hash, token_enc, contact, totp_secret_enc, totp_last_step, agent_allow_ips, allow_ips, ssh_pubkeys, disabled, created_at
 		 FROM users WHERE username = ?`, username)
 	a, err := scanAccount(row, s)
 	if err != nil {
@@ -513,7 +553,7 @@ func (s *Store) ListBasic() []Brief {
 // List 返回全部账号，按用户名排序。
 func (s *Store) List() []Account {
 	rows, err := s.db.Query(
-		`SELECT username, password_hash, token_enc, contact, totp_secret_enc, totp_last_step, agent_allow_ips, allow_ips, disabled, created_at FROM users`)
+		`SELECT username, password_hash, token_enc, contact, totp_secret_enc, totp_last_step, agent_allow_ips, allow_ips, ssh_pubkeys, disabled, created_at FROM users`)
 	if err != nil {
 		return nil
 	}
@@ -542,10 +582,11 @@ func scanAccount(r rowScanner, s *Store) (Account, error) {
 		totpLastStp int64
 		agentBlob   string
 		ipsBlob     string
+		keysBlob    string
 		disabled    int
 		createdAt   string
 	)
-	if err := r.Scan(&username, &hash, &tEnc, &contact, &totpEnc, &totpLastStp, &agentBlob, &ipsBlob, &disabled, &createdAt); err != nil {
+	if err := r.Scan(&username, &hash, &tEnc, &contact, &totpEnc, &totpLastStp, &agentBlob, &ipsBlob, &keysBlob, &disabled, &createdAt); err != nil {
 		return Account{}, err
 	}
 	token, err := s.decToken(tEnc)
@@ -556,6 +597,8 @@ func scanAccount(r rowScanner, s *Store) (Account, error) {
 	_ = json.Unmarshal([]byte(ipsBlob), &ips)
 	var agentIPs []string
 	_ = json.Unmarshal([]byte(agentBlob), &agentIPs)
+	var sshKeys []string
+	_ = json.Unmarshal([]byte(keysBlob), &sshKeys)
 	created, _ := time.Parse(time.RFC3339, createdAt)
 	return Account{
 		Username:      username,
@@ -565,6 +608,7 @@ func scanAccount(r rowScanner, s *Store) (Account, error) {
 		TOTPEnabled:   len(totpEnc) > 0,
 		AgentAllowIPs: agentIPs,
 		AllowIPs:      ips,
+		SSHKeys:       sshKeys,
 		Disabled:      disabled != 0,
 		CreatedAt:     created,
 	}, nil
@@ -593,6 +637,108 @@ func (s *Store) Verify(username, password string) bool {
 // 让它们的响应时间和密码错一样，不然快慢一比就能筛出特定账号。
 func (s *Store) BurnPassword(password string) {
 	_ = bcrypt.CompareHashAndPassword([]byte(dummyBcrypt), []byte(password))
+}
+
+// AddSSHKey 给账号登记一把 SSH 登录公钥：line 是 authorized_keys 格式的一行
+// （可带行尾注释）。重复登记同一把不报错也不重复存。
+func (s *Store) AddSSHKey(username, line string) error {
+	pk, comment, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		return fmt.Errorf("不是有效的 SSH 公钥: %w", err)
+	}
+	stored := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(pk)))
+	if comment != "" {
+		stored += " " + comment
+	}
+	acct, ok := s.Get(username)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, username)
+	}
+	for _, existing := range acct.SSHKeys {
+		epk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(existing))
+		if err != nil {
+			continue
+		}
+		if bytes.Equal(epk.Marshal(), pk.Marshal()) {
+			return nil
+		}
+	}
+	blob, err := json.Marshal(append(acct.SSHKeys, stored))
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE users SET ssh_pubkeys = ? WHERE username = ?`, string(blob), username)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res, username)
+}
+
+// RemoveSSHKey 删掉账号的一把公钥：keyOrFingerprint 可以是 authorized_keys
+// 一行，也可以是「SHA256:...」指纹。匹配不到报错。
+func (s *Store) RemoveSSHKey(username, keyOrFingerprint string) error {
+	acct, ok := s.Get(username)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotFound, username)
+	}
+	var wantBytes []byte
+	if pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyOrFingerprint)); err == nil {
+		wantBytes = pk.Marshal()
+	}
+	var keep []string
+	removed := false
+	for _, line := range acct.SSHKeys {
+		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
+		if err != nil {
+			keep = append(keep, line)
+			continue
+		}
+		if bytes.Equal(pk.Marshal(), wantBytes) || gossh.FingerprintSHA256(pk) == keyOrFingerprint {
+			removed = true
+			continue
+		}
+		keep = append(keep, line)
+	}
+	if !removed {
+		return fmt.Errorf("账号 %s 没有这把公钥", username)
+	}
+	blob, err := json.Marshal(keep)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE users SET ssh_pubkeys = ? WHERE username = ?`, string(blob), username)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res, username)
+}
+
+// ClearSSHKeys 清空账号的全部登录公钥。
+func (s *Store) ClearSSHKeys(username string) error {
+	res, err := s.db.Exec(`UPDATE users SET ssh_pubkeys = '' WHERE username = ?`, username)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res, username)
+}
+
+// VerifySSHKey 校验 SSH 公钥登录：账号存在、未停用、这把钥匙登记过。
+// 不看密码也不看 TOTP——公钥是给自动化用的第二种凭据。
+func (s *Store) VerifySSHKey(username string, key gossh.PublicKey) bool {
+	acct, ok := s.Get(username)
+	if !ok || acct.Disabled {
+		return false
+	}
+	for _, line := range acct.SSHKeys {
+		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
+		if err != nil {
+			continue
+		}
+		if bytes.Equal(pk.Marshal(), key.Marshal()) {
+			return true
+		}
+	}
+	return false
 }
 
 // UsernameByToken 用 agent token 查账号；token 无效或账号停用时 ok 为 false。

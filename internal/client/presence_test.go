@@ -1,11 +1,13 @@
 package client
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ws2ssh/internal/auditlog"
 )
@@ -24,8 +26,8 @@ func TestPresenceNotifyTransitions(t *testing.T) {
 		},
 	}
 
-	p.sessionStart("s1", "alice@1.2.3.4")
-	p.sessionStart("s2", "bob@5.6.7.8")
+	p.sessionStart("s1", "alice@1.2.3.4", "pty", "")
+	p.sessionStart("s2", "bob@5.6.7.8", "pty", "")
 	if len(notes) != 1 {
 		t.Fatalf("两个并发会话只应通知一次开始, got %d: %v", len(notes), notes)
 	}
@@ -42,7 +44,7 @@ func TestPresenceNotifyTransitions(t *testing.T) {
 		t.Fatalf("最后一个会话结束应通知, got %d: %v", len(notes), notes)
 	}
 
-	p.sessionStart("s3", "carol@9.9.9.9")
+	p.sessionStart("s3", "carol@9.9.9.9", "pty", "")
 	if len(notes) != 3 {
 		t.Fatalf("清零后再来会话应再次通知, got %d: %v", len(notes), notes)
 	}
@@ -83,7 +85,7 @@ func TestPresenceSanitizesFrom(t *testing.T) {
 			notes = append(notes, title+" | "+body)
 		},
 	}
-	p.sessionStart("s1", `alice"@(display dialog "pwned")`)
+	p.sessionStart("s1", `alice"@(display dialog "pwned")`, "pty", "")
 	p.sessionEnd("s1")
 
 	if len(notes) != 2 {
@@ -137,7 +139,7 @@ func TestPresenceQuiet(t *testing.T) {
 		quiet:  true,
 		notify: func(title, body string) { t.Errorf("quiet 下不应通知: %s %s", title, body) },
 	}
-	p.sessionStart("s1", "alice@1.2.3.4")
+	p.sessionStart("s1", "alice@1.2.3.4", "pty", "")
 	p.sessionEnd("s1")
 }
 
@@ -149,7 +151,7 @@ func TestPresenceAuditLog(t *testing.T) {
 		audit:  auditlog.Open(path, 0),
 		notify: func(string, string) {},
 	}
-	p.sessionStart("s1", "alice@1.2.3.4")
+	p.sessionStart("s1", "alice@1.2.3.4", "pty", "")
 	p.sessionEnd("s1")
 
 	raw, err := os.ReadFile(path)
@@ -166,7 +168,7 @@ func TestPresenceAuditLog(t *testing.T) {
 
 	// 追加写：第二条会话不能覆盖第一条
 	p2 := &presence{server: "s", path: path, notify: func(string, string) {}}
-	p2.sessionStart("s9", "bob@1.1.1.1")
+	p2.sessionStart("s9", "bob@1.1.1.1", "pty", "")
 	p2.sessionEnd("s9")
 	raw, _ = os.ReadFile(path)
 	if !strings.Contains(string(raw), "alice@1.2.3.4") {
@@ -185,8 +187,44 @@ func TestPresenceBadPath(t *testing.T) {
 		audit:  auditlog.Open(filepath.Join(blocker, "audit.log"), 0),
 		notify: func(string, string) {},
 	}
-	p.sessionStart("s1", "alice@1.2.3.4")
+	p.sessionStart("s1", "alice@1.2.3.4", "pty", "")
 	p.sessionEnd("s1")
-	p.sessionStart("s2", "bob@1.1.1.1")
+	p.sessionStart("s2", "bob@1.1.1.1", "pty", "")
 	p.sessionEnd("s2")
+}
+
+// TestPresenceNotifyCooldown 同一来源在冷却期内的连续短会话只弹一对通知
+// （LLM/自动化会一分钟连几十次，逐条弹就是通知风暴）；冷却设 0 恢复逐对弹。
+func TestPresenceNotifyCooldown(t *testing.T) {
+	var mu sync.Mutex
+	var notes []string
+	p := &presence{
+		server:   "wss://srv:443",
+		cooldown: 10 * time.Minute,
+		notify: func(title, body string) {
+			mu.Lock()
+			defer mu.Unlock()
+			notes = append(notes, title+" | "+body)
+		},
+	}
+
+	// 同一来源连续 3 个短会话：只应弹第一对开始/结束
+	for i := 0; i < 3; i++ {
+		p.sessionStart(fmt.Sprintf("s%d", i), "alice@1.2.3.4", "exec", "echo hi")
+		p.sessionEnd(fmt.Sprintf("s%d", i))
+	}
+	if len(notes) != 2 {
+		t.Fatalf("冷却期内 3 个短会话只应弹一对通知, got %d: %v", len(notes), notes)
+	}
+	if !strings.Contains(notes[0], "执行命令") {
+		t.Fatalf("带命令的会话通知应说明在执行命令: %q", notes[0])
+	}
+
+	// 冷却关掉后恢复每对都弹
+	p.cooldown = 0
+	p.sessionStart("s9", "alice@1.2.3.4", "pty", "")
+	p.sessionEnd("s9")
+	if len(notes) != 4 {
+		t.Fatalf("冷却为 0 时应每对都弹, got %d: %v", len(notes), notes)
+	}
 }

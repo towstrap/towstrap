@@ -14,11 +14,46 @@ import (
 	"ws2ssh/internal/proto"
 )
 
+// chunk 是转发给 SSH 客户端的一片输出；stderr 为 true 时走 SSH 的扩展数据
+// 通道（stderr），false 是主输出（PTY 会话一切输出都在这里）。
+type chunk struct {
+	stderr bool
+	b      []byte
+}
+
 type session struct {
 	id     string
-	ch     chan []byte
+	ch     chan chunk
 	closed chan struct{}
 	ready  chan error
+
+	mu     sync.Mutex
+	code   int    // 子进程退出码，agent 在 close 消息里带回
+	errMsg string // agent 起命令失败的原因（err 消息），透传给 SSH 客户端的 stderr
+}
+
+func (s *session) setCode(c int) {
+	s.mu.Lock()
+	s.code = c
+	s.mu.Unlock()
+}
+
+func (s *session) exitCode() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.code
+}
+
+func (s *session) setErr(msg string) {
+	s.mu.Lock()
+	s.errMsg = msg
+	s.mu.Unlock()
+}
+
+func (s *session) errText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errMsg
 }
 
 // agentConn 是一台已上线的机器。名字就是账号用户名（由 token 决定）。
@@ -66,12 +101,12 @@ func (a *agentConn) keepalive() {
 
 // openShell 开会话；max > 0 时限制同一台机器的并发会话数（防一个账号在被控机
 // 上 fork 出一堆 shell）。
-func (a *agentConn) openShell(id string, cols, rows int, from string, max int) (*session, error) {
+func (a *agentConn) openShell(id string, req OpenReq, max int) (*session, error) {
 	s, err := a.addSession(id, max)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.send(proto.Msg{T: proto.TypeOpen, ID: id, Cols: cols, Rows: rows, From: from}); err != nil {
+	if err := a.send(proto.Msg{T: proto.TypeOpen, ID: id, Cols: req.Cols, Rows: req.Rows, Pty: req.Pty, Cmd: req.Cmd, From: req.From}); err != nil {
 		a.removeSession(id)
 		return nil, err
 	}
@@ -84,7 +119,9 @@ func (a *agentConn) addSession(id string, max int) (*session, error) {
 	if max > 0 && len(a.sessions) >= max {
 		return nil, fmt.Errorf("这台机器的并发会话数已达上限（%d），稍后再试", max)
 	}
-	s := &session{id: id, ch: make(chan []byte, 64), closed: make(chan struct{}), ready: make(chan error, 1)}
+	// code 默认 255：只有收到 agent 的 close 消息才会覆盖成真实退出码——
+	// agent 掉线、命令没起来这类中断不能记 0，不然自动化会把失败当成功。
+	s := &session{id: id, ch: make(chan chunk, 64), closed: make(chan struct{}), ready: make(chan error, 1), code: 255}
 	a.sessions[id] = s
 	return s, nil
 }
@@ -174,13 +211,15 @@ func (a *agentConn) readLoop() {
 				continue
 			}
 			select {
-			case s.ch <- payload:
+			case s.ch <- chunk{stderr: msg.S == "e", b: payload}:
 			case <-s.closed:
 			}
 		case proto.TypeErr:
+			s.setErr(msg.Err)
 			a.signalReady(msg.ID, fmt.Errorf("%s", msg.Err))
 			a.removeSession(msg.ID)
 		case proto.TypeClose:
+			s.setCode(msg.Code)
 			a.removeSession(msg.ID)
 		}
 	}
@@ -291,21 +330,30 @@ func (h *Hub) nextID() string {
 	return fmt.Sprintf("s%d", h.seq)
 }
 
-// OpenShell 在已复核过的 agent 连接上开会话；from 是「SSH 登录账号@来源 IP」，
-// 随 open 消息下发给 agent，用于被控机上的会话告知和审计。
-func (h *Hub) OpenShell(a *agentConn, cols, rows int, from string) (*session, error) {
-	if cols <= 0 {
-		cols = 80
-	}
-	if rows <= 0 {
-		rows = 24
-	}
-	return a.openShell(h.nextID(), cols, rows, from, h.maxSessions)
+// OpenReq 一次开壳请求：终端尺寸、要不要 PTY（SSH 客户端申请了才 true）、
+// 要执行的命令（空 = 交互 shell）、来源说明（「SSH 登录账号@来源 IP」，
+// 随 open 消息下发给 agent，用于被控机上的会话告知和审计）。
+type OpenReq struct {
+	Cols, Rows int
+	Pty        bool
+	Cmd, From  string
 }
 
-// pipe 双向搬运：客户端输入 → agent PTY，agent 输出 → 客户端。
-// clientDone 在客户端连接/会话结束时关闭（gliderlabs 的 session context）。
-func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out io.Writer, clientDone <-chan struct{}) {
+// OpenShell 在已复核过的 agent 连接上开会话。
+func (h *Hub) OpenShell(a *agentConn, req OpenReq) (*session, error) {
+	if req.Cols <= 0 {
+		req.Cols = 80
+	}
+	if req.Rows <= 0 {
+		req.Rows = 24
+	}
+	return a.openShell(h.nextID(), req, h.maxSessions)
+}
+
+// pipe 双向搬运：客户端输入 → agent 子进程，agent 输出 → 客户端（stderr
+// 标记的分片走 errOut）。pty 标记会话有没有伪终端；clientDone 在客户端
+// 连接/会话结束时关闭（gliderlabs 的 session context）。
+func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out, errOut io.Writer, pty bool, clientDone <-chan struct{}) {
 	defer func() {
 		_ = a.send(proto.Msg{T: proto.TypeClose, ID: s.id})
 		a.removeSession(s.id)
@@ -322,10 +370,16 @@ func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out io.Writer, client
 				}
 			}
 			if err != nil {
-				// 客户端关掉 stdin 的 EOF 不等于会话结束：真实 sshd 也是
-				// 这样——会话继续，等 pty 那边的 shell 自己退出；真正断开
-				// 由 clientDone 兜底。其他错误是通道断了，整场结束。
-				if !errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) {
+					// 客户端关掉 stdin：无 PTY 时要传给子进程（cat 这类
+					// 程序靠 EOF 收尾，真实 sshd 也这么干）；PTY 会话
+					// 的 EOF 不等于会话结束，等 pty 那边的 shell 自己
+					// 退出，真正断开由 clientDone 兜底。
+					if !pty {
+						_ = a.send(proto.Msg{T: proto.TypeEOF, ID: s.id})
+					}
+				} else {
+					// 其他错误是通道断了，整场结束
 					a.removeSession(s.id)
 				}
 				return
@@ -336,14 +390,34 @@ func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out io.Writer, client
 	for {
 		select {
 		case <-s.closed:
-			return
+			// readLoop 是顺序处理消息的：close 之前到的 data 已经全部推进
+			// s.ch（阻塞 select 推的）。关门前把剩在缓冲里的输出写完，
+			// 不然末尾数据会丢——exec 会话 stdout 的完整性就靠这一步。
+			for {
+				select {
+				case c := <-s.ch:
+					w := out
+					if c.stderr && errOut != nil {
+						w = errOut
+					}
+					if _, err := w.Write(c.b); err != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
 		case <-clientDone:
 			return
-		case payload, ok := <-s.ch:
+		case c, ok := <-s.ch:
 			if !ok {
 				return
 			}
-			if _, err := out.Write(payload); err != nil {
+			w := out
+			if c.stderr && errOut != nil {
+				w = errOut
+			}
+			if _, err := w.Write(c.b); err != nil {
 				return
 			}
 		}

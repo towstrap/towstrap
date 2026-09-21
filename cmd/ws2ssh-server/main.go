@@ -10,6 +10,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
+
 	"ws2ssh/internal/accounts"
 	"ws2ssh/internal/allow"
 	"ws2ssh/internal/config"
@@ -83,12 +85,15 @@ func usage() {
 账号管理（--config/--users-db 指定账号库，默认 /etc/ws2ssh/users.db；改完即时生效）:
   user add   用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]...
                                [--agent-allow-ip 地址]...
+                               [--ssh-key 公钥]... [--ssh-key-file 文件]
                                （不给 --password 会生成强随机密码，只显示一次）
   user list                                                       列出账号
   user set   用户名 [--password 密码] [--name 新名]
                               [--contact 联系方式] [--clear-contact]
                               [--allow-ip 地址]... [--clear-allow]
                               [--agent-allow-ip 地址]... [--clear-agent-allow]
+                              [--ssh-key 公钥]... [--ssh-key-file 文件]
+                              [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
                               [--disable|--enable]
   user remove 用户名                                               删号（token 作废）
   user token 用户名 [--regen]                                      看/换 token
@@ -240,11 +245,14 @@ func runServer(args []string) int {
 
 func usageUser() {
 	fmt.Fprintf(os.Stderr, `用法:
-  ws2ssh-server user add  用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]... [通用选项]
+  ws2ssh-server user add  用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]...
+                           [--ssh-key 公钥]... [--ssh-key-file 文件] [通用选项]
   ws2ssh-server user list [通用选项]
   ws2ssh-server user set   用户名 [--password 密码] [--name 新名] [--contact 联系方式]
                            [--clear-contact] [--allow-ip 地址]... [--clear-allow]
                            [--agent-allow-ip 地址]... [--clear-agent-allow]
+                           [--ssh-key 公钥]... [--ssh-key-file 文件]
+                           [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
                            [--disable] [--enable] [通用选项]
   ws2ssh-server user remove 用户名 [通用选项]
   ws2ssh-server user token  用户名 [--regen] [通用选项]
@@ -348,6 +356,37 @@ func parseMix(fs *flag.FlagSet, args []string) []string {
 	}
 }
 
+// readKeyFile 读 authorized_keys 格式的公钥文件：逐行返回，跳过空行和
+// # 注释行。
+func readKeyFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	// 公钥行一般几百字节，给注释长的行留足余量
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	var lines []string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines, sc.Err()
+}
+
+// keyFingerprint 从一行公钥算出 SHA256 指纹用于展示。
+func keyFingerprint(line string) string {
+	pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		return ""
+	}
+	return gossh.FingerprintSHA256(pk)
+}
+
 func userAdd(args []string) int {
 	fs := flag.NewFlagSet("user add", flag.ExitOnError)
 	configPath := fs.String("config", "", "")
@@ -360,11 +399,24 @@ func userAdd(args []string) int {
 	fs.Var(&allowIPs, "allow-ip", "")
 	var agentAllowIPs stringList
 	fs.Var(&agentAllowIPs, "agent-allow-ip", "")
+	var sshKeys stringList
+	fs.Var(&sshKeys, "ssh-key", "")
+	sshKeyFile := fs.String("ssh-key-file", "", "")
 	rest := parseMix(fs, args)
 	name := firstArg(rest)
 	if name == "" {
 		usageUser()
 		return 2
+	}
+	// 公钥先读进来再建号：文件读不了就别留个半成品账号
+	keyLines := []string(sshKeys)
+	if *sshKeyFile != "" {
+		lines, err := readKeyFile(*sshKeyFile)
+		if err != nil {
+			slog.Error(fmt.Sprintf("读公钥文件 %s: %s", *sshKeyFile, err))
+			return 2
+		}
+		keyLines = append(keyLines, lines...)
 	}
 	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
 	if !ok {
@@ -384,9 +436,21 @@ func userAdd(args []string) int {
 		slog.Error(err.Error())
 		return 2
 	}
+	for _, line := range keyLines {
+		if err := env.store.AddSSHKey(name, line); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+	}
 	fmt.Printf("已建号 %s（SSH 用户名 %s）\n", acct.Username, acct.Username)
 	if generated {
 		fmt.Printf("SSH 密码（只显示这一次，请立即保存）: %s\n", pw)
+	}
+	if len(keyLines) > 0 {
+		fmt.Println("SSH 公钥已登记：")
+		for _, line := range keyLines {
+			fmt.Printf("  %s\n", keyFingerprint(line))
+		}
 	}
 	if len(acct.AllowIPs) > 0 {
 		fmt.Printf("白名单: %s\n", strings.Join(acct.AllowIPs, ", "))
@@ -420,7 +484,7 @@ func userList(args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "用户名\t状态\tTOTP\t联系方式\tSSH白名单\tagent来源\ttoken")
+	fmt.Fprintln(tw, "用户名\t状态\tTOTP\t公钥\t联系方式\tSSH白名单\tagent来源\ttoken")
 	for _, a := range list {
 		state := "启用"
 		if a.Disabled {
@@ -429,6 +493,10 @@ func userList(args []string) int {
 		totpState := "-"
 		if a.TOTPEnabled {
 			totpState = "已绑定"
+		}
+		keys := "-"
+		if len(a.SSHKeys) > 0 {
+			keys = fmt.Sprintf("%d", len(a.SSHKeys))
 		}
 		ips := strings.Join(a.AllowIPs, ",")
 		if ips == "" {
@@ -442,7 +510,7 @@ func userList(args []string) int {
 		if contact == "" {
 			contact = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Username, state, totpState, contact, ips, agentIPs, a.Token)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Username, state, totpState, keys, contact, ips, agentIPs, a.Token)
 	}
 	tw.Flush()
 	return 0
@@ -464,6 +532,11 @@ func userSet(args []string) int {
 	var agentAllowIPs stringList
 	fs.Var(&agentAllowIPs, "agent-allow-ip", "")
 	clearAgentAllow := fs.Bool("clear-agent-allow", false, "")
+	var sshKeys, removeKeys stringList
+	fs.Var(&sshKeys, "ssh-key", "")
+	sshKeyFile := fs.String("ssh-key-file", "", "")
+	fs.Var(&removeKeys, "remove-ssh-key", "")
+	clearSSHKeys := fs.Bool("clear-ssh-keys", false, "")
 	disable := fs.Bool("disable", false, "")
 	enable := fs.Bool("enable", false, "")
 	rest := parseMix(fs, args)
@@ -536,6 +609,36 @@ func userSet(args []string) int {
 		} else {
 			fmt.Printf("agent 来源白名单已更新: %s\n", strings.Join(ips, ", "))
 		}
+	}
+	if *clearSSHKeys {
+		if err := env.store.ClearSSHKeys(name); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		fmt.Println("SSH 公钥已清空")
+	}
+	keyLines := []string(sshKeys)
+	if *sshKeyFile != "" {
+		lines, err := readKeyFile(*sshKeyFile)
+		if err != nil {
+			slog.Error(fmt.Sprintf("读公钥文件 %s: %s", *sshKeyFile, err))
+			return 2
+		}
+		keyLines = append(keyLines, lines...)
+	}
+	for _, line := range keyLines {
+		if err := env.store.AddSSHKey(name, line); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		fmt.Printf("SSH 公钥已登记: %s\n", keyFingerprint(line))
+	}
+	for _, k := range removeKeys {
+		if err := env.store.RemoveSSHKey(name, k); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		fmt.Println("SSH 公钥已移除")
 	}
 	if *disable {
 		if err := env.store.SetDisabled(name, true); err != nil {

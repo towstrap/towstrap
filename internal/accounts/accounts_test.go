@@ -1,6 +1,8 @@
 package accounts
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
 	"ws2ssh/internal/totp"
@@ -565,5 +568,153 @@ func TestAgentAllowAndIPCheck(t *testing.T) {
 	}
 	if a, _ := s.Get("alice"); len(a.AgentAllowIPs) != 0 {
 		t.Fatalf("AgentAllowIPs 应为空: %v", a.AgentAllowIPs)
+	}
+}
+
+// testKey 生成一把测试用 ed25519 公钥和它 authorized_keys 格式的一行。
+func testKey(t *testing.T, comment string) (gossh.PublicKey, string) {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := gossh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(signer.PublicKey())))
+	if comment != "" {
+		line += " " + comment
+	}
+	return signer.PublicKey(), line
+}
+
+func TestSSHKeysAddRemoveVerify(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Add("alice", "alicepw123", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	pk, line := testKey(t, "bot@ci")
+
+	if err := s.AddSSHKey("alice", line); err != nil {
+		t.Fatal(err)
+	}
+	// 重复登记同一把：不报错也不重复存
+	if err := s.AddSSHKey("alice", line); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := s.Get("alice")
+	if len(a.SSHKeys) != 1 || !strings.Contains(a.SSHKeys[0], "bot@ci") {
+		t.Fatalf("登记结果不对: %v", a.SSHKeys)
+	}
+	if !s.VerifySSHKey("alice", pk) {
+		t.Fatal("登记过的公钥应通过校验")
+	}
+
+	// 非法输入报错；没登记过的钥匙不认
+	if err := s.AddSSHKey("alice", "not a key"); err == nil {
+		t.Fatal("非法公钥应报错")
+	}
+	other, _ := testKey(t, "")
+	if s.VerifySSHKey("alice", other) {
+		t.Fatal("没登记的公钥不应通过")
+	}
+	if s.VerifySSHKey("nobody", pk) {
+		t.Fatal("不存在的账号不应通过")
+	}
+	if err := s.AddSSHKey("nobody", line); err == nil {
+		t.Fatal("不存在的账号应报错")
+	}
+
+	// 停用后公钥也进不来
+	if err := s.SetDisabled("alice", true); err != nil {
+		t.Fatal(err)
+	}
+	if s.VerifySSHKey("alice", pk) {
+		t.Fatal("停用账号的公钥不应通过")
+	}
+	if err := s.SetDisabled("alice", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// 指纹和整行两种写法都能删
+	if err := s.RemoveSSHKey("alice", gossh.FingerprintSHA256(pk)); err != nil {
+		t.Fatal(err)
+	}
+	if s.VerifySSHKey("alice", pk) {
+		t.Fatal("删掉的公钥不应通过")
+	}
+	if err := s.RemoveSSHKey("alice", "SHA256:notexist"); err == nil {
+		t.Fatal("删不存在的公钥应报错")
+	}
+	if err := s.AddSSHKey("alice", line); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveSSHKey("alice", line); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = s.Get("alice")
+	if len(a.SSHKeys) != 0 {
+		t.Fatalf("删完后应为空: %v", a.SSHKeys)
+	}
+
+	// ClearSSHKeys 一把清
+	if err := s.AddSSHKey("alice", line); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearSSHKeys("alice"); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = s.Get("alice")
+	if len(a.SSHKeys) != 0 {
+		t.Fatalf("清空后应为空: %v", a.SSHKeys)
+	}
+	if err := s.ClearSSHKeys("nobody"); err == nil {
+		t.Fatal("不存在的账号应报错")
+	}
+}
+
+// TestOpenMigratesSSHKeys 老版本建的库没有 ssh_pubkeys 列：Open 要平滑补上。
+func TestOpenMigratesSSHKeys(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "users.db")
+
+	// 用没有 ssh_pubkeys 列的旧 schema 手工建库
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE users (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		username        TEXT    NOT NULL UNIQUE,
+		password_hash   TEXT    NOT NULL,
+		token_enc       BLOB    NOT NULL UNIQUE,
+		contact         TEXT    NOT NULL DEFAULT '',
+		totp_secret_enc BLOB,
+		totp_last_step  INTEGER NOT NULL DEFAULT 0,
+		agent_allow_ips TEXT    NOT NULL DEFAULT '',
+		agent_last_ip   TEXT    NOT NULL DEFAULT '',
+		allow_ips       TEXT    NOT NULL DEFAULT '',
+		disabled        INTEGER NOT NULL DEFAULT 0,
+		created_at      TEXT    NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dbPath, "")
+	if err != nil {
+		t.Fatalf("老库 Open 应成功（自动补列）: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.Add("alice", "alicepw123", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, line := testKey(t, "")
+	if err := s.AddSSHKey("alice", line); err != nil {
+		t.Fatalf("迁移后应能登记公钥: %v", err)
 	}
 }

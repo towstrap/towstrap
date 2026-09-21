@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -225,9 +227,14 @@ func (a *agent) loop() error {
 		}
 		switch msg.T {
 		case proto.TypeOpen:
-			go a.openShell(msg)
+			// 同步跑到会话挂上 sess 表为止（openShell 内部起 goroutine 干
+			// 长活）——否则紧随 open 的 data/eof 会先于注册被丢掉，exec
+			// 会话的 stdin 数据就丢了。
+			a.openShell(msg)
 		case proto.TypeData:
 			a.onData(msg)
+		case proto.TypeEOF:
+			a.onEOF(msg)
 		case proto.TypeResize:
 			a.onResize(msg)
 		case proto.TypeClose:
@@ -253,6 +260,23 @@ func (p *ptyFile) Close() error {
 	return nil
 }
 
+// execProc 无 PTY 会话的句柄：Close 先关 stdin（让子进程读到 EOF）再杀进程
+// 兜底——服务器端 close 过来时两条都要做。
+type execProc struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+}
+
+func (p *execProc) Close() error {
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	return nil
+}
+
 // childEnv 给远程会话起 shell 用的环境：剥掉 WS2SSH_AGENT_TOKEN——远程用户
 // 拿到的是本机 shell，没必要再把 agent 自己的凭据白送给他。
 func childEnv() []string {
@@ -266,8 +290,26 @@ func childEnv() []string {
 	return append(env, "TERM=xterm-256color")
 }
 
+// openShell 在 read 循环里同步调用：它只负责把子进程起好、会话挂上 sess
+// 表，然后自己起 goroutine 干长活（不能全程 goroutine——紧随 open 的
+// data/eof 消息会在注册前先被读到，getSession 落空就丢数据）。
 func (a *agent) openShell(msg proto.Msg) {
-	cmd := exec.Command(a.cfg.Shell)
+	if msg.Pty {
+		a.openPty(msg)
+		return
+	}
+	a.openExec(msg)
+}
+
+// openPty PTY 模式：交互终端，或客户端带命令的 PTY 会话（ssh -t host cmd）。
+// 输入输出走伪终端，退出码随 close 带回。
+func (a *agent) openPty(msg proto.Msg) {
+	var cmd *exec.Cmd
+	if msg.Cmd != "" {
+		cmd = exec.Command(a.cfg.Shell, "-c", msg.Cmd)
+	} else {
+		cmd = exec.Command(a.cfg.Shell)
+	}
 	cmd.Env = childEnv()
 	f, err := pty.Start(cmd)
 	if err != nil {
@@ -279,27 +321,117 @@ func (a *agent) openShell(msg proto.Msg) {
 	}
 	a.setSession(msg.ID, &ptyFile{file: f, cmd: cmd})
 	if a.presence != nil {
-		a.presence.sessionStart(msg.ID, msg.From)
-		defer a.presence.sessionEnd(msg.ID)
+		a.presence.sessionStart(msg.ID, msg.From, "pty", msg.Cmd)
 	}
 	_ = a.send(proto.Msg{T: proto.TypeOK, ID: msg.ID})
 
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := f.Read(buf)
-		if n > 0 {
-			if werr := a.send(proto.EncodeData(msg.ID, buf[:n])); werr != nil {
+	go func() {
+		if a.presence != nil {
+			defer a.presence.sessionEnd(msg.ID)
+		}
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := f.Read(buf)
+			if n > 0 {
+				if werr := a.send(proto.EncodeData(msg.ID, buf[:n])); werr != nil {
+					break
+				}
+			}
+			if err != nil {
 				break
 			}
 		}
-		if err != nil {
-			break
+		if c := a.takeSession(msg.ID); c != nil {
+			_ = c.Close()
+		}
+		// 读循环结束说明 PTY 关了，Wait 回收子进程拿退出码
+		code := exitCode(cmd.Wait())
+		_ = a.send(proto.Msg{T: proto.TypeClose, ID: msg.ID, Code: code})
+	}()
+}
+
+// streamWriter 把子进程的一条输出流接成 data 消息：按 32KB 切片发送
+// （对上单条 WebSocket 消息上限），stream 为空是 stdout、"e" 是 stderr。
+// send 失败就返回错误，子进程那边表现为写管道失败。
+type streamWriter struct {
+	a      *agent
+	id     string
+	stream string
+}
+
+func (w *streamWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		n := len(p)
+		if n > 32*1024 {
+			n = 32 * 1024
+		}
+		if err := w.a.send(proto.EncodeStream(w.id, w.stream, p[:n])); err != nil {
+			return written, err
+		}
+		written += n
+		p = p[n:]
+	}
+	return written, nil
+}
+
+// openExec exec 模式：无 PTY，stdout/stderr 分成两条流转发（stderr 打 "e"
+// 标），退出码随 close 带回——`ssh host '命令'` 和 `ssh -T` 走的是这条路。
+func (a *agent) openExec(msg proto.Msg) {
+	var cmd *exec.Cmd
+	if msg.Cmd != "" {
+		cmd = exec.Command(a.cfg.Shell, "-c", msg.Cmd)
+	} else {
+		cmd = exec.Command(a.cfg.Shell)
+	}
+	cmd.Env = childEnv()
+	cmd.Stdout = &streamWriter{a: a, id: msg.ID}
+	cmd.Stderr = &streamWriter{a: a, id: msg.ID, stream: "e"}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+		return
+	}
+	a.setSession(msg.ID, &execProc{cmd: cmd, stdin: stdin})
+	if a.presence != nil {
+		a.presence.sessionStart(msg.ID, msg.From, "exec", msg.Cmd)
+	}
+	_ = a.send(proto.Msg{T: proto.TypeOK, ID: msg.ID})
+	go func() {
+		if a.presence != nil {
+			defer a.presence.sessionEnd(msg.ID)
+		}
+		// Wait 会等 stdout/stderr 的拷贝结束，所有输出必然先于 close 发出
+		werr := cmd.Wait()
+		if c := a.takeSession(msg.ID); c != nil {
+			_ = c.Close()
+		}
+		_ = a.send(proto.Msg{T: proto.TypeClose, ID: msg.ID, Code: exitCode(werr)})
+	}()
+}
+
+// exitCode 把 cmd.Wait 的错误翻译成退出码：正常退出取 ExitCode；被信号杀
+// 按 shell 惯例取 128+信号号；其他错误（比如根本没起来）取 255。
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if c := ee.ExitCode(); c >= 0 {
+			return c
+		}
+		if ws, ok := ee.ProcessState.Sys().(syscall.WaitStatus); ok {
+			if sig := ws.Signal(); sig > 0 {
+				return 128 + int(sig)
+			}
 		}
 	}
-	if c := a.takeSession(msg.ID); c != nil {
-		_ = c.Close()
-	}
-	_ = a.send(proto.Msg{T: proto.TypeClose, ID: msg.ID})
+	return 255
 }
 
 func (a *agent) onData(msg proto.Msg) {
@@ -307,9 +439,20 @@ func (a *agent) onData(msg proto.Msg) {
 	if err != nil || len(payload) == 0 {
 		return
 	}
-	c := a.getSession(msg.ID)
-	if p, ok := c.(*ptyFile); ok {
-		_, _ = p.file.Write(payload)
+	switch c := a.getSession(msg.ID).(type) {
+	case *ptyFile:
+		_, _ = c.file.Write(payload)
+	case *execProc:
+		// 客户端 → agent 只有 stdin 一条流，msg.S 用不上
+		_, _ = c.stdin.Write(payload)
+	}
+}
+
+// onEOF 客户端关了 stdin：无 PTY 会话把它传给子进程（cat 这类程序靠 EOF
+// 收尾）；PTY 会话忽略——终端语义下 Ctrl-D 本来就是 data 里的一个字符。
+func (a *agent) onEOF(msg proto.Msg) {
+	if c, ok := a.getSession(msg.ID).(*execProc); ok && c.stdin != nil {
+		_ = c.stdin.Close()
 	}
 }
 

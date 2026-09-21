@@ -75,9 +75,9 @@ agent 同理支持 `--config agent.yaml`（见 `examples/agent.yaml`，包括从
 
 | 命令 | 作用 |
 | --- | --- |
-| `ws2ssh-server user add 名字 [--password 密码] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]...` | 建号，生成唯一 token 和安装命令 |
-| `ws2ssh-server user list` | 列出账号、白名单、token、TOTP 状态、联系方式 |
-| `ws2ssh-server user set 名字 [--password 密码] [--name 新名] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--clear-allow] [--disable\|--enable]` | 改密码 / 改名 / 改备注 / 改白名单 / 停启用 |
+| `ws2ssh-server user add 名字 [--password 密码] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件]` | 建号，生成唯一 token 和安装命令 |
+| `ws2ssh-server user list` | 列出账号、白名单、token、TOTP 状态、公钥数、联系方式 |
+| `ws2ssh-server user set 名字 [--password 密码] [--name 新名] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件] [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys] [--clear-allow] [--disable\|--enable]` | 改密码 / 改名 / 改备注 / 改白名单 / 增删公钥 / 停启用 |
 | `ws2ssh-server user remove 名字` | 删号，token 立刻作废 |
 | `ws2ssh-server user token 名字 [--regen]` | 查看或更换 token |
 | `ws2ssh-server user totp 名字 [--remove]` | 绑定 / 解绑 TOTP 二因素 |
@@ -142,7 +142,7 @@ ws2ssh-server user totp office --remove
 
 **空闲重验**：绑了 TOTP 的账号，SSH 会话挂机超过 `--idle-verify`（默认 30m，`0` 关闭）后再敲键，会先要求输入一个**新的**验证码，输对才继续（3 次机会）。挂机期间程序自己的输出不算使用。
 
-**注意**：绑了 TOTP 的账号没法再用 `sshpass` 这类纯密码自动化——要么别给它绑，要么改用 expect 之类的交互应答。
+**注意**：绑了 TOTP 的账号没法再用 `sshpass` 这类纯密码自动化——要么别给它绑，要么改用 expect 之类的交互应答。绑了公钥的账号用公钥登录时不走 TOTP，公钥是给自动化用的。
 
 ## 联系方式备注
 
@@ -168,6 +168,23 @@ ws2ssh-server user set office --contact "值班：张三"
 自签证书 agent 校验不过，要加 `--insecure` 跳过校验（等于不验证服务器身份，只适合内网或临时用）。正式对外请用受信证书，agent 不要开 `--insecure`。
 
 **不要把 ws2ssh 放在 Nginx / 云负载均衡这类反向代理后面。** 服务器是按 TCP 连接的来源 IP 做判断的，经过代理后所有连接的来源都变成代理自己的地址：IP 白名单、`--agent-allow-ip`、每 IP 连接数、防爆破限速、`AGENT-IPCHANGE` 告警全部失效。需要 HTTPS 直接用 `--tls`，需要挡在前面的话用四层透传（保留来源 IP 的 TCP 转发）或云防火墙。
+
+## 给 LLM / 自动化工具用
+
+`ssh -p 2222 office@服务器 '命令'` 会在那台机器上执行命令，stdout、stderr 和退出码原样带回——Claude Code、Codex、Devin 这类自带终端的助手不用任何适配就能把它当普通 ssh 主机用。`ssh -T`（无 PTY 的非交互 shell）、管道喂 stdin 都支持；文件传输暂时用 `cat`/heredoc，`scp`/`sftp` 还没做。
+
+**给自动化单独建账号**，绑公钥：
+
+```bash
+ws2ssh-server user add bot --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" --allow-ip 跑LLM的机器IP
+# 或给已有账号补：ws2ssh-server user set bot --ssh-key-file ~/.ssh/id_ed25519.pub
+```
+
+私钥放在跑 LLM 的机器上。公钥登录不要求 TOTP，也不进防爆破限速器（客户端会连着试好几把钥匙，计失败会误锁）；配 `--allow-ip` 把账号锁到那台机器。
+
+**安全姿势**：被控机上的 agent 用低权限用户跑——LLM 能碰的就是那个用户能碰的。服务器审计 `SESSION-START` 记 `mode=exec cmd=…`（超过 512 字节截断）、`SESSION-END` 记 `code=` 退出码，agent 侧 `START` 同样记 `cmd`。桌面/终端通知同一来源 10 分钟内最多弹一对（审计每条都记，只是不刷屏）。单条命令上限 64KB。
+
+**自己写 LLM 应用**：直接用任意 SSH 库调——Go 的 `golang.org/x/crypto/ssh`、Python 的 paramiko 都行，认证就是公钥。MCP 封装后续提供。
 
 ## 监控
 

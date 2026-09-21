@@ -9,12 +9,16 @@ import (
 )
 
 // 服务器和 agent 之间的消息。会话有两种方向：
-//   - 外人 → 服务器 → agent：open（开命令行）、data（键入）、resize、close
-//   - agent → 服务器：ok、data（输出）、close、err
+//   - 外人 → 服务器 → agent：open（开命令行；cmd 带命令、pty 标记要不要
+//     终端）、data（键入）、eof（客户端关了 stdin，无 PTY 时传给子进程）、
+//     resize、close
+//   - agent → 服务器：ok、data（输出，s="e" 是 stderr）、close（code 是
+//     子进程退出码）、err
 const (
 	TypeHello  = "hello"
 	TypeOpen   = "open"
 	TypeData   = "data"
+	TypeEOF    = "eof"
 	TypeResize = "resize"
 	TypeClose  = "close"
 	TypeOK     = "ok"
@@ -33,6 +37,10 @@ const (
 	// WriteWait 单条消息的写超时：对端不读时不能无限等（同一台机器的会话
 	// 共用一个写锁，卡住一个就卡住全部）。
 	WriteWait = 10 * time.Second
+	// MaxCommandBytes open 消息里命令的上限：命令混在 WebSocket 消息里发给
+	// agent，那边单条消息上限 256KB——服务器要先挡住超长命令，别让 agent
+	// 收到一条放不下的消息把整条连接打断。
+	MaxCommandBytes = 64 << 10
 )
 
 type Msg struct {
@@ -44,6 +52,10 @@ type Msg struct {
 	D    string `json:"d,omitempty"`
 	Cols int    `json:"cols,omitempty"`
 	Rows int    `json:"rows,omitempty"`
+	Cmd  string `json:"cmd,omitempty"`  // open 时要执行的命令；空 = 交互 shell
+	Pty  bool   `json:"pty,omitempty"`  // open 时是否要 PTY（SSH 客户端申请了才 true）
+	S    string `json:"s,omitempty"`    // data 属于哪条流：空 = stdout/PTY，"e" = stderr
+	Code int    `json:"code,omitempty"` // close 时子进程的退出码
 	Err  string `json:"err,omitempty"`
 }
 
@@ -91,8 +103,13 @@ func Decode(raw []byte) (Msg, error) {
 	return m, err
 }
 
+// EncodeStream 打包一条 data 消息；stream 为空是 stdout/PTY 输出，"e" 是 stderr。
+func EncodeStream(id, stream string, payload []byte) Msg {
+	return Msg{T: TypeData, ID: id, S: stream, D: base64.StdEncoding.EncodeToString(payload)}
+}
+
 func EncodeData(id string, payload []byte) Msg {
-	return Msg{T: TypeData, ID: id, D: base64.StdEncoding.EncodeToString(payload)}
+	return EncodeStream(id, "", payload)
 }
 
 func (m Msg) Payload() ([]byte, error) {

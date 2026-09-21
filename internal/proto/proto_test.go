@@ -58,3 +58,40 @@ func TestDecode(t *testing.T) {
 		t.Fatalf("%#v err=%v", m, err)
 	}
 }
+
+func TestNewFieldsRoundtrip(t *testing.T) {
+	open := Msg{T: TypeOpen, ID: "s1", Pty: true, Cmd: "go test ./..."}
+	got, err := Decode(open.Bytes())
+	if err != nil || !got.Pty || got.Cmd != "go test ./..." {
+		t.Fatalf("%#v err=%v", got, err)
+	}
+	// close 带退出码
+	cl := Msg{T: TypeClose, ID: "s1", Code: 3}
+	got, err = Decode(cl.Bytes())
+	if err != nil || got.Code != 3 {
+		t.Fatalf("%#v err=%v", got, err)
+	}
+	// 没用到时不占 JSON 字段
+	raw := Msg{T: TypeOpen, ID: "s1"}.Bytes()
+	for _, k := range []string{`"cmd"`, `"pty"`, `"s"`, `"code"`} {
+		if bytes.Contains(raw, []byte(k)) {
+			t.Fatalf("零值字段 %s 不应出现在 JSON 里: %s", k, raw)
+		}
+	}
+}
+
+func TestEncodeStream(t *testing.T) {
+	payload := []byte("stderr bytes")
+	m := EncodeStream("s1", "e", payload)
+	if m.T != TypeData || m.S != "e" {
+		t.Fatalf("%#v", m)
+	}
+	got, err := m.Payload()
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("got %q err=%v", got, err)
+	}
+	// EncodeData 是 stdout 流
+	if EncodeData("s1", payload).S != "" {
+		t.Fatal("EncodeData 不应带流标记")
+	}
+}

@@ -1,7 +1,11 @@
 package e2e
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -898,5 +902,222 @@ func TestMinAgentVersion(t *testing.T) {
 	waitAgent(t, srv2.Hub, "alice")
 	if !containsAudit(t, audit2, "version=0.2.0") {
 		t.Fatal("AGENT-CONNECT 应记录自报版本")
+	}
+}
+
+// execDial 密码登录建客户端 + 开 session（不申请 PTY，走 exec 通道）。
+func execDial(t *testing.T, sshPort int, auth gossh.AuthMethod) (*gossh.Client, *gossh.Session) {
+	t.Helper()
+	cfg := &gossh.ClientConfig{
+		User:            "alice",
+		Auth:            []gossh.AuthMethod{auth},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		Timeout:         3 * time.Second,
+	}
+	c, err := gossh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", sshPort), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	return c, sess
+}
+
+// TestExecCommand 无 PTY 的命令执行：stdout/stderr 分开、退出码原样带回。
+func TestExecCommand(t *testing.T) {
+	srv, httpPort, sshPort, users := startServer(t)
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Token, "h1")
+	waitAgent(t, srv.Hub, "alice")
+
+	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
+	var stdout, stderr bytes.Buffer
+	sess.Stdout = &stdout
+	sess.Stderr = &stderr
+	err = sess.Run("echo out; echo err 1>&2; exit 3")
+	var ee *gossh.ExitError
+	if !errors.As(err, &ee) || ee.ExitStatus() != 3 {
+		t.Fatalf("退出码应为 3, err=%v", err)
+	}
+	if stdout.String() != "out\n" {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), "out\n")
+	}
+	if stderr.String() != "err\n" {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), "err\n")
+	}
+}
+
+// TestExecStdin exec 会话的 stdin EOF 要传到子进程：cat 读到 EOF 才退出。
+func TestExecStdin(t *testing.T) {
+	srv, httpPort, sshPort, users := startServer(t)
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Token, "h1")
+	waitAgent(t, srv.Hub, "alice")
+
+	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
+	sess.Stdin = strings.NewReader("abc")
+	type res struct {
+		out []byte
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		out, err := sess.Output("cat")
+		done <- res{out, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("cat 应正常退出: %v", r.err)
+		}
+		if string(r.out) != "abc" {
+			t.Fatalf("cat 应回显 stdin: %q", r.out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cat 没在 stdin EOF 后退出——EOF 没传到子进程")
+	}
+}
+
+// TestExecNoPtyShell ssh -T 等价物：无 PTY、不给命令，起一个非交互 shell，
+// stdin 写命令、关 stdin，shell 退出码要带回来。
+func TestExecNoPtyShell(t *testing.T) {
+	srv, httpPort, sshPort, users := startServer(t)
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Token, "h1")
+	waitAgent(t, srv.Hub, "alice")
+
+	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	sess.Stdout = &out
+	if err := sess.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stdin.Write([]byte("echo hi\nexit 7\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitErr := make(chan error, 1)
+	go func() { waitErr <- sess.Wait() }()
+	select {
+	case err := <-waitErr:
+		var ee *gossh.ExitError
+		if !errors.As(err, &ee) || ee.ExitStatus() != 7 {
+			t.Fatalf("退出码应为 7, err=%v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("shell 没在 stdin EOF 后退出")
+	}
+	if !strings.Contains(out.String(), "hi") {
+		t.Fatalf("输出应有 echo 的结果: %q", out.String())
+	}
+}
+
+// TestPublicKeyAuth 公钥登录：登记的钥匙能进，没登记的进不来；
+// 账号绑了 TOTP 公钥仍能登录（公钥是给自动化用的，不走 TOTP）。
+func TestPublicKeyAuth(t *testing.T) {
+	srv, httpPort, sshPort, users := startServer(t)
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Token, "h1")
+	waitAgent(t, srv.Hub, "alice")
+
+	newSigner := func() gossh.Signer {
+		t.Helper()
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signer, err := gossh.NewSignerFromKey(priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signer
+	}
+	signer := newSigner()
+	line := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(signer.PublicKey())))
+	if err := users.AddSSHKey("alice", line); err != nil {
+		t.Fatal(err)
+	}
+
+	// 登记的钥匙能跑命令
+	_, sess := execDial(t, sshPort, gossh.PublicKeys(signer))
+	out, err := sess.Output("echo pubkey-ok")
+	if err != nil {
+		t.Fatalf("公钥登录执行命令失败: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "pubkey-ok" {
+		t.Fatalf("输出不对: %q", out)
+	}
+	_ = sess.Close()
+
+	// 没登记的钥匙进不来
+	cfg := &gossh.ClientConfig{
+		User:            "alice",
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(newSigner())},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		Timeout:         3 * time.Second,
+	}
+	if c, err := gossh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", sshPort), cfg); err == nil {
+		_ = c.Close()
+		t.Fatal("没登记的公钥不应登录")
+	}
+
+	// 绑了 TOTP 公钥仍能登录
+	secret, _ := totp.Generate("ws2ssh", "alice")
+	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, sess2 := execDial(t, sshPort, gossh.PublicKeys(signer))
+	out, err = sess2.Output("echo still-ok")
+	if err != nil {
+		t.Fatalf("绑了 TOTP 后公钥登录失败: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "still-ok" {
+		t.Fatalf("输出不对: %q", out)
+	}
+}
+
+// TestExecLargeOutput 大输出端到端：agent 侧 32KB 切片、服务器关闭前排空
+// 缓冲，1MB 输出一个字节不能丢不能改。
+func TestExecLargeOutput(t *testing.T) {
+	srv, httpPort, sshPort, users := startServer(t)
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Token, "h1")
+	waitAgent(t, srv.Hub, "alice")
+
+	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
+	out, err := sess.Output(`head -c 1000000 /dev/zero | tr '\0' a`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1000000 {
+		t.Fatalf("应恰好 1000000 字节, got %d", len(out))
+	}
+	if !bytes.Equal(out, bytes.Repeat([]byte{'a'}, 1000000)) {
+		t.Fatal("输出内容应全是 'a'，有字节被改或丢失")
 	}
 }
