@@ -319,6 +319,26 @@ ws2ssh-server mcp set laptop --disable                # 临时停用
 
 **提醒**：策略名单只是方便过滤，**不是安全边界**——shell 语法总能绕过朴素切段，别把它当沙箱；真正兜底的是 agent 跑在哪个系统用户下。内置 allow/deny 名单在 `internal/mcpsrv/policy.go` 的 `DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`，yaml 里写了对应项就整份替换。另外 roots 只按文本前缀匹配路径、不解析远端符号链接：`~/work/link -> /etc` 这种指向外面的链接会让 `write_file ~/work/link/x` 逃过 roots 检查——roots 目录里别放这类符号链接。
 
+## 给 LLM 编码助手装 skill
+
+仓库自带一份教编码助手「怎么安全地用 ws2ssh」的 skill（源文件在 `skills/ws2ssh/SKILL.md`）：什么时候用 MCP 工具、什么时候走 ssh、策略拒绝时不要去绕、哪些是禁区。`ws2ssh-mcp connect` 把它装进本机检测到的各家助手：
+
+```bash
+ws2ssh-mcp connect                    # 装到本机检测到的所有 harness
+ws2ssh-mcp connect list               # 看支持哪些、检测到哪些、装没装
+ws2ssh-mcp connect --path .claude/skills    # 只装到指定目录（比如项目级）
+ws2ssh-mcp connect uninstall          # 卸载（用户改过的内容默认不删，--force 才删）
+```
+
+支持：Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI（检测各自的家目录；Codex 和 Grok 共用 `~/.agents/skills`，只写一份）。安装是写入 `<skills目录>/ws2ssh/SKILL.md` 加一份 `.ws2ssh-managed.json` 清单；你自己放的同名 skill 不会被误盖（要 `--force`）。所有写操作都能先 `--dry-run` 演练。不想用命令也行——把 `skills/ws2ssh/` 整个目录拷进任何一家认识的 skills 目录效果一样。
+
+配套的还有 `connect print-mcp`：打印各家客户端接 ws2ssh MCP 要写的配置片段（不写文件）：
+
+```bash
+ws2ssh-mcp connect print-mcp --url https://服务器:8080/mcp --token w2m-...
+ws2ssh-mcp connect print-mcp --stdio [--config mcp.yaml]
+```
+
 ## 监控
 
 看谁在线：`GET /status`，请求头带 `X-Admin-Token`（server.yaml 的 `admin_token`）或任一有效 `X-Agent-Token`：

@@ -7,6 +7,7 @@
 //	ws2ssh-mcp [--config 路径] pending   列出等待批准的请求
 //	ws2ssh-mcp [--config 路径] approve <id>|--all
 //	ws2ssh-mcp [--config 路径] deny <id>|--all
+//	ws2ssh-mcp connect ...               把 ws2ssh skill 装进本机 AI 编码助手
 //	ws2ssh-mcp version
 //
 // serve 模式下 stdout 是 MCP 协议通道，所有日志只走 stderr。
@@ -56,6 +57,8 @@ func main() {
 			id = args[1]
 		}
 		settle(cfgPath, sub, id, all)
+	case "connect":
+		connect(cfgPath, args[1:])
 	case "version":
 		fmt.Println(version.String())
 	default:
@@ -65,6 +68,8 @@ func main() {
   ws2ssh-mcp [--config 路径] pending    列出等待批准的请求
   ws2ssh-mcp [--config 路径] approve <id>|--all   批准
   ws2ssh-mcp [--config 路径] deny <id>|--all      拒绝
+  ws2ssh-mcp connect ...                把 ws2ssh skill 装进本机 AI 编码助手
+                                        （connect help 看细项）
   ws2ssh-mcp version                    打印版本
 `)
 		os.Exit(2)
