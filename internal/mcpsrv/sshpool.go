@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -223,6 +224,55 @@ func (p *Pool) runOnce(ctx context.Context, machine, cmd string, stdin []byte, t
 	}
 	return res, fmt.Errorf("执行出错: %w", runErr)
 }
+
+// OpenShell 在这台机器上开一个常驻 shell（SSH "shell" 通道，无 PTY）：
+// 服务器侧落到 agent 的裸 shell exec 会话，stdin 由通道持续喂。供
+// run_command 的 session 参数用。
+func (p *Pool) OpenShell(ctx context.Context, machine string) (Shell, error) {
+	c, err := p.conn(machine)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := c.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("开 SSH 会话: %w", err)
+	}
+	in, err := sess.StdinPipe()
+	if err != nil {
+		_ = sess.Close()
+		return nil, err
+	}
+	outR, err := sess.StdoutPipe()
+	if err != nil {
+		_ = sess.Close()
+		return nil, err
+	}
+	errR, err := sess.StderrPipe()
+	if err != nil {
+		_ = sess.Close()
+		return nil, err
+	}
+	// Shell() 发的是不带命令的 shell 请求：服务器落到 agent 的
+	// 裸 shell exec 会话（Cmd 空 + Pty false）。
+	if err := sess.Shell(); err != nil {
+		_ = sess.Close()
+		return nil, fmt.Errorf("起常驻 shell: %w", err)
+	}
+	return &sshShell{sess: sess, in: in, out: outR, errR: errR}, nil
+}
+
+// sshShell 把一条 SSH shell 通道包成 Shell 接口。
+type sshShell struct {
+	sess *gossh.Session
+	in   io.Writer
+	out  io.Reader
+	errR io.Reader
+}
+
+func (s *sshShell) Write(b []byte) (int, error) { return s.in.Write(b) }
+func (s *sshShell) Stdout() io.Reader           { return s.out }
+func (s *sshShell) Stderr() io.Reader           { return s.errR }
+func (s *sshShell) Close() error                { return s.sess.Close() }
 
 // Close 关掉池里所有连接。
 func (p *Pool) Close() {

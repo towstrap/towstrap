@@ -43,6 +43,8 @@ limits:
   max_timeout: 1h      # timeout_seconds 参数的上限
   max_output: 65536    # stdout/stderr 各自返回上限（字节），超了保留头尾
   max_file: 1048576    # read_file/write_file 的文件大小上限
+  session_idle: 30m    # run_command 常驻会话（session 参数）空闲多久回收
+  max_sessions: 8      # 每个 MCP 客户端最多同时保持几个常驻会话
 
 # 客户端不支持弹确认框时，待批请求写到这里，用 towstrap-mcp pending/approve/deny 处理。
 approvals_dir: ~/.config/towstrap/approvals

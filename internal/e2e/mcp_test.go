@@ -433,3 +433,46 @@ func TestMCPApprovalTimeout(t *testing.T) {
 		t.Fatal("超时的命令不该执行")
 	}
 }
+
+// TestMCPSessionStdio stdio 路径（Pool.OpenShell 走 SSH shell 通道）的
+// 常驻会话：同名 session 共享远端 shell，exit 后自动重开。
+func TestMCPSessionStdio(t *testing.T) {
+	env := startMCP(t, acceptAll)
+
+	res, out := runCmd(t, env, "export SESS_V=keep42 && cd /", map[string]any{"session": "s"})
+	if res.IsError || out.ExitCode != 0 {
+		t.Fatalf("建会话失败: %s", resultText(res))
+	}
+	res, out = runCmd(t, env, "pwd; echo V=$SESS_V", map[string]any{"session": "s"})
+	if res.IsError || !strings.Contains(out.Stdout, "V=keep42") {
+		t.Fatalf("stdio 会话状态没保留: %s %+v", resultText(res), out)
+	}
+	var raw map[string]any
+	decodeStructured(t, res, &raw)
+	if raw["session"] != "s" {
+		t.Fatalf("输出应带 session 名: %v", raw)
+	}
+	// stdin 在 session 模式被拒
+	res = callTool(t, env.client, "run_command", map[string]any{
+		"machine": "bot", "command": "cat", "session": "s", "stdin": "x",
+	})
+	if !res.IsError || !strings.Contains(resultText(res), "stdin") {
+		t.Fatalf("session+stdin 应报错: %v %s", res.IsError, resultText(res))
+	}
+	// exit 终结 → 同名命令自动新开会话
+	res, _ = runCmd(t, env, "exit", map[string]any{"session": "s"})
+	if !res.IsError {
+		t.Fatal("exit 应报会话中断")
+	}
+	res = callTool(t, env.client, "run_command", map[string]any{
+		"machine": "bot", "command": "echo V=[$SESS_V]", "session": "s",
+	})
+	var out2 struct {
+		Stdout    string `json:"stdout"`
+		Restarted bool   `json:"session_restarted"`
+	}
+	decodeStructured(t, res, &out2)
+	if res.IsError || !out2.Restarted || !strings.Contains(out2.Stdout, "V=[]") {
+		t.Fatalf("应重启且状态丢失: %s %+v", resultText(res), out2)
+	}
+}

@@ -407,7 +407,11 @@ The old token dies immediately; afterwards write the new token into that machine
 
 ## 9. MCP: for LLMs
 
-LLMs get four MCP tools on controlled machines: `list_machines` (what machines exist), `run_command` (run a command; separate stdout/stderr/exit_code), `read_file`, `write_file`. Both transports behave identically — the difference is where the MCP server runs:
+LLMs get four MCP tools on controlled machines: `list_machines` (what machines exist), `run_command` (run a command; separate stdout/stderr/exit_code), `read_file`, `write_file`.
+
+`run_command` starts a fresh shell per call by default (cd/export don't carry over); with `session` (e.g. `session: "work"`) it runs in a **persistent shell** — same-named calls share one remote shell process, so cd, environment variables, sourced environments, and background jobs persist across calls, like a local terminal. Boundaries: no `stdin`; `cwd` only applies when the session is created; a timed-out command kills the whole shell (state lost); after `exit`/`exec` ends a session, the next same-named call starts a new shell (the result carries a `session_restarted` hint); programs needing a terminal don't work. Idle sessions are reaped after `session_idle` (default 30m); each MCP client session caps at `max_sessions` (default 8).
+
+Both transports behave identically — the difference is where the MCP server runs:
 
 | | stdio (`towstrap-mcp`) | server-embedded HTTP (`/mcp`) |
 | --- | --- | --- |
@@ -438,6 +442,8 @@ limits:
   max_timeout: 1h                    # cap for the timeout_seconds parameter
   max_output: 65536                  # per-stream return cap; overruns keep head+tail
   max_file: 1048576                  # read_file/write_file size cap
+  session_idle: 30m                  # idle time before a persistent shell is reaped
+  max_sessions: 8                    # persistent shells per MCP client session
 approvals_dir: ~/.config/towstrap/approvals   # pending approvals land here (no popup support)
 ```
 
@@ -632,6 +638,7 @@ Both sides keep their own log in `<time> <event> k=v` format, rotating to `.1` a
 | `TOKEN-REFRESH` | rotation: one line per machine, with `agent:caller@IP` origin and result status |
 | `TOKEN-REFRESH-DENY` | rotation refused: reason=content-type/token/agent-allow/locked/body/password/totp |
 | `MCP-SESSION` | MCP client session: client, ip (deduped within 30s) |
+| `MCP-SESSION-CMD` | a command ran inside a persistent shell session: machine, session, cmd |
 | `MCP-AUTH-FAIL` | MCP auth failure: reason=allow-ip/token/client-allow-ip |
 | `MCP-POLICY-DENY` | policy deny/deny_paths hit: client, machine, kind, detail |
 | `MCP-ASK` / `MCP-APPROVED` / `MCP-DENIED` / `MCP-ASK-TIMEOUT` | approval flow: via=elicit/local, three outcomes |

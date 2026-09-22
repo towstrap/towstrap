@@ -419,3 +419,70 @@ func TestMCPHTTPAgentProtect(t *testing.T) {
 	}
 	waitAudit(t, audit, "agent-protect")
 }
+
+// TestMCPHTTPSession 常驻 shell 会话：同名 session 的命令共享一个远端
+// shell——cd、export 跨命令保留；exit 终结会话后同名命令自动起新 shell
+// 并标注 restarted。
+func TestMCPHTTPSession(t *testing.T) {
+	_, httpPort, users, audit, _, _ := startMCPHTTP(t)
+	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &mcp.ClientOptions{
+		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
+		},
+	}
+	cs, err := mcpHTTPConnect(t, httpPort, tok, opts)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cs.Close()
+
+	dir := t.TempDir()
+	res, out := runHTTP(t, cs, "cd "+dir+" && export TS_FOO=bar42 && pwd", map[string]any{"session": "w"})
+	if res.IsError || out.ExitCode != 0 || strings.TrimSpace(out.Stdout) != dir {
+		t.Fatalf("建会话失败: %s %+v", resultText(res), out)
+	}
+	// 下一条不带 cwd：目录和环境变量应原样保留
+	res, out = runHTTP(t, cs, "pwd; echo F=$TS_FOO", map[string]any{"session": "w"})
+	if res.IsError || !strings.Contains(out.Stdout, dir) || !strings.Contains(out.Stdout, "F=bar42") {
+		t.Fatalf("会话状态没保留: %s %+v", resultText(res), out)
+	}
+	if out.Approval == "" {
+		t.Fatal("session 命令也应过策略（approval 字段为空）")
+	}
+	// stderr 上的哨兵不妨碍 stderr 本身
+	res, out = runHTTP(t, cs, "echo oops >&2", map[string]any{"session": "w"})
+	if res.IsError || !strings.Contains(out.Stderr, "oops") {
+		t.Fatalf("stderr 应原样返回: %s %+v", resultText(res), out)
+	}
+	// exit 终结会话
+	res, _ = runHTTP(t, cs, "exit", map[string]any{"session": "w"})
+	if !res.IsError || !strings.Contains(resultText(res), "中断") {
+		t.Fatalf("exit 应报会话中断: %v %s", res.IsError, resultText(res))
+	}
+	// 同名再来 → 新 shell + restarted 标记
+	res = callTool(t, cs, "run_command", map[string]any{
+		"machine": "bot+default", "command": "pwd", "session": "w",
+	})
+	var out2 struct {
+		Session   string `json:"session"`
+		Restarted bool   `json:"session_restarted"`
+		Stdout    string `json:"stdout"`
+	}
+	decodeStructured(t, res, &out2)
+	if res.IsError || out2.Session != "w" || !out2.Restarted {
+		t.Fatalf("应重启会话并标注 restarted: %s %+v", resultText(res), out2)
+	}
+	// cwd 对已存在的会话不生效
+	res = callTool(t, cs, "run_command", map[string]any{
+		"machine": "bot+default", "command": "pwd", "session": "w", "cwd": "/",
+	})
+	if !res.IsError || !strings.Contains(resultText(res), "cwd") {
+		t.Fatalf("已有会话传 cwd 应报错: %v %s", res.IsError, resultText(res))
+	}
+	waitAudit(t, audit, "MCP-SESSION-CMD")
+	waitAudit(t, audit, "mode=mcp-shell")
+}

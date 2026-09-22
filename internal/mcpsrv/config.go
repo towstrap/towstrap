@@ -61,10 +61,12 @@ type PolicyCfg struct {
 
 // LimitsCfg 执行和文件的大小/时长上限。
 type LimitsCfg struct {
-	Timeout    time.Duration `yaml:"timeout"`     // run_command 默认超时
-	MaxTimeout time.Duration `yaml:"max_timeout"` // timeout_seconds 上限
-	MaxOutput  int           `yaml:"max_output"`  // stdout/stderr 各自上限（字节）
-	MaxFile    int           `yaml:"max_file"`    // read_file/write_file 上限（字节）
+	Timeout     time.Duration `yaml:"timeout"`      // run_command 默认超时
+	MaxTimeout  time.Duration `yaml:"max_timeout"`  // timeout_seconds 上限
+	MaxOutput   int           `yaml:"max_output"`   // stdout/stderr 各自上限（字节）
+	MaxFile     int           `yaml:"max_file"`     // read_file/write_file 上限（字节）
+	SessionIdle time.Duration `yaml:"session_idle"` // 常驻 shell 空闲多久回收，默认 30m
+	MaxSessions int           `yaml:"max_sessions"` // 每个 MCP 客户端会话最多几个常驻 shell，默认 8
 }
 
 // DefaultPath 是 towstrap-mcp 没给 --config 时读的配置路径。
@@ -133,6 +135,12 @@ func (c *Config) ApplyDefaults() {
 	if c.Limits.MaxFile == 0 {
 		c.Limits.MaxFile = 1 << 20
 	}
+	if c.Limits.SessionIdle == 0 {
+		c.Limits.SessionIdle = 30 * time.Minute
+	}
+	if c.Limits.MaxSessions == 0 {
+		c.Limits.MaxSessions = 8
+	}
 }
 
 // validateSSH 是 stdio 模式专属的校验：SSH 入口、私钥、至少一台机器
@@ -166,6 +174,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.MaxOutput < 1024 || c.Limits.MaxFile < 1 {
 		return fmt.Errorf("limits.max_output 至少 1024、max_file 至少 1")
+	}
+	if c.Limits.SessionIdle <= 0 || c.Limits.MaxSessions <= 0 {
+		return fmt.Errorf("limits.session_idle 和 max_sessions 必须大于 0")
 	}
 	if _, err := newPolicy(&c.Policy); err != nil {
 		return err

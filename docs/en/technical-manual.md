@@ -220,11 +220,13 @@ Rotate (two-phase):
 | Tool | Input | Output | Policy |
 | --- | --- | --- | --- |
 | `list_machines` | — | `machines[]`: name/description/roots/connected | none |
-| `run_command` | `machine`, `command`, `cwd?`, `stdin?`, `timeout_seconds?` | `exit_code`, `stdout`, `stderr`, `timed_out`, `*_truncated`, `duration_ms`, `approval` | deny→reject; all-segments allow→run; else approval |
+| `run_command` | `machine`, `command`, `cwd?`, `stdin?`, `timeout_seconds?`, `session?` | `exit_code`, `stdout`, `stderr`, `timed_out`, `*_truncated`, `duration_ms`, `approval`, `session`, `session_restarted` | deny→reject; all-segments allow→run; else approval |
 | `read_file` | `machine`, `path` | `content`, `bytes` | deny_paths + agent-reported off-limits list; ≤max_file; NUL bytes rejected (binary) |
 | `write_file` | `machine`, `path`, `content` | `bytes_written` | deny_paths + agent-reported off-limits list; ≤max_file; inside roots → auto-allowed, else approval |
 
 Implementation details: `run_command` with `cwd` wraps as `cd -- 'cwd' && (command)` (single-quote shellQuote); `read_file` is really `head -c max+1`; `write_file` is `cat > 'path'` on stdin; oversized output keeps head and tail halves with an elision marker (`CapWriter`); `timeout_seconds` above `max_timeout` is clamped and noted. Tool errors return `IsError` + text (not protocol errors — the LLM sees the reason).
+
+**Persistent sessions**: with `session`, `run_command` skips one-shot exec and uses a `shellSession` (`internal/mcpsrv/shell.go`) holding a long-lived non-PTY shell — the server opens an exec session with `open` + empty `cmd` and keeps stdin (stdio mode uses an SSH `Shell()` channel); commands are fed via `data` frames wrapped as `{ cmd; } ; rc=$?; echo SENTINEL$rc` which stamps a random-prefix completion marker on both stdout and stderr. Pump goroutines require a complete "marker + exit code + newline" before finishing — prefixes echoed by `set -x` or colliding with output don't count. Commands serialize inside a session; timeout kills the whole shell; `exit`/`exec`/disconnect marks it dead and the next same-named call starts a fresh shell with `session_restarted` in the result. Session creation writes a `setopt nonomatch` init line: zsh otherwise treats an unmatched glob (the `items[0]`-style text LLMs constantly emit) as a fatal error that kills the whole non-interactive shell; with it off, unmatched globs pass through literally like bash. Keyed `machine\x00session`, scoped to the MCP client session — closed when it ends; `session_idle` reaps idle shells, `max_sessions` caps the count. Runners not implementing `ShellOpener` return a clear error for `session`. Audited as `MCP-SESSION-CMD` plus agent-side `mode=mcp-shell`.
 
 ### Policy engine (`policy.go`)
 
@@ -345,6 +347,8 @@ The env var `TOWSTRAP_AGENT_TOKEN` is also recognized. Token source precedence (
 | `limits.timeout` | duration | `120s` | default run_command timeout |
 | `limits.max_timeout` | duration | `1h` | cap for timeout_seconds |
 | `limits.max_output` | int | `65536` | per-stream cap (≥1024) |
+| `limits.session_idle` | duration | `30m` | idle reap for persistent shells |
+| `limits.max_sessions` | int | `8` | persistent shells per MCP client session |
 | `limits.max_file` | int | `1048576` | read/write file cap |
 | `approvals_dir` | string | `~/.config/towstrap/approvals` | pending-approval dir |
 

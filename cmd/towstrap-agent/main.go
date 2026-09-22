@@ -137,10 +137,10 @@ func runAgent(args []string) int {
 		AgentToken:   tok,
 		TokenFile:    tokFile,
 		ProtectPaths: protect,
-		Shell:      cfg.Shell,
-		Insecure:   cfg.Insecure,
-		Quiet:      cfg.Quiet,
-		AuditLog:   cfg.AuditLog,
+		Shell:        cfg.Shell,
+		Insecure:     cfg.Insecure,
+		Quiet:        cfg.Quiet,
+		AuditLog:     cfg.AuditLog,
 	}); err != nil {
 		slog.Error("agent", "err", err)
 		return 1

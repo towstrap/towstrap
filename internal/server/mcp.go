@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -278,4 +280,104 @@ func (r *mcpRunner) Run(ctx context.Context, machine, cmd string, stdin []byte, 
 		res.Stderr += "agent: " + t
 	}
 	return res, nil
+}
+
+// OpenShell 在这台机器上开一个常驻 shell：Cmd 空 + Pty false = agent
+// 侧起一个裸 shell（exec 模式），stdin 由 data 帧持续喂。返回的
+// hubShell 把会话的 chunk 通道包成 stdout/stderr 两条 io.Reader。
+func (r *mcpRunner) OpenShell(ctx context.Context, machine string) (mcpsrv.Shell, error) {
+	a, err := r.s.Hub.Agent(machine)
+	if err != nil {
+		return nil, fmt.Errorf("这台机器没上线（agent 未连接）")
+	}
+	if !r.s.agentCredentialValid(machine, a) {
+		return nil, fmt.Errorf("这台机器的接入凭据已失效（token 已更换或账号已删/停用），等它重连")
+	}
+	sess, err := r.s.Hub.OpenShell(a, OpenReq{Pty: false, Cmd: "", From: "mcp:" + r.client + "@" + r.ip})
+	if err != nil {
+		return nil, err
+	}
+	// 等 agent 回 ok，起不来（shell 不存在之类）立刻报错而不是等超时。
+	// 失败也要发 close：ok 可能只是迟到了，不发的话远端进程变孤儿。
+	if err := waitReady(sess, 15*time.Second); err != nil {
+		_ = a.send(proto.Msg{T: proto.TypeClose, ID: sess.id})
+		a.removeSession(sess.id)
+		return nil, fmt.Errorf("起常驻 shell 失败: %v", err)
+	}
+	from := "mcp:" + r.client + "@" + r.ip
+	r.s.audit.Log("SESSION-START", "user", machine, "from", from, "id", sess.id, "mode", "mcp-shell")
+	h := &hubShell{a: a, s: sess}
+	h.outR, h.outW = io.Pipe()
+	h.errR, h.errW = io.Pipe()
+	h.onEnd = func() { r.s.audit.Log("SESSION-END", "id", sess.id) }
+	go h.pump()
+	return h, nil
+}
+
+// hubShell 把一个 hub exec 会话包成 mcpsrv.Shell：pump 把 s.ch 里的
+// chunk 按流拆进两条 io.Pipe；Write 把字节封成 data 帧喂 stdin。
+type hubShell struct {
+	a     *agentConn
+	s     *session
+	outR  *io.PipeReader
+	outW  *io.PipeWriter
+	errR  *io.PipeReader
+	errW  *io.PipeWriter
+	onEnd func()
+	once  sync.Once
+}
+
+func (h *hubShell) pump() {
+	defer func() {
+		_ = h.outW.Close()
+		_ = h.errW.Close()
+		if h.onEnd != nil {
+			h.onEnd()
+		}
+	}()
+	for {
+		select {
+		case <-h.s.closed:
+			// close 前已到达的 chunk 先写完（同 Hub.pipe 的收尾逻辑）
+			for {
+				select {
+				case c := <-h.s.ch:
+					h.writeChunk(c)
+				default:
+					return
+				}
+			}
+		case c := <-h.s.ch:
+			if !h.writeChunk(c) {
+				return
+			}
+		}
+	}
+}
+
+func (h *hubShell) writeChunk(c chunk) bool {
+	w := h.outW
+	if c.stderr {
+		w = h.errW
+	}
+	_, err := w.Write(c.b)
+	return err == nil
+}
+
+func (h *hubShell) Write(p []byte) (int, error) {
+	if err := h.a.send(proto.EncodeData(h.s.id, p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (h *hubShell) Stdout() io.Reader { return h.outR }
+func (h *hubShell) Stderr() io.Reader { return h.errR }
+
+func (h *hubShell) Close() error {
+	h.once.Do(func() {
+		_ = h.a.send(proto.Msg{T: proto.TypeClose, ID: h.s.id})
+		h.a.removeSession(h.s.id)
+	})
+	return nil
 }

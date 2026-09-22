@@ -15,7 +15,8 @@ import (
 )
 
 // Server 把一份配置变成一个 MCP server：四个工具、策略过滤、人工批准。
-// remembered 按客户端会话记「相同命令不再问」。
+// remembered 按客户端会话记「相同命令不再问」；shells 是本客户端会话
+// 开的常驻 shell（run_command 的 session 参数），客户端会话结束全回收。
 type Server struct {
 	cfg    *Config
 	pol    *Policy
@@ -24,6 +25,8 @@ type Server struct {
 	mu         sync.Mutex
 	remembered map[string]map[string]bool // sessionID -> machine\x00detail
 	watching   map[string]bool            // 已挂上会话清理的 sessionID
+	shells     map[string]*shellSession   // machine\x00名字 -> 常驻 shell
+	reapStop   chan struct{}              // 非空 = 回收器在跑
 }
 
 // New 建 Server：编译策略，runner 是命令执行后端（stdio 模式传 *Pool，
@@ -37,11 +40,13 @@ func New(cfg *Config, runner Runner) (*Server, error) {
 		cfg.ApproveCmd = "towstrap-mcp approve"
 	}
 	return &Server{cfg: cfg, pol: pol, runner: runner,
-		remembered: make(map[string]map[string]bool), watching: make(map[string]bool)}, nil
+		remembered: make(map[string]map[string]bool), watching: make(map[string]bool),
+		shells: make(map[string]*shellSession)}, nil
 }
 
-// Close 释放执行后端（实现方有关闭方法就调）。
+// Close 释放执行后端（实现方有关闭方法就调），顺手关掉所有常驻 shell。
 func (s *Server) Close() {
+	s.closeShells()
 	if c, ok := s.runner.(interface{ Close() }); ok {
 		c.Close()
 	}
@@ -61,8 +66,10 @@ func (s *Server) audit(event string, kv ...string) {
 	slog.Info("mcp", args...)
 }
 
-// watchSession 在客户端会话结束时清掉它的 remembered 名单，防止会话 ID
-// 在 map 里无限累积。每个会话只挂一次。
+// watchSession 在客户端会话结束时清掉它的 remembered 名单和常驻
+// shell——shell 挂在 mcpsrv.Server 上，服务器内嵌模式下 Server 跟着
+// MCP 会话走，会话一断这些远端进程就没主了，必须当场回收。每个会话
+// 只挂一次。
 func (s *Server) watchSession(ss *mcp.ServerSession) {
 	s.mu.Lock()
 	if s.watching[ss.ID()] {
@@ -77,7 +84,96 @@ func (s *Server) watchSession(ss *mcp.ServerSession) {
 		delete(s.remembered, ss.ID())
 		delete(s.watching, ss.ID())
 		s.mu.Unlock()
+		s.closeShells()
 	}()
+}
+
+// shellFor 取/建一个常驻 shell。created 表示这次调用新开了 shell
+// （cwd 只在此时生效）；restarted 表示同名的旧 shell 死了刚换新——
+// 之前会话里的 cd/环境变量等状态已丢，要提示给 LLM。OpenShell 可能
+// 阻塞几秒，但同一客户端会话内并发建同名 shell 必须互斥，所以在
+// s.mu 里做。
+func (s *Server) shellFor(ctx context.Context, machine, name string) (sh *shellSession, created, restarted bool, err error) {
+	opener, ok := s.runner.(ShellOpener)
+	if !ok {
+		return nil, false, false, fmt.Errorf("当前执行后端不支持常驻会话（stdio 模式需较新版本 towstrap-mcp）")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := machine + "\x00" + name
+	if old := s.shells[key]; old != nil {
+		if old.alive() {
+			return old, false, false, nil
+		}
+		old.kill()
+		delete(s.shells, key)
+		restarted = true
+	}
+	if len(s.shells) >= s.cfg.Limits.MaxSessions {
+		return nil, false, false, fmt.Errorf("常驻会话数达到上限（%d）——exit 掉不用的会话，或等它们空闲回收", s.cfg.Limits.MaxSessions)
+	}
+	raw, err := opener.OpenShell(ctx, machine)
+	if err != nil {
+		return nil, false, false, err
+	}
+	sh = newShellSession(raw, name)
+	sh.start()
+	// zsh 的 nomatch 对非交互 shell 是致命的：echo items[0] 这类写法
+	// （LLM 极常写）会 abort 整段 stdin 直接杀掉会话。关掉它——没匹配
+	// 的 glob 按字面量处理，和 bash 行为对齐。非 zsh 上 setopt 不存在，
+	// 报错丢进 /dev/null。
+	_, _ = raw.Write([]byte("setopt nonomatch 2>/dev/null\n"))
+	s.shells[key] = sh
+	s.ensureReaper()
+	return sh, true, restarted, nil
+}
+
+// ensureReaper 懒起回收器：定期杀掉空闲超时的常驻 shell。只在该
+// Server 有了第一个 shell 后才起。
+func (s *Server) ensureReaper() {
+	if s.reapStop != nil {
+		return
+	}
+	s.reapStop = make(chan struct{})
+	stop := s.reapStop // 捕获进局部变量：goroutine 不能裸读字段，否则和 closeShells 置 nil 撞车
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				s.sweepIdle()
+			}
+		}
+	}()
+}
+
+// sweepIdle 扫一轮：空闲超过 session_idle 的常驻 shell 杀掉并从表里摘掉。
+func (s *Server) sweepIdle() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, sh := range s.shells {
+		if sh.idleFor() > s.cfg.Limits.SessionIdle {
+			sh.kill()
+			delete(s.shells, k)
+		}
+	}
+}
+
+// closeShells 关掉所有常驻 shell、停掉回收器。幂等。
+func (s *Server) closeShells() {
+	s.mu.Lock()
+	if s.reapStop != nil {
+		close(s.reapStop)
+		s.reapStop = nil
+	}
+	for k, sh := range s.shells {
+		sh.kill()
+		delete(s.shells, k)
+	}
+	s.mu.Unlock()
 }
 
 // instructions 是发给 LLM 的「使用须知」，每次握手随 initialize 结果下发。
@@ -86,11 +182,12 @@ func (s *Server) watchSession(ss *mcp.ServerSession) {
 const instructions = `你通过 towstrap 在真实的远程机器上执行命令。这些机器属于用户，命令以那台机器上 agent 的系统用户身份真实执行，后果不可撤销——把每一条命令都当成在用户的电脑上敲回车。
 
 规则：
-1. 每次 run_command 都是新起的 shell：cd、环境变量、shell 变量不会保留到下一次。用 cwd 参数指定工作目录，不要依赖上一条命令的 cd。
+1. 不带 session 的 run_command 每次都是新起的 shell：cd、环境变量不会保留到下一次，用 cwd 参数指定工作目录。带 session 参数（如 session: "work"）则进一个常驻 shell：cd、export、source 激活的环境、后台任务都会保留到同名会话的下一条命令——像本地终端一样用即可。
 2. 命令先过策略再执行：deny 名单里的直接拒绝；allow 名单里的只读/低风险命令自动放行；其余需要用户批准（会弹确认框，或由用户运行 %s）。被拒绝或超时时，向用户说明你想执行什么、为什么，由用户决定；不要改写命令绕过策略。
 3. 改文件优先用 write_file（在允许目录内自动放行，用绝对路径或 ~/ 开头），读文件用 read_file；大输出会被截断（标记里有省略字节数），必要时用 head/tail/grep 缩小范围。
 4. 破坏性操作（删除、覆盖、git push --force、reset --hard、改系统配置）即便策略放行，也先向用户确认。
 5. run_command 的 exit_code 才是成败依据，不要只看 stdout。
+6. session 模式的边界：不支持 stdin；命令超时会杀掉整个 shell（会话状态丢失）；exit/exec 会终结会话，下一条同名命令自动开新 shell；交互式程序（vim、top、ssh 等要终端的）跑不了，会像本地终端一样卡住直到超时。会话空闲超时会被回收。
 机器列表和说明见 list_machines。`
 
 // MCP 建出挂了四个工具的 *mcp.Server。Instructions 在固定须知后面
@@ -136,8 +233,9 @@ type listOut struct {
 type runIn struct {
 	Machine        string `json:"machine" jsonschema:"机器名，来自 list_machines"`
 	Command        string `json:"command" jsonschema:"要在被控机上执行的 shell 命令（经 shell -c 解释，可用管道）"`
-	Cwd            string `json:"cwd,omitempty" jsonschema:"工作目录；每次都是新 shell，不设就用 agent 的默认目录"`
-	Stdin          string `json:"stdin,omitempty" jsonschema:"喂给命令标准输入的内容"`
+	Cwd            string `json:"cwd,omitempty" jsonschema:"工作目录；不带 session 时每次都是新 shell，不设就用 agent 的默认目录；带 session 时只在建会话时生效"`
+	Session        string `json:"session,omitempty" jsonschema:"常驻 shell 会话名：同名会话共享一个远端 shell，cd/export/后台任务全部保留；不带则每条命令独立"`
+	Stdin          string `json:"stdin,omitempty" jsonschema:"喂给命令标准输入的内容（session 模式不支持）"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"超时秒数，不写用配置默认，超上限会被夹到上限"`
 }
 
@@ -150,6 +248,8 @@ type runOut struct {
 	StderrTruncated bool   `json:"stderr_truncated"`
 	DurationMs      int64  `json:"duration_ms"`
 	Approval        string `json:"approval" jsonschema:"本次怎么过的批准：allowed 策略直接放行 / approved 用户本次批准 / remembered 命中记住的批准"`
+	Session         string `json:"session,omitempty" jsonschema:"本条命令用的常驻会话名（有的话）"`
+	Restarted       bool   `json:"session_restarted,omitempty" jsonschema:"同名旧 shell 死了、刚换新 shell——之前会话里的 cd/环境变量等状态已丢失"`
 }
 
 type readIn struct {
@@ -290,6 +390,10 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 		}
 	}
 
+	if in.Session != "" {
+		return s.runInSession(ctx, req, in, timeout, approval)
+	}
+
 	cmd := in.Command
 	if in.Cwd != "" {
 		cmd = fmt.Sprintf("cd -- %s && (\n%s\n)", shellQuote(in.Cwd), in.Command)
@@ -313,6 +417,68 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 		res.ExitCode, res.TimedOut, res.Duration.Milliseconds(), approval, res.Stdout, res.Stderr)
 	if clamped {
 		text += fmt.Sprintf("\n（timeout_seconds 超过上限，已夹到 %s）", s.cfg.Limits.MaxTimeout)
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
+}
+
+// runInSession 走常驻 shell 路径：取/建同名 shell，把命令写进去，靠
+// 双哨兵收结果。cwd 只在建会话时生效（之后想换目录直接在命令里 cd）。
+func (s *Server) runInSession(ctx context.Context, req *mcp.CallToolRequest, in runIn, timeout time.Duration, approval string) (*mcp.CallToolResult, runOut, error) {
+	if !sessNameRe.MatchString(in.Session) {
+		r, e := errResult("session 名不合法：只能用字母、数字、点、下划线、短横线，最长 64")
+		return r, runOut{}, e
+	}
+	if in.Stdin != "" {
+		r, e := errResult("session 模式不支持 stdin 参数（常驻 shell 的 stdin 是持续打开的，没法半关）")
+		return r, runOut{}, e
+	}
+	s.watchSession(req.Session) // 挂上会话结束清理；批准路径里已挂也没关系
+
+	sh, created, restarted, err := s.shellFor(ctx, in.Machine, in.Session)
+	if err != nil {
+		r, e := errResult("开会话失败：%v", err)
+		return r, runOut{}, e
+	}
+	cmd := in.Command
+	if in.Cwd != "" {
+		if !created {
+			r, e := errResult("会话 %q 已存在，cwd 只在建会话时生效；换目录直接在命令里 cd", in.Session)
+			return r, runOut{}, e
+		}
+		cmd = fmt.Sprintf("cd -- %s && (\n%s\n)", shellQuote(in.Cwd), in.Command)
+	}
+	s.audit("MCP-SESSION-CMD", "machine", in.Machine, "session", in.Session, "cmd", in.Command)
+
+	res, err := sh.exec(ctx, cmd, timeout, s.cfg.Limits.MaxOutput)
+	if err == errShellDead {
+		// 死掉的 shell 留在 shells 表里：下一条同名命令走到这就能
+		// 告诉 LLM「换了新 shell、状态丢了」；没人再用就由空闲回收。
+		r, e := errResult("shell 会话中断（命令里的 exit/exec、进程被杀或连接断开）——这条命令没跑完；同名 session 下一条命令会起新 shell，之前的状态已丢\n--- 中断前的输出 ---\n%s%s", res.Stdout, res.Stderr)
+		return r, runOut{}, e
+	}
+	if err != nil {
+		r, e := errResult("执行失败：%v", err)
+		return r, runOut{}, e
+	}
+	out := runOut{
+		ExitCode:        res.ExitCode,
+		Stdout:          res.Stdout,
+		Stderr:          res.Stderr,
+		TimedOut:        res.TimedOut,
+		StdoutTruncated: res.StdoutTruncated,
+		StderrTruncated: res.StderrTruncated,
+		DurationMs:      res.Duration.Milliseconds(),
+		Approval:        approval,
+		Session:         in.Session,
+		Restarted:       restarted,
+	}
+	text := fmt.Sprintf("exit_code=%d timed_out=%t duration=%dms approval=%s session=%s\n--- stdout ---\n%s\n--- stderr ---\n%s",
+		res.ExitCode, res.TimedOut, res.Duration.Milliseconds(), approval, in.Session, res.Stdout, res.Stderr)
+	if restarted {
+		text += "\n（同名旧 shell 已退出，这是新会话——之前的状态不保留）"
+	}
+	if res.TimedOut {
+		text += "\n（超时被杀的是整个会话 shell，这个 session 已结束）"
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
 }

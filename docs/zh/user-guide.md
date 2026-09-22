@@ -407,7 +407,11 @@ towstrap-server machine token alice build --regen --admin   # 打警告 + 记 MA
 
 ## 9. MCP：给 LLM 用
 
-LLM 通过 MCP 拿四个工具在被控机上干活：`list_machines`（有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。两种接入方式工具行为一致，区别只在 MCP server 跑在哪：
+LLM 通过 MCP 拿四个工具在被控机上干活：`list_machines`（有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。
+
+`run_command` 默认每条命令都是新起的 shell（cd、export 不保留）；带 `session` 参数（如 `session: "work"`）则进**常驻 shell**——同名会话共享一个远端 shell 进程，cd、环境变量、`source` 激活的环境、后台任务跨命令保留，跟本地终端一样。边界：不支持 `stdin`；`cwd` 只在建会话时生效；命令超时会杀掉整个 shell（状态丢）；`exit`/`exec` 终结会话后同名命令自动起新 shell（返回 `session_restarted` 提示）；要终端的交互程序跑不了。空闲会话按 `session_idle`（默认 30m）回收，每个 MCP 客户端最多 `max_sessions`（默认 8）个。
+
+两种接入方式工具行为一致，区别只在 MCP server 跑在哪：
 
 | | stdio（`towstrap-mcp`） | 服务器内嵌 HTTP（`/mcp`） |
 | --- | --- | --- |
@@ -438,6 +442,8 @@ limits:
   max_timeout: 1h                    # timeout_seconds 参数上限
   max_output: 65536                  # stdout/stderr 各自返回上限，超了保留头尾
   max_file: 1048576                  # read_file/write_file 文件大小上限
+  session_idle: 30m                  # 常驻 shell 空闲多久回收
+  max_sessions: 8                    # 每个 MCP 客户端会话最多几个常驻 shell
 approvals_dir: ~/.config/towstrap/approvals   # 待批请求落这（客户端不支持弹窗时）
 ```
 
@@ -632,6 +638,7 @@ curl -H "X-Agent-Token: tsa-..."       https://服务器:8080/status   # 机器 
 | `TOKEN-REFRESH` | token 换发：每台一条，含发起方 `agent:调用机器@IP` 和结果 status |
 | `TOKEN-REFRESH-DENY` | 换发被拒：reason=content-type/token/agent-allow/locked/body/password/totp |
 | `MCP-SESSION` | MCP 客户端建会话：client、ip（30 秒内去重） |
+| `MCP-SESSION-CMD` | 常驻 shell 会话里执行了一条命令：machine、session、cmd |
 | `MCP-AUTH-FAIL` | MCP 认证失败：reason=allow-ip/token/client-allow-ip |
 | `MCP-POLICY-DENY` | 命中策略 deny/deny_paths：client、machine、kind、detail |
 | `MCP-ASK` / `MCP-APPROVED` / `MCP-DENIED` / `MCP-ASK-TIMEOUT` | 批准流转：via=elicit/local，结果三态 |
