@@ -293,7 +293,7 @@ func (r *mcpRunner) OpenShell(ctx context.Context, machine string) (mcpsrv.Shell
 	if !r.s.agentCredentialValid(machine, a) {
 		return nil, fmt.Errorf("这台机器的接入凭据已失效（token 已更换或账号已删/停用），等它重连")
 	}
-	sess, err := r.s.Hub.OpenShell(a, OpenReq{Pty: false, Cmd: "", From: "mcp:" + r.client + "@" + r.ip})
+	sess, err := r.s.Hub.OpenShell(a, OpenReq{Pty: false, Cmd: "", NoExpand: true, From: "mcp:" + r.client + "@" + r.ip})
 	if err != nil {
 		return nil, err
 	}

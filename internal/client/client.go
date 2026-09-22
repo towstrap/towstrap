@@ -366,8 +366,9 @@ func writeTokenFile(path, tok string) error {
 	return os.Rename(tmp, path)
 }
 
-// execProc 无 PTY 会话的句柄：Close 先关 stdin（让子进程读到 EOF）再杀进程
-// 兜底——服务器端 close 过来时两条都要做。
+// execProc 无 PTY 会话的句柄：Close 先关 stdin（让子进程读到 EOF）再杀
+// 整个进程组兜底——只杀 shell 的话它正在跑的前台命令会成孤儿继续跑，
+// 「超时已杀」就成假话了。服务器端 close 过来时两条都要做。
 type execProc struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -377,9 +378,7 @@ func (p *execProc) Close() error {
 	if p.stdin != nil {
 		_ = p.stdin.Close()
 	}
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
+	killProc(p.cmd)
 	return nil
 }
 
@@ -477,9 +476,18 @@ func (a *agent) openExec(msg proto.Msg) {
 	var cmd *exec.Cmd
 	if msg.Cmd != "" {
 		cmd = shellCmd(a.cfg.Shell, msg.Cmd)
+	} else if msg.NoExpand && strings.Contains(filepath.Base(a.cfg.Shell), "zsh") {
+		// 常驻 shell + zsh：必须在读第一条命令前就关掉两个会改写字面量
+		// 或杀掉会话的展开——写 stdin 的初始化行来不及（zsh 读入阶段就
+		// abort），只能用启动旗标：
+		//   nomatch：echo items[0]（LLM 常写）没匹配就 abort 整个会话
+		//   banghist：echo ! 会展开成上一条命令的字面量
+		// bash/dash 的非交互模式本来就没有这些读入期行为，原样起。
+		cmd = exec.Command(a.cfg.Shell, "+o", "nomatch", "+o", "banghist")
 	} else {
 		cmd = exec.Command(a.cfg.Shell)
 	}
+	setPgid(cmd)
 	cmd.Env = childEnv()
 	cmd.Stdout = &streamWriter{a: a, id: msg.ID}
 	cmd.Stderr = &streamWriter{a: a, id: msg.ID, stream: "e"}

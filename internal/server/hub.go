@@ -144,7 +144,7 @@ func (a *agentConn) openShell(id string, req OpenReq, max int) (*session, error)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.send(proto.Msg{T: proto.TypeOpen, ID: id, Cols: req.Cols, Rows: req.Rows, Pty: req.Pty, Cmd: req.Cmd, From: req.From}); err != nil {
+	if err := a.send(proto.Msg{T: proto.TypeOpen, ID: id, Cols: req.Cols, Rows: req.Rows, Pty: req.Pty, Cmd: req.Cmd, NoExpand: req.NoExpand, From: req.From}); err != nil {
 		a.removeSession(id)
 		return nil, err
 	}
@@ -449,6 +449,7 @@ func (h *Hub) RotateToken(a *agentConn, newTok string, timeout time.Duration) er
 type OpenReq struct {
 	Cols, Rows int
 	Pty        bool
+	NoExpand   bool // 常驻 shell：agent 起 shell 前先关掉会改写字面量的展开
 	Cmd, From  string
 }
 

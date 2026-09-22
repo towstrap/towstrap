@@ -212,6 +212,16 @@ func (s *shellSession) exec(ctx context.Context, cmd string, timeout time.Durati
 		s.mu.Unlock()
 		return Result{}, errShellDead
 	}
+	// seq 封顶：哨兵是 `__TS_<tag>_<seq>_<退出码>`，seq 太长会超过
+	// markerKeep(128)，feed 会把没凑齐的哨兵尾巴当普通输出切碎，
+	// 这条命令就永远等不到结束。16 位十进制远在 markerKeep 之内。
+	// 到顶就停用整个会话（只设 dead，真杀交给调用方），不先自增。
+	if s.seq >= 1e15 {
+		s.dead = true
+		s.mu.Unlock()
+		_ = s.sh.Close()
+		return Result{ExitCode: -1}, errShellDead
+	}
 	s.seq++
 	c := &shellCall{seq: s.seq, out: NewCapWriter(maxOut), err: NewCapWriter(maxOut), done: make(chan struct{})}
 	if len(s.backlog) > 0 {
@@ -225,9 +235,13 @@ func (s *shellSession) exec(ctx context.Context, cmd string, timeout time.Durati
 	seq := s.seq
 	s.mu.Unlock()
 
-	// 先算退出码再发双份哨兵：printf 自己会改 $?，必须先用变量接住。
-	line := fmt.Sprintf("%s\n__tsec_%s=$?; printf '\\n__TS_%s_%d_%%d\\n' \"$__tsec_%s\"; printf '\\n__TS_%s_%d_%%d\\n' \"$__tsec_%s\" >&2\n",
-		cmd, tag, tag, seq, tag, tag, seq, tag)
+	// 命令和双哨兵并进同一行。cmd 在调用方已封成 `eval '字面量'`
+	// （可选 `cd -- 'cwd' && ` 前缀）：
+	//   - `|| __tsec=$?` 接住失败码，也让左边在 set -e 下免死（|| 左臂
+	//     不做 -e 检查）；先 `=0` 初始化是为了 set -u 下展开不报错；
+	//   - printf 自己会改 $?，所以退出码只能走变量，不能 inline。
+	line := fmt.Sprintf("__tsec_%s=0; %s || __tsec_%s=$?; printf '\\n__TS_%s_%d_%%d\\n' \"$__tsec_%s\"; printf '\\n__TS_%s_%d_%%d\\n' \"$__tsec_%s\" >&2\n",
+		tag, cmd, tag, tag, seq, tag, tag, seq, tag)
 	start := time.Now()
 	if _, err := s.sh.Write([]byte(line)); err != nil {
 		// 写都写不进去 = 通道死了。只标 dead 不关 shell 的话，远端

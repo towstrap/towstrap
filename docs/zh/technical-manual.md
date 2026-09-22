@@ -52,7 +52,7 @@ agent ↔ server 走一条 WebSocket（`/agent`），消息是单行 JSON 文本
 | `t` | 方向 | 字段 | 语义 |
 | --- | --- | --- | --- |
 | `hello` | agent→server | `name`(agent ID)、`ver`(自报版本)、`protect`(禁碰文件清单)、`home`、`dir` | 连接后第一条；不是 hello 就回 `err` 断开。`protect` 是 agent 自己的 token 文件和配置文件的绝对路径，`home`/`dir` 是 agent 侧家目录、工作目录——服务器拿来做 MCP 文件工具的拒名单和路径解析 |
-| `open` | server→agent | `id`、`cols`、`rows`、`pty`、`cmd`、`from` | 开会话；`cmd` 空 = 交互 shell，`pty` 决定走 PTY 还是 exec |
+| `open` | server→agent | `id`、`cols`、`rows`、`pty`、`cmd`、`from`、`nx` | 开会话；`cmd` 空 = 交互 shell，`pty` 决定走 PTY 还是 exec；`nx` 是 MCP 常驻 shell 标记（agent 给 zsh 加 `+o nomatch +o banghist`） |
 | `data` | 双向 | `id`、`d`(base64)、`s` | 数据分片；`s` 空 = stdout/PTY 流，`"e"` = stderr（仅 agent→server 用） |
 | `eof` | server→agent | `id` | 客户端关了 stdin；exec 会话传给子进程，PTY 忽略 |
 | `resize` | server→agent | `id`、`cols`、`rows` | PTY 窗口变化 |
@@ -226,7 +226,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 
 实现细节：`run_command` 带 `cwd` 时包成 `cd -- 'cwd' && (命令)`（shellQuote 单引号包裹）；`read_file` 实际是 `head -c max+1`；`write_file` 是 `cat > 'path'` + stdin；输出超限保留头尾各半加省略标记（`CapWriter`）；`timeout_seconds` 超 `max_timeout` 会被夹到上限并注明。工具错误走 `IsError` + 文字（不变成协议级错误，LLM 能看到原因）。
 
-**常驻会话**：`run_command` 带 `session` 时不走一次性 exec，而是由 `shellSession`（`internal/mcpsrv/shell.go`）持有一个长开的非 PTY shell——服务端用 `open`+空 `cmd` 起 exec 会话并保持 stdin（stdio 模式用 SSH `Shell()` 通道），命令经 `data` 帧喂进去，包一层 `{ 命令; } ; rc=$?; echo 哨兵$rc` 向 stdout/stderr 各打一个带随机前缀的完成标记，泵协程扫描出完整「标记+退出码+换行」才算收完——前缀被 `set -x` 回显或输出撞车都不算数。会话内命令串行；超时杀掉整个 shell；`exit`/`exec`/断连标记会话死亡，下一条同名命令自动重开并在结果里带 `session_restarted`。建会话时先写一行 `setopt nonomatch` 初始化：zsh 默认把没匹配的 glob（LLM 常写的 `items[0]` 这类）当致命错误杀掉整个非交互 shell，关掉后按字面量处理、与 bash 对齐。键为 `机器\x00会话名`，挂在 MCP 客户端会话下，断开即全清；`session_idle` 空闲回收、`max_sessions` 限量。Runner 不实现 `ShellOpener` 接口时 session 参数报明确错误。审计 `MCP-SESSION-CMD` + agent 侧 `mode=mcp-shell`。
+**常驻会话**：`run_command` 带 `session` 时不走一次性 exec，而是由 `shellSession`（`internal/mcpsrv/shell.go`）持有一个长开的非 PTY shell——服务端用 `open`+空 `cmd`+`nx` 旗标起 exec 会话并保持 stdin（stdio 模式用 SSH `Shell()` 通道，先经 env 请求打 `TOWSTRAP_MCP_SHELL=1` 标记让服务器认出、透传 `nx`）。写进 shell 的每条输入是一行 `__tsec=0; eval '命令字面量' || __tsec=$?; printf 哨兵`：命令整体封在单引号里给 `eval`——内嵌换行留在引号内，残缺的引号/语法最多让 eval 报语法错误，绝不会把半截输入攒在 shell 里等下一条命令凑齐执行（这是「拒绝的命令不能复活」的边界）；`||` 接住失败码并让命令在 `set -e` 下免死。哨兵带会话级随机前缀+递增序号向 stdout/stderr 各打一份，泵协程扫描出完整「标记+退出码+换行」才算收完——`set -x` 回显或输出撞车都不算数。会话内命令串行；超时/关闭杀掉**整个进程组**（shell 正在跑的前台命令和 `&` 后台任务一起清，想留守护进程用 `setsid` 显式脱离；Windows 下只杀主进程）；`exit`/`exec`/断连标记会话死亡，下一条同名命令自动重开并带 `session_restarted`。agent 侧 `nx`+zsh 时用启动旗标 `zsh +o nomatch +o banghist`（读第一条命令前就生效——写 stdin 初始化来不及）：nomatch 会把 `items[0]` 这种未命中 glob 当致命错误杀掉整个非交互 shell，banghist 会把 `!` 展开成历史命令。策略拒绝或 `cwd` 用错时一个字节都不会写进 shell。键为 `机器\x00会话名`，挂在 MCP 客户端会话下，断开即全清；`session_idle` 空闲回收、`max_sessions` 限量。Runner 不实现 `ShellOpener` 接口时 session 参数报明确错误。审计 `MCP-SESSION-CMD` + agent 侧 `mode=mcp-shell`。
 
 ### 策略引擎（`policy.go`）
 

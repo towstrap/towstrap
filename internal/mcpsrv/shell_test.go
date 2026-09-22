@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // fakeShell 用三根 io.Pipe 模拟远端 shell：测试往 stdinReader 读命令
@@ -58,17 +60,17 @@ func (f *fakeShell) Close() error {
 
 var markerLineRe = regexp.MustCompile(`__TS_([0-9a-f]+)_(\d+)_`)
 
-// readCommand 从 stdin 读到哨兵行为止（命令本身可能多行），返回
-// 命令文本和这条命令的哨兵前缀（如 "__TS_ab12_3_"）。
+// readCommand 从 stdin 读到哨兵为止，返回收到的全部命令文本（命令和
+// 哨兵在同一物理行里，所以含哨兵的行也算命令文本）和哨兵前缀。
 func (f *fakeShell) readCommand() (cmd string, marker string, err error) {
 	br := bufio.NewReader(f.in)
 	var sb strings.Builder
 	for {
 		line, err := br.ReadString('\n')
+		sb.WriteString(line)
 		if m := markerLineRe.FindString(line); m != "" {
 			return sb.String(), m, nil
 		}
-		sb.WriteString(line)
 		if err != nil {
 			return sb.String(), "", io.ErrUnexpectedEOF
 		}
@@ -222,12 +224,16 @@ func TestShellBacklog(t *testing.T) {
 // ---- Server 级：会话表管理（max_sessions、重启标记、空闲回收）----
 
 // fakeOpener 实现 Runner + ShellOpener：Run 走不通的桩，OpenShell 给
-// 一个 fakeShell。
+// 一个 fakeShell，并把写进 stdin 的每条命令（含哨兵行）推进 got——
+// 测试既能断言封装格式，也能拿哨兵前缀回包。
 type fakeOpener struct {
 	mu     sync.Mutex
 	opened int
 	shells []*fakeShell
+	got    chan shellWrite
 }
+
+type shellWrite struct{ cmd, marker string }
 
 func (f *fakeOpener) Run(context.Context, string, string, []byte, time.Duration, int) (Result, error) {
 	return Result{}, fmt.Errorf("fakeOpener 不支持 Run")
@@ -239,10 +245,78 @@ func (f *fakeOpener) OpenShell(context.Context, string) (Shell, error) {
 	sh := newFakeShell()
 	f.shells = append(f.shells, sh)
 	f.opened++
-	// 吃掉 stdin（init 行和命令都往这写）：io.Pipe 是同步的，没人读
-	// 的话 Write 会永久阻塞。
-	go func() { _, _ = io.Copy(io.Discard, sh.in) }()
+	got := f.gotch()
+	// 吃掉 stdin（命令都往这写）：io.Pipe 是同步的，没人读 Write 会
+	// 永久阻塞。攒到哨兵出现算一条完整命令，推进 got。
+	go func() {
+		br := bufio.NewReader(sh.in)
+		var sb strings.Builder
+		for {
+			line, err := br.ReadString('\n')
+			sb.WriteString(line)
+			if m := markerLineRe.FindString(line); m != "" {
+				select {
+				case got <- shellWrite{sb.String(), m}:
+				default:
+				}
+				sb.Reset()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	return sh, nil
+}
+
+// gotch 懒建 got 通道（autoRespond 可能先于 OpenShell 被调）。
+func (f *fakeOpener) gotch() chan shellWrite {
+	if f.got == nil {
+		f.got = make(chan shellWrite, 64)
+	}
+	return f.got
+}
+
+// latest 返回最近开出来的 fakeShell（responder 用）。
+func (f *fakeOpener) latest() *fakeShell {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.shells[len(f.shells)-1]
+}
+
+// writesList 是应答泵攒下的命令文本（线程安全）。
+type writesList struct {
+	mu   sync.Mutex
+	cmds []string
+}
+
+func (w *writesList) get(i int) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cmds[i]
+}
+func (w *writesList) len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.cmds)
+}
+
+// autoRespond 起一个应答泵：每收到一条写进 shell 的命令就按 exit 0 回
+// 双哨兵，把命令文本攒进返回的列表。
+func (f *fakeOpener) autoRespond() *writesList {
+	w := &writesList{}
+	f.mu.Lock()
+	got := f.gotch()
+	f.mu.Unlock()
+	go func() {
+		for sw := range got {
+			w.mu.Lock()
+			w.cmds = append(w.cmds, sw.cmd)
+			w.mu.Unlock()
+			f.latest().respond(sw.marker, "", "", 0)
+		}
+	}()
+	return w
 }
 
 func newTestServer(t *testing.T, opener Runner, maxSessions int) *Server {
@@ -333,5 +407,113 @@ func TestShellForUnsupportedRunner(t *testing.T) {
 	defer s.Close()
 	if _, _, _, err := s.shellFor(context.Background(), "m", "x"); err == nil {
 		t.Fatal("runner 不支持 OpenShell 时应报错")
+	}
+}
+
+// ---- 安全回归：拒绝的命令不能进 shell、写进去的字节必须封好 ----
+
+// TestSessionDeniedWritesNothing 策略拒绝的命令连 shell 都不该开——
+// 任何字节写进常驻 shell 都可能攒在输入里，被下一条已批准的命令凑齐执行。
+func TestSessionDeniedWritesNothing(t *testing.T) {
+	op := &fakeOpener{}
+	cfg := &Config{
+		Machines: map[string]*Machine{"m": {}},
+		Policy:   PolicyCfg{Default: "run", Deny: []string{`forbidden`}, AskTimeout: time.Second},
+		Limits:   LimitsCfg{Timeout: time.Second, MaxTimeout: time.Minute, MaxOutput: 1 << 20, MaxFile: 1024, SessionIdle: time.Minute, MaxSessions: 8},
+	}
+	s, err := New(cfg, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	res, _, err := s.runCommand(context.Background(), &mcp.CallToolRequest{}, runIn{
+		Machine: "m", Command: "echo ok && forbidden-thing", Session: "w",
+	})
+	if err != nil || res == nil || !res.IsError {
+		t.Fatalf("deny 命令应返回错误结果: res=%v err=%v", res, err)
+	}
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	if op.opened != 0 {
+		t.Fatal("被拒的命令不该开出 shell")
+	}
+}
+
+// TestSessionFraming 写进常驻 shell 的字节必须是 eval '字面量' 封装：
+// 内嵌换行留在引号里、裸 ' 被转义——一条调用对 shell 永远是一行输入，
+// 残缺的命令片段不会漏成顶层输入攒到下一次执行。
+func TestSessionFraming(t *testing.T) {
+	op := &fakeOpener{}
+	s := newTestServer(t, op, 8)
+	ctx := context.Background()
+	req := &mcp.CallToolRequest{}
+	writes := op.autoRespond()
+
+	call := func(command string) *mcp.CallToolResult {
+		t.Helper()
+		res, _, err := s.runCommand(ctx, req, runIn{Machine: "m", Command: command, Session: "w"})
+		if err != nil {
+			t.Fatalf("runCommand %q: %v", command, err)
+		}
+		return res
+	}
+
+	// 多行命令：换行必须留在 eval 的单引号里
+	res := call("echo a\necho b")
+	if res.IsError {
+		t.Fatalf("多行命令被拒: %v", res.Content)
+	}
+	w := writes.get(0)
+	if !strings.Contains(w, "eval 'echo a\necho b'") {
+		t.Fatalf("命令应整体封进 eval 单引号，实际写入: %q", w)
+	}
+	if n := strings.Count(w, "\n"); n != 2 { // 引号内 1 个 + 行尾 1 个
+		t.Fatalf("内嵌换行漏出引号（应有 2 个 \\n，有 %d）: %q", n, w)
+	}
+
+	// 未闭合的单引号：必须被转义，不能变成挂起的顶层输入
+	call("echo 'unclosed")
+	w = writes.get(1)
+	if !strings.Contains(w, `eval 'echo '\''unclosed'`) {
+		t.Fatalf("裸引号应被转义，实际写入: %q", w)
+	}
+	if n := strings.Count(w, "\n"); n != 1 {
+		t.Fatalf("应只有行尾一个 \\n，有 %d: %q", n, w)
+	}
+
+	// 已存在的会话传 cwd：报错且一个字节都不写
+	before := writes.len()
+	res = call2(t, s, ctx, req, runIn{Machine: "m", Command: "pwd", Session: "w", Cwd: "/tmp"})
+	if !res.IsError {
+		t.Fatal("已有会话传 cwd 应报错")
+	}
+	if writes.len() != before {
+		t.Fatal("cwd 报错路径不该往 shell 写字节")
+	}
+}
+
+func call2(t *testing.T, s *Server, ctx context.Context, req *mcp.CallToolRequest, in runIn) *mcp.CallToolResult {
+	t.Helper()
+	res, _, err := s.runCommand(ctx, req, in)
+	if err != nil {
+		t.Fatalf("runCommand: %v", err)
+	}
+	return res
+}
+
+// TestSessionCwdOnCreate 新会话带 cwd：写入的命令应带 cd 前缀且路径加引号。
+func TestSessionCwdOnCreate(t *testing.T) {
+	op := &fakeOpener{}
+	s := newTestServer(t, op, 8)
+	writes := op.autoRespond()
+	res := call2(t, s, context.Background(), &mcp.CallToolRequest{}, runIn{
+		Machine: "m", Command: "pwd", Session: "v", Cwd: "/tmp/we'ird",
+	})
+	if res.IsError {
+		t.Fatalf("建会话失败: %v", res.Content)
+	}
+	w := writes.get(0)
+	if !strings.Contains(w, `cd -- '/tmp/we'\''ird' && eval 'pwd'`) {
+		t.Fatalf("cwd 应加引号做前缀，实际写入: %q", w)
 	}
 }

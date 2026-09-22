@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -42,6 +43,11 @@ func startMCP(t *testing.T, handler func(context.Context, *mcp.ElicitRequest) (*
 // （验证 elicitation 的兼容路径：服务器中间件把 InputRequests 转成传统
 // elicitation/create 请求）。
 func startMCPProto(t *testing.T, handler func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error), protoVersion string) *mcpEnv {
+	return startMCPProtoShell(t, handler, protoVersion, "/bin/bash")
+}
+
+// startMCPProtoShell 同上，可指定 agent 的 shell（zsh 的 NoExpand 测试用）。
+func startMCPProtoShell(t *testing.T, handler func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error), protoVersion, shell string) *mcpEnv {
 	t.Helper()
 	dir := t.TempDir()
 	hostKeyPath := filepath.Join(dir, "host_key")
@@ -63,7 +69,7 @@ func startMCPProto(t *testing.T, handler func(context.Context, *mcp.ElicitReques
 	if err := users.AddSSHKey("bot", strings.TrimSpace(string(gossh.MarshalAuthorizedKey(signer.PublicKey())))); err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Machines[0].Token, "mcp-test-host")
+	startAgentOpt(t, httpPort, acct.Machines[0].Token, "mcp-test-host", nil, shell)
 	waitAgent(t, srv.Hub, "bot+default")
 
 	// 私钥落盘；服务器主机密钥指纹从生成的 host key 文件算，写进 host_key 钉死。
@@ -474,5 +480,25 @@ func TestMCPSessionStdio(t *testing.T) {
 	decodeStructured(t, res, &out2)
 	if res.IsError || !out2.Restarted || !strings.Contains(out2.Stdout, "V=[]") {
 		t.Fatalf("应重启且状态丢失: %s %+v", resultText(res), out2)
+	}
+}
+
+// TestMCPSessionZshStdio stdio 路径 + agent 用 zsh：env 标记经 SSH 透传
+// NoExpand，zsh 起成 +o nomatch +o banghist——items[0] 这种写法不杀会话、
+// ! 不做历史展开，都按字面量输出。
+func TestMCPSessionZshStdio(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("机器上没有 zsh")
+	}
+	env := startMCPProtoShell(t, acceptAll, "", zsh)
+
+	res, out := runCmd(t, env, "export Z=1; echo items[0] bang:!", map[string]any{"session": "z"})
+	if res.IsError || out.ExitCode != 0 || !strings.Contains(out.Stdout, "items[0] bang:!") {
+		t.Fatalf("zsh 会话应把 glob/! 按字面量输出: %s %+v", resultText(res), out)
+	}
+	res, out = runCmd(t, env, "echo alive-$Z", map[string]any{"session": "z"})
+	if res.IsError || !strings.Contains(out.Stdout, "alive-1") {
+		t.Fatalf("zsh 会话应活着且状态保留: %s %+v", resultText(res), out)
 	}
 }

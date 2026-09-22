@@ -323,7 +323,18 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		}
 	}
 
-	sh, err := s.Hub.OpenShell(agent, OpenReq{Cols: cols, Rows: rows, Pty: isPty, Cmd: cmd, From: from})
+	// towstrap-mcp 开常驻 shell 前会发 env 标记 TOWSTRAP_MCP_SHELL=1：
+	// agent 据此给 zsh 启动加 +o nomatch +o banghist（普通 SSH 会话
+	// 不带这个标记，行为不变；标记只让 shell 更「字面量」，没有放权）。
+	noExpand := false
+	for _, e := range sess.Environ() {
+		if e == "TOWSTRAP_MCP_SHELL=1" {
+			noExpand = true
+			break
+		}
+	}
+
+	sh, err := s.Hub.OpenShell(agent, OpenReq{Cols: cols, Rows: rows, Pty: isPty, Cmd: cmd, NoExpand: noExpand, From: from})
 	if err != nil {
 		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "open")
 		_, _ = sess.Write([]byte(err.Error() + "\n"))

@@ -71,6 +71,9 @@ func (s *Server) audit(event string, kv ...string) {
 // MCP 会话走，会话一断这些远端进程就没主了，必须当场回收。每个会话
 // 只挂一次。
 func (s *Server) watchSession(ss *mcp.ServerSession) {
+	if ss == nil {
+		return // 单测等无真实会话的场景
+	}
 	s.mu.Lock()
 	if s.watching[ss.ID()] {
 		s.mu.Unlock()
@@ -118,11 +121,6 @@ func (s *Server) shellFor(ctx context.Context, machine, name string) (sh *shellS
 	}
 	sh = newShellSession(raw, name)
 	sh.start()
-	// zsh 的 nomatch 对非交互 shell 是致命的：echo items[0] 这类写法
-	// （LLM 极常写）会 abort 整段 stdin 直接杀掉会话。关掉它——没匹配
-	// 的 glob 按字面量处理，和 bash 行为对齐。非 zsh 上 setopt 不存在，
-	// 报错丢进 /dev/null。
-	_, _ = raw.Write([]byte("setopt nonomatch 2>/dev/null\n"))
 	s.shells[key] = sh
 	s.ensureReaper()
 	return sh, true, restarted, nil
@@ -187,7 +185,7 @@ const instructions = `你通过 towstrap 在真实的远程机器上执行命令
 3. 改文件优先用 write_file（在允许目录内自动放行，用绝对路径或 ~/ 开头），读文件用 read_file；大输出会被截断（标记里有省略字节数），必要时用 head/tail/grep 缩小范围。
 4. 破坏性操作（删除、覆盖、git push --force、reset --hard、改系统配置）即便策略放行，也先向用户确认。
 5. run_command 的 exit_code 才是成败依据，不要只看 stdout。
-6. session 模式的边界：不支持 stdin；命令超时会杀掉整个 shell（会话状态丢失）；exit/exec 会终结会话，下一条同名命令自动开新 shell；交互式程序（vim、top、ssh 等要终端的）跑不了，会像本地终端一样卡住直到超时。会话空闲超时会被回收。
+6. session 模式的边界：不支持 stdin；命令超时或会话终结会杀掉整个进程组（shell 和它的前台命令、& 后台任务一起清）——想在会话结束后留一个常驻服务，用 setsid 起（如 setsid npm run dev >/tmp/dev.log 2>&1 &）；exit/exec 会终结会话，下一条同名命令自动开新 shell；交互式程序（vim、top、ssh 等要终端的）跑不了，会像本地终端一样卡住直到超时。会话空闲超时会被回收。
 机器列表和说明见 list_machines。`
 
 // MCP 建出挂了四个工具的 *mcp.Server。Instructions 在固定须知后面
@@ -434,18 +432,27 @@ func (s *Server) runInSession(ctx context.Context, req *mcp.CallToolRequest, in 
 	}
 	s.watchSession(req.Session) // 挂上会话结束清理；批准路径里已挂也没关系
 
+	// 命令先封进单引号字面量，再交给 shell：
+	//   - 策略是按朴素切段判的，不引号的话 `echo hi && <回车> rm -rf /`
+	//     会被当成一条 echo 放行，第二行照样在常驻 shell 里执行
+	//   - 更糟的是拒绝/超时时 shell 会把没跑完的行一直攒着，等下一条
+	//     已批准的命令把它凑齐——等于用户拒绝了也照样被执行
+	// 引号里换行被吃掉、历史展开（!）和 glob 都不生效，引号是唯一边界。
 	sh, created, restarted, err := s.shellFor(ctx, in.Machine, in.Session)
 	if err != nil {
 		r, e := errResult("开会话失败：%v", err)
 		return r, runOut{}, e
 	}
-	cmd := in.Command
+	// cwd 只在建会话时生效。放在 shellFor 之后是因为只有它才知道这次
+	// 是不是新开的；已存在的会话传 cwd 是调用方的错，到这里就返回，
+	// 一条字节都不往那个 shell 里写。
+	if in.Cwd != "" && !created {
+		r, e := errResult("会话 %q 已存在，cwd 只在建会话时生效；换目录直接在命令里 cd", in.Session)
+		return r, runOut{}, e
+	}
+	cmd := "eval " + shellQuote(in.Command)
 	if in.Cwd != "" {
-		if !created {
-			r, e := errResult("会话 %q 已存在，cwd 只在建会话时生效；换目录直接在命令里 cd", in.Session)
-			return r, runOut{}, e
-		}
-		cmd = fmt.Sprintf("cd -- %s && (\n%s\n)", shellQuote(in.Cwd), in.Command)
+		cmd = fmt.Sprintf("cd -- %s && %s", shellQuote(in.Cwd), cmd)
 	}
 	s.audit("MCP-SESSION-CMD", "machine", in.Machine, "session", in.Session, "cmd", in.Command)
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -40,6 +41,11 @@ func startMCPHTTP(t *testing.T) (srv *server.Server, httpPort int, users *accoun
 // startMCPHTTPProtect 同 startMCPHTTP，agent 的 hello 额外带 protect
 // 禁碰清单（模拟真实 agent 上报 token/配置文件路径）。
 func startMCPHTTPProtect(t *testing.T, protect []string) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
+	return startMCPHTTPShell(t, protect, "/bin/bash")
+}
+
+// startMCPHTTPShell 同上，可指定 agent 的 shell（zsh 的 NoExpand 测试用）。
+func startMCPHTTPShell(t *testing.T, protect []string, shell string) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	audit = filepath.Join(dir, "server-audit.log")
@@ -67,7 +73,7 @@ func startMCPHTTPProtect(t *testing.T, protect []string) (srv *server.Server, ht
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgentProtect(t, httpPort, acct.Machines[0].Token, "h-mcp-http", protect)
+	startAgentOpt(t, httpPort, acct.Machines[0].Token, "h-mcp-http", protect, shell)
 	waitAgent(t, srv.Hub, "bot+default")
 	return srv, httpPort, users, audit, approvalsDir, rootsDir
 }
@@ -485,4 +491,37 @@ func TestMCPHTTPSession(t *testing.T) {
 	}
 	waitAudit(t, audit, "MCP-SESSION-CMD")
 	waitAudit(t, audit, "mode=mcp-shell")
+}
+
+// TestMCPHTTPSessionZsh 内嵌 HTTP 路径 + agent 用 zsh：OpenShell 直接带
+// NoExpand，zsh 起成 +o nomatch +o banghist——glob 不杀会话、! 不展开。
+func TestMCPHTTPSessionZsh(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("机器上没有 zsh")
+	}
+	_, httpPort, users, _, _, _ := startMCPHTTPShell(t, nil, zsh)
+	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &mcp.ClientOptions{
+		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
+		},
+	}
+	cs, err := mcpHTTPConnect(t, httpPort, tok, opts)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cs.Close()
+
+	res, out := runHTTP(t, cs, "export Z=1; echo items[0] bang:!", map[string]any{"session": "z"})
+	if res.IsError || out.ExitCode != 0 || !strings.Contains(out.Stdout, "items[0] bang:!") {
+		t.Fatalf("zsh 会话应把 glob/! 按字面量输出: %s %+v", resultText(res), out)
+	}
+	res, out = runHTTP(t, cs, "echo alive-$Z", map[string]any{"session": "z"})
+	if res.IsError || !strings.Contains(out.Stdout, "alive-1") {
+		t.Fatalf("zsh 会话应活着且状态保留: %s %+v", resultText(res), out)
+	}
 }

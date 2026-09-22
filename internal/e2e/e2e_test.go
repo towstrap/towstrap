@@ -90,6 +90,11 @@ func startAgent(t *testing.T, httpPort int, token, helloName string) string {
 
 // startAgentProtect 同 startAgent，额外带 hello 要上报的禁碰文件清单。
 func startAgentProtect(t *testing.T, httpPort int, token, helloName string, protect []string) string {
+	return startAgentOpt(t, httpPort, token, helloName, protect, "/bin/bash")
+}
+
+// startAgentOpt 同上，可指定 agent 的 shell（测 zsh 的 NoExpand 路径用）。
+func startAgentOpt(t *testing.T, httpPort int, token, helloName string, protect []string, shell string) string {
 	t.Helper()
 	audit := filepath.Join(t.TempDir(), "audit.log")
 	go func() {
@@ -97,7 +102,7 @@ func startAgentProtect(t *testing.T, httpPort int, token, helloName string, prot
 			ID:           helloName,
 			Server:       fmt.Sprintf("ws://127.0.0.1:%d", httpPort),
 			AgentToken:   token,
-			Shell:        "/bin/bash",
+			Shell:        shell,
 			Quiet:        true,
 			AuditLog:     audit,
 			ProtectPaths: protect,

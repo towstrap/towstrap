@@ -409,7 +409,7 @@ towstrap-server machine token alice build --regen --admin   # 打警告 + 记 MA
 
 LLM 通过 MCP 拿四个工具在被控机上干活：`list_machines`（有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。
 
-`run_command` 默认每条命令都是新起的 shell（cd、export 不保留）；带 `session` 参数（如 `session: "work"`）则进**常驻 shell**——同名会话共享一个远端 shell 进程，cd、环境变量、`source` 激活的环境、后台任务跨命令保留，跟本地终端一样。边界：不支持 `stdin`；`cwd` 只在建会话时生效；命令超时会杀掉整个 shell（状态丢）；`exit`/`exec` 终结会话后同名命令自动起新 shell（返回 `session_restarted` 提示）；要终端的交互程序跑不了。空闲会话按 `session_idle`（默认 30m）回收，每个 MCP 客户端最多 `max_sessions`（默认 8）个。
+`run_command` 默认每条命令都是新起的 shell（cd、export 不保留）；带 `session` 参数（如 `session: "work"`）则进**常驻 shell**——同名会话共享一个远端 shell 进程，cd、环境变量、`source` 激活的环境、后台任务跨命令保留，跟本地终端一样。边界：不支持 `stdin`；`cwd` 只在建会话时生效；命令超时或会话终结会杀掉**整个进程组**——shell 正在跑的前台命令和 `&` 后台任务一起清掉（想在会话结束后留一个守护进程，用 `setsid` 起，比如 `setsid npm run dev >/tmp/dev.log 2>&1 &`；Windows 下只杀主进程）；`exit`/`exec` 终结会话后同名命令自动起新 shell（返回 `session_restarted` 提示）；要终端的交互程序跑不了。空闲会话按 `session_idle`（默认 30m）回收，每个 MCP 客户端最多 `max_sessions`（默认 8）个。
 
 两种接入方式工具行为一致，区别只在 MCP server 跑在哪：
 

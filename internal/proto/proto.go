@@ -65,11 +65,16 @@ type Msg struct {
 	D       string   `json:"d,omitempty"`
 	Cols    int      `json:"cols,omitempty"`
 	Rows    int      `json:"rows,omitempty"`
-	Cmd     string   `json:"cmd,omitempty"`  // open 时要执行的命令；空 = 交互 shell
-	Pty     bool     `json:"pty,omitempty"`  // open 时是否要 PTY（SSH 客户端申请了才 true）
-	S       string   `json:"s,omitempty"`    // data 属于哪条流：空 = stdout/PTY，"e" = stderr
-	Code    int      `json:"code,omitempty"` // close 时子进程的退出码
-	Err     string   `json:"err,omitempty"`
+	Cmd     string   `json:"cmd,omitempty"` // open 时要执行的命令；空 = 交互 shell
+	// MCP 常驻 shell 时为 true：agent 对 zsh 加 `+o nomatch +o banghist`
+	// 启动旗标，让这两个会杀掉会话/改写字面量的展开在读第一条命令前就
+	// 关掉（stdin 里写初始化行来不及——zsh 读入阶段就 abort 了）。
+	// 普通会话不带，行为不变。
+	NoExpand bool   `json:"nx,omitempty"`
+	Pty      bool   `json:"pty,omitempty"`  // open 时是否要 PTY（SSH 客户端申请了才 true）
+	S        string `json:"s,omitempty"`    // data 属于哪条流：空 = stdout/PTY，"e" = stderr
+	Code     int    `json:"code,omitempty"` // close 时子进程的退出码
+	Err      string `json:"err,omitempty"`
 }
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)

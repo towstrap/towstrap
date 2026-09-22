@@ -252,6 +252,13 @@ func (p *Pool) OpenShell(ctx context.Context, machine string) (Shell, error) {
 		_ = sess.Close()
 		return nil, err
 	}
+	// 先打个 env 标记让服务器认出这是 MCP 常驻 shell——agent 据此给
+	// zsh 关掉 nomatch/banghist（普通 SSH 登录不受影响）。env 请求
+	// 必须发在 Shell() 之前。
+	if err := sess.Setenv("TOWSTRAP_MCP_SHELL", "1"); err != nil {
+		_ = sess.Close()
+		return nil, fmt.Errorf("标记常驻 shell: %w", err)
+	}
 	// Shell() 发的是不带命令的 shell 请求：服务器落到 agent 的
 	// 裸 shell exec 会话（Cmd 空 + Pty false）。
 	if err := sess.Shell(); err != nil {
