@@ -61,8 +61,12 @@ func TestAddVerifyRemove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Token == "" || !strings.HasPrefix(a.Token, "w2s-") {
-		t.Fatalf("token = %q", a.Token)
+	if len(a.Machines) != 1 || a.Machines[0].Name != DefaultMachine {
+		t.Fatalf("新建账号应自带 default 机器: %+v", a.Machines)
+	}
+	token := a.Machines[0].Token
+	if token == "" || !strings.HasPrefix(token, "w2s-") {
+		t.Fatalf("token = %q", token)
 	}
 
 	if !s.Verify("alice", "password12") {
@@ -72,10 +76,10 @@ func TestAddVerifyRemove(t *testing.T) {
 		t.Fatal("错误密码/不存在用户应拒绝")
 	}
 
-	if name, ok := s.UsernameByToken(a.Token); !ok || name != "alice" {
-		t.Fatalf("token 应对应 alice: %q %v", name, ok)
+	if m, ok := s.MachineByToken(token); !ok || m.ID() != "alice+default" {
+		t.Fatalf("token 应对应 alice+default: %+v %v", m, ok)
 	}
-	if _, ok := s.UsernameByToken("w2s-bogus"); ok {
+	if _, ok := s.MachineByToken("w2s-bogus"); ok {
 		t.Fatal("无效 token 应拒绝")
 	}
 
@@ -85,7 +89,7 @@ func TestAddVerifyRemove(t *testing.T) {
 	if s.Verify("alice", "password12") {
 		t.Fatal("删除后应拒绝")
 	}
-	if _, ok := s.UsernameByToken(a.Token); ok {
+	if _, ok := s.MachineByToken(token); ok {
 		t.Fatal("删除后 token 应失效")
 	}
 	if err := s.Remove("alice"); err == nil {
@@ -120,10 +124,10 @@ func TestTokensUnique(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if seen[a.Token] {
-			t.Fatalf("token 重复: %s", a.Token)
+		if seen[a.Machines[0].Token] {
+			t.Fatalf("token 重复: %s", a.Machines[0].Token)
 		}
-		seen[a.Token] = true
+		seen[a.Machines[0].Token] = true
 	}
 }
 
@@ -253,7 +257,7 @@ func TestModify(t *testing.T) {
 	if s.Verify("alice", "newpass1234") {
 		t.Fatal("停用后 SSH 应拒绝")
 	}
-	if _, ok := s.UsernameByToken(a.Token); ok {
+	if _, ok := s.MachineByToken(a.Machines[0].Token); ok {
 		t.Fatal("停用后 agent 应拒绝")
 	}
 	if err := s.SetDisabled("alice", false); err != nil {
@@ -269,21 +273,21 @@ func TestModify(t *testing.T) {
 	if !s.Verify("office", "newpass1234") {
 		t.Fatal("改名后旧密码应仍有效")
 	}
-	if name, ok := s.UsernameByToken(a.Token); !ok || name != "office" {
-		t.Fatal("改名后 token 应仍有效")
+	if m, ok := s.MachineByToken(a.Machines[0].Token); !ok || m.ID() != "office+default" {
+		t.Fatal("改名后 token 应仍有效且跟到新账号名")
 	}
 
 	newTok, err := s.RegenToken("office")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newTok == a.Token {
+	if newTok == a.Machines[0].Token {
 		t.Fatal("新 token 不应与旧的相同")
 	}
-	if _, ok := s.UsernameByToken(a.Token); ok {
+	if _, ok := s.MachineByToken(a.Machines[0].Token); ok {
 		t.Fatal("旧 token 应作废")
 	}
-	if name, ok := s.UsernameByToken(newTok); !ok || name != "office" {
+	if m, ok := s.MachineByToken(newTok); !ok || m.ID() != "office+default" {
 		t.Fatal("新 token 应有效")
 	}
 }
@@ -310,15 +314,18 @@ func TestEncryptedAtRest(t *testing.T) {
 	var (
 		username string
 		hash     string
-		tEnc     []byte
 	)
-	if err := raw.QueryRow(`SELECT username, password_hash, token_enc FROM users`).Scan(&username, &hash, &tEnc); err != nil {
+	if err := raw.QueryRow(`SELECT username, password_hash FROM users`).Scan(&username, &hash); err != nil {
 		t.Fatal(err)
 	}
 	if username != "alice" {
 		t.Fatalf("用户名应明文存放, got %q", username)
 	}
-	if strings.Contains(string(tEnc), a.Token) || strings.Contains(string(tEnc), "w2s-") {
+	var tEnc []byte
+	if err := raw.QueryRow(`SELECT token_enc FROM machines`).Scan(&tEnc); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(tEnc), a.Machines[0].Token) || strings.Contains(string(tEnc), "w2s-") {
 		t.Fatal("token 在库里是明文")
 	}
 	if !strings.HasPrefix(hash, "$2") {
@@ -366,13 +373,15 @@ func TestWrongKeyRejected(t *testing.T) {
 	if !s2.Verify("alice", "password12") {
 		t.Fatal("用户名和密码不依赖密钥，登录不应受换 key 影响")
 	}
-	if _, ok := s2.UsernameByToken(a.Token); ok {
-		t.Fatal("换了密钥后不应还能按 token 认出账号")
+	if _, ok := s2.MachineByToken(a.Machines[0].Token); ok {
+		t.Fatal("换了密钥后不应还能按 token 认出机器")
 	}
-	// 解密失败的行被跳过；只要不返回带 token 的账号即可
+	// 解密失败的机器行被跳过；只要不返回带 token 的机器即可
 	for _, acc := range s2.List() {
-		if acc.Token != "" {
-			t.Fatal("换密钥后不应解出 token")
+		for _, m := range acc.Machines {
+			if m.Token != "" {
+				t.Fatal("换密钥后不应解出 token")
+			}
 		}
 	}
 }
@@ -399,7 +408,7 @@ func TestTwoProcesses(t *testing.T) {
 	if !server.Verify("alice", "password12") {
 		t.Fatal("服务器连接应立刻看到 CLI 建的号")
 	}
-	if _, ok := server.UsernameByToken(a.Token); !ok {
+	if _, ok := server.MachineByToken(a.Machines[0].Token); !ok {
 		t.Fatal("服务器连接应能按 token 查到")
 	}
 	if err := cli.Remove("alice"); err != nil {
@@ -538,15 +547,15 @@ func TestAgentAllowAndIPCheck(t *testing.T) {
 	far := &net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 5}
 
 	// 白名单内放行；首次连接 prev 为空
-	if prev, err := s.CheckAgentIP("alice", local); err != nil || prev != "" {
+	if prev, err := s.CheckAgentIP("alice", DefaultMachine, local); err != nil || prev != "" {
 		t.Fatalf("白名单内应放行: prev=%q err=%v", prev, err)
 	}
 	// 同 IP 再连：prev 是它自己
-	if prev, err := s.CheckAgentIP("alice", local); err != nil || prev != "127.0.0.1" {
+	if prev, err := s.CheckAgentIP("alice", DefaultMachine, local); err != nil || prev != "127.0.0.1" {
 		t.Fatalf("同 IP 再连 prev 应为 127.0.0.1: prev=%q err=%v", prev, err)
 	}
 	// 白名单外拒绝，且不挪动记录的 last_ip
-	if _, err := s.CheckAgentIP("alice", far); err == nil {
+	if _, err := s.CheckAgentIP("alice", DefaultMachine, far); err == nil {
 		t.Fatal("白名单外应拒绝")
 	}
 
@@ -554,11 +563,11 @@ func TestAgentAllowAndIPCheck(t *testing.T) {
 	if err := s.SetAgentAllow("alice", nil); err != nil {
 		t.Fatal(err)
 	}
-	if prev, err := s.CheckAgentIP("alice", far); err != nil || prev != "127.0.0.1" {
+	if prev, err := s.CheckAgentIP("alice", DefaultMachine, far); err != nil || prev != "127.0.0.1" {
 		t.Fatalf("不限后换 IP 应放行并返回旧值: prev=%q err=%v", prev, err)
 	}
 	// 再连一次，prev 已是新值
-	if prev, _ := s.CheckAgentIP("alice", far); prev != "8.8.8.8" {
+	if prev, _ := s.CheckAgentIP("alice", DefaultMachine, far); prev != "8.8.8.8" {
 		t.Fatalf("prev 应更新为新值: %q", prev)
 	}
 
@@ -566,8 +575,8 @@ func TestAgentAllowAndIPCheck(t *testing.T) {
 	if err := s.SetAgentAllow("alice", []string{"10.0.0.0/99"}); err == nil {
 		t.Fatal("非法白名单应报错")
 	}
-	if a, _ := s.Get("alice"); len(a.AgentAllowIPs) != 0 {
-		t.Fatalf("AgentAllowIPs 应为空: %v", a.AgentAllowIPs)
+	if m, _ := s.GetMachine("alice", DefaultMachine); len(m.AgentAllowIPs) != 0 {
+		t.Fatalf("AgentAllowIPs 应为空: %v", m.AgentAllowIPs)
 	}
 }
 

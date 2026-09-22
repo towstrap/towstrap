@@ -85,19 +85,40 @@ func (s *Server) mcpHandler() http.Handler {
 		}
 		c, _ := ti.Extra["client"].(accounts.MCPClient)
 
-		// 凭据能看的机器 = machines 里列了名字（或 "*"）且账号存在、未停用。
+		// 凭据能看的机器。machines 条目四种写法：
+		//   "*"           全部账号的全部机器
+		//   "alice"       alice 账号的全部机器
+		//   "alice+*"     同上（显式通配）
+		//   "alice+office" 指定一台
+		// 账号不存在/停用、机器不存在的条目跳过。
 		machines := map[string]*mcpsrv.Machine{}
-		for _, m := range c.Machines {
-			if m == "*" {
-				for _, b := range s.cfg.Users.ListBasic() {
+		grantAll := func(username string) {
+			if acc, ok := s.cfg.Users.Get(username); !ok || acc.Disabled {
+				return
+			}
+			for _, m := range s.cfg.Users.Machines(username) {
+				machines[m.ID()] = s.mcpMachineMeta(m.ID())
+			}
+		}
+		for _, spec := range c.Machines {
+			if spec == "*" {
+				for _, b := range s.cfg.Users.ListMachinesBasic() {
 					if !b.Disabled {
-						machines[b.Username] = s.mcpMachineMeta(b.Username)
+						machines[b.ID] = s.mcpMachineMeta(b.ID)
 					}
 				}
 				break
 			}
-			if acc, ok := s.cfg.Users.Get(m); ok && !acc.Disabled {
-				machines[m] = s.mcpMachineMeta(m)
+			u, mn := accounts.SplitMachineID(spec)
+			if mn == "" || mn == "*" {
+				grantAll(u)
+				continue
+			}
+			if acc, ok := s.cfg.Users.Get(u); !ok || acc.Disabled {
+				continue
+			}
+			if _, ok := s.cfg.Users.GetMachine(u, mn); ok {
+				machines[spec] = s.mcpMachineMeta(spec)
 			}
 		}
 
@@ -133,15 +154,17 @@ func (s *Server) mcpHandler() http.Handler {
 	})(inner)
 }
 
-// mcpMachineMeta 给 MCP 工具看的机器元数据：说明优先 mcp.machines 配置，
-// 退到账号 contact，最后占位；roots 只来自 mcp.machines 配置。
-func (s *Server) mcpMachineMeta(name string) *mcpsrv.Machine {
+// mcpMachineMeta 给 MCP 工具看的机器元数据：说明优先 mcp.machines 配置
+// （键是完整机器 ID），退到所属账号的 contact，最后占位；roots 只来自
+// mcp.machines 配置。
+func (s *Server) mcpMachineMeta(id string) *mcpsrv.Machine {
 	m := &mcpsrv.Machine{}
-	if cm, ok := s.cfg.MCP.Machines[name]; ok && cm != nil {
+	if cm, ok := s.cfg.MCP.Machines[id]; ok && cm != nil {
 		*m = *cm
 	}
 	if m.Description == "" {
-		if acc, ok := s.cfg.Users.Get(name); ok && acc.Contact != "" {
+		account, _ := accounts.SplitMachineID(id)
+		if acc, ok := s.cfg.Users.Get(account); ok && acc.Contact != "" {
 			m.Description = acc.Contact
 		} else {
 			m.Description = "（无说明）"
@@ -175,6 +198,9 @@ type mcpRunner struct {
 
 func (r *mcpRunner) Connected(machine string) bool { return r.s.Hub.Has(machine) }
 
+// Run 在指定机器上跑命令。machine 是完整机器 ID（账号+机器名）；
+// 名字本身必须在客户端授权列表里（cfg.Machines 已在 mcpsrv 侧检查过，
+// 这里再防一手不带 + 的裸账号名打进来）。
 func (r *mcpRunner) Run(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int) (mcpsrv.Result, error) {
 	res := mcpsrv.Result{ExitCode: -1}
 	if len(cmd) > proto.MaxCommandBytes {

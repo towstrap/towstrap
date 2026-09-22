@@ -18,6 +18,7 @@ import (
 	glssh "github.com/gliderlabs/ssh"
 	gossh "golang.org/x/crypto/ssh"
 
+	"ws2ssh/internal/accounts"
 	"ws2ssh/internal/allow"
 	"ws2ssh/internal/proto"
 )
@@ -54,13 +55,23 @@ func (s *Server) startSSH() error {
 	return srv.Serve(ln)
 }
 
+// splitUser 把登录名拆成「账号」和「机器名」：alice+office →
+// ("alice","office")；没带 + 就是整个账号（机器为空）。
+func splitUser(u string) (account, machine string) {
+	return accounts.SplitMachineID(u)
+}
+
 // sshAuthOK 是纯密码路径：全局白名单 → 限速器 → 账号密码 → 账号白名单。
 // 绑了 TOTP 的账号在这里直接拒绝，而且**不碰限速器**：TOTP 账号的密码校验
 // 和失败计数统一走 keyboard-interactive 通道。失败计数的清零只在整个登录
 // 流程（含验证码）全部通过后做——如果密码一对就清零，攻击者拿泄露的密码
 // 就能「每猜 4 次验证码重置一次」，把限速变成摆设。
+//
+// user 是完整登录名（可能带 +机器名）；认证和限速都按账号部分走，
+// 审计记完整登录名。
 func (s *Server) sshAuthOK(user, password string, remote net.Addr) bool {
-	if acct, ok := s.cfg.Users.Get(user); ok && acct.TOTPEnabled {
+	account, _ := splitUser(user)
+	if acct, ok := s.cfg.Users.Get(account); ok && acct.TOTPEnabled {
 		// 不看密码也要烧一次 bcrypt：直接拒比密码错快得多，快慢一比就能
 		// 筛出「存在且绑了 TOTP」的账号。
 		s.cfg.Users.BurnPassword(password)
@@ -69,7 +80,7 @@ func (s *Server) sshAuthOK(user, password string, remote net.Addr) bool {
 	if !s.verifyPassword(user, password, remote, "password") {
 		return false
 	}
-	s.guard.pass(user, hostOnly(remote.String()))
+	s.guard.pass(account, hostOnly(remote.String()))
 	s.audit.Log("AUTH-OK", "user", user, "ip", hostOnly(remote.String()), "method", "password")
 	return true
 }
@@ -79,16 +90,17 @@ func (s *Server) sshAuthOK(user, password string, remote net.Addr) bool {
 // 计数——清零只在整个登录流程（含 TOTP）全部通过后由调用方做，否则
 // 「密码对 + 验证码错」每轮都会把计数归零，限速形同虚设。结果写审计日志。
 func (s *Server) verifyPassword(user, password string, remote net.Addr, method string) bool {
+	account, _ := splitUser(user)
 	ip := hostOnly(remote.String())
 	if !s.cfg.AllowIPs.AllowsAddr(remote) {
 		return false
 	}
-	if !s.guard.allowed(user, ip) {
+	if !s.guard.allowed(account, ip) {
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "locked")
 		return false
 	}
-	pwOK := s.cfg.Users.Verify(user, password)
-	acct, ok := s.cfg.Users.Get(user)
+	pwOK := s.cfg.Users.Verify(account, password)
+	acct, ok := s.cfg.Users.Get(account)
 	reason := ""
 	switch {
 	case !pwOK:
@@ -102,7 +114,7 @@ func (s *Server) verifyPassword(user, password string, remote net.Addr, method s
 		}
 	}
 	if reason != "" {
-		s.guard.fail(user, ip)
+		s.guard.fail(account, ip)
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", reason)
 		return false
 	}
@@ -113,6 +125,7 @@ func (s *Server) verifyPassword(user, password string, remote net.Addr, method s
 // 验证码错误也计入限速器——6 位码空间小，不能留不限速的爆破面。
 func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.KeyboardInteractiveChallenge) bool {
 	user := ctx.User()
+	account, _ := splitUser(user)
 	remote := ctx.RemoteAddr()
 	ip := hostOnly(remote.String())
 
@@ -123,9 +136,9 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	if !s.verifyPassword(user, answers[0], remote, "kbd-interactive") {
 		return false
 	}
-	acct, ok := s.cfg.Users.Get(user)
+	acct, ok := s.cfg.Users.Get(account)
 	if !ok || !acct.TOTPEnabled {
-		s.guard.pass(user, ip)
+		s.guard.pass(account, ip)
 		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
 		return true // 没绑 TOTP：密码对了就行
 	}
@@ -133,12 +146,12 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	if err != nil || len(answers) == 0 {
 		return false
 	}
-	if !s.cfg.Users.VerifyTOTP(user, strings.TrimSpace(answers[0])) {
-		s.guard.fail(user, ip)
+	if !s.cfg.Users.VerifyTOTP(account, strings.TrimSpace(answers[0])) {
+		s.guard.fail(account, ip)
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", "kbd-interactive", "reason", "totp")
 		return false
 	}
-	s.guard.pass(user, ip)
+	s.guard.pass(account, ip)
 	s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive", "totp", "true")
 	return true
 }
@@ -169,10 +182,11 @@ func (s *Server) handlePublicKey(ctx glssh.Context, key glssh.PublicKey) bool {
 // sshPubKeyOK 是 handlePublicKey 去掉 gliderlabs Context 的核心，方便单测：
 // 账号存在未停用、这把钥匙登记过、账号自己的白名单放行。
 func (s *Server) sshPubKeyOK(user string, key gossh.PublicKey, remote net.Addr) bool {
-	if !s.cfg.Users.VerifySSHKey(user, key) {
+	account, _ := splitUser(user)
+	if !s.cfg.Users.VerifySSHKey(account, key) {
 		return false
 	}
-	acct, ok := s.cfg.Users.Get(user)
+	acct, ok := s.cfg.Users.Get(account)
 	if !ok {
 		return false
 	}
@@ -195,19 +209,19 @@ func auditCmd(cmd string) string {
 	return cmd
 }
 
-// agentCredentialValid 复核一个已连接 agent 的凭据：账号还在、没停用，
-// 且它接入时用的 token 现在仍然映射到这个用户名（token 被 regen 换掉、
-// 账号被删/停用都会让这里为 false）。
+// agentCredentialValid 复核一个已连接 agent 的凭据：它接入时用的 token
+// 现在仍然映射到这台机器（token 被 regen 换掉、机器被删、账号被删/停用
+// 都会让这里为 false）。
 func (s *Server) agentCredentialValid(name string, a *agentConn) bool {
-	u, ok := s.cfg.Users.UsernameByToken(a.token)
-	return ok && u == name
+	m, ok := s.cfg.Users.MachineByToken(a.token)
+	return ok && m.ID() == name
 }
 
 // revokeStaleAgents 巡检一遍已连接的 agent，把凭据失效的当场断开。
 func (s *Server) revokeStaleAgents() []string {
 	revoked := s.Hub.PruneInvalid(func(name, token string) bool {
-		u, ok := s.cfg.Users.UsernameByToken(token)
-		return ok && u == name
+		m, ok := s.cfg.Users.MachineByToken(token)
+		return ok && m.ID() == name
 	})
 	for _, id := range revoked {
 		s.audit.Log("AGENT-REVOKE", "id", id)
@@ -215,9 +229,10 @@ func (s *Server) revokeStaleAgents() []string {
 	return revoked
 }
 
-// handleSSH：SSH 用户名就是账号用户名，落到那台账号 token 关联的机器上。
-// 支持两种用法：申请 PTY 的交互终端，和无 PTY 的命令执行（ssh host '命令'、
-// ssh -T）——后者 stdout/stderr 分开、退出码原样带回，给 LLM/自动化用。
+// handleSSH：SSH 登录名是「账号+机器名」（alice+office）；不带 + 时账号
+// 恰有一台机器就落到它，多台机器报错并列出候选。之后落到 Hub 里对应
+// 的 agent 上。支持两种用法：申请 PTY 的交互终端，和无 PTY 的命令执行
+// （ssh host '命令'、ssh -T）——后者 stdout/stderr 分开、退出码原样带回。
 func (s *Server) handleSSH(sess glssh.Session) {
 	username := sess.User()
 	from := username + "@" + hostOnly(sess.RemoteAddr().String())
@@ -236,7 +251,46 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		_ = sess.Exit(1)
 		return
 	}
-	agent, err := s.Hub.Agent(username)
+
+	// 选机器：登录名带 +机器名 就指名；不带时按账号名下机器数决定。
+	account, machineName := splitUser(username)
+	machineID := username
+	if machineName == "" {
+		machines := s.cfg.Users.Machines(account)
+		switch len(machines) {
+		case 0:
+			s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "no-machine")
+			_, _ = sess.Write([]byte("这个账号还没有机器，先在服务器上跑 ws2ssh-server machine add\n"))
+			_ = sess.Exit(1)
+			return
+		case 1:
+			machineID = machines[0].ID()
+		default:
+			s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "ambiguous")
+			var b strings.Builder
+			fmt.Fprintf(&b, "这个账号有多台机器，请用 账号+机器名 登录：\n")
+			for _, m := range machines {
+				state := "离线"
+				if s.Hub.Has(m.ID()) {
+					state = "在线"
+				}
+				fmt.Fprintf(&b, "  %s（%s）\n", m.ID(), state)
+			}
+			_, _ = sess.Write([]byte(b.String()))
+			_ = sess.Exit(1)
+			return
+		}
+	} else {
+		// 指名机器不存在时也先给个明白话，不用等 Hub.Agent 的通用错误。
+		if _, ok := s.cfg.Users.GetMachine(account, machineName); !ok {
+			s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "no-machine")
+			_, _ = fmt.Fprintf(sess.Stderr(), "机器 %s 不存在（账号 %s 下的机器可以用 ws2ssh-server machine list %s 查看）\n", machineID, account, account)
+			_ = sess.Exit(1)
+			return
+		}
+	}
+
+	agent, err := s.Hub.Agent(machineID)
 	if err != nil {
 		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "offline")
 		_, _ = sess.Write([]byte("这台机器没上线（agent 未连接）\n"))
@@ -245,9 +299,9 @@ func (s *Server) handleSSH(sess glssh.Session) {
 	}
 	// 开会话前复核凭据：账号还在、没停用，且它接入时的 token 仍然有效。
 	// 撤权（regen/remove/disable）对已经连上的 agent 立刻生效，而不是只挡新连接。
-	if !s.agentCredentialValid(username, agent) {
+	if !s.agentCredentialValid(machineID, agent) {
 		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "credential")
-		_, _ = sess.Write([]byte("这台机器的接入凭据已失效（token 已更换或账号已删/停用），等它重连\n"))
+		_, _ = sess.Write([]byte("这台机器的接入凭据已失效（token 已更换或机器/账号已删/停用），等它重连\n"))
 		_ = sess.Exit(1)
 		return
 	}
@@ -269,7 +323,8 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		_ = sess.Exit(1)
 		return
 	}
-	s.audit.Log("SESSION-START", "user", username, "from", from, "id", sh.id, "mode", mode, "cmd", auditCmd(cmd))
+	s.audit.Log("SESSION-START", "user", username, "from", from, "id", sh.id, "mode", mode,
+		"machine", machineID, "cmd", auditCmd(cmd))
 	defer func() {
 		s.audit.Log("SESSION-END", "user", username, "from", from, "id", sh.id, "code", fmt.Sprintf("%d", sh.exitCode()))
 	}()
@@ -288,9 +343,9 @@ func (s *Server) handleSSH(sess glssh.Session) {
 	// 密码类登录——公钥是给自动化用的，exec 会话挂久了往 stdin 塞 TOTP
 	// 提示会毁掉脚本。
 	if s.cfg.IdleVerify > 0 && isPty && sess.Context().Value(authMethodKey{}) != "publickey" {
-		if acct, ok := s.cfg.Users.Get(username); ok && acct.TOTPEnabled {
+		if acct, ok := s.cfg.Users.Get(account); ok && acct.TOTPEnabled {
 			in = newIdleGate(sess, s.cfg.IdleVerify, func() error {
-				return s.reverifyTOTP(sess, username, s.cfg.IdleVerify)
+				return s.reverifyTOTP(sess, account, s.cfg.IdleVerify)
 			})
 		}
 	}

@@ -29,22 +29,22 @@ var (
 	ErrExists   = errors.New("账号已存在")
 )
 
-// Account 一个账号对应一台要被访问的机器：
-// 外人用 Username/Password 走 SSH 登录，那台机器上的 agent 用 Token 连服务器。
-// 数据库里 Username 明文存放（注册查重、登录查询都按它来），Token 和 TOTP
-// 秘钥是 AES-GCM 加密存的，Password 是 bcrypt（自带随机盐）。
+// Account 是一个账号（人/凭据）：外人用 Username/Password 走 SSH 登录。
+// 账号下挂若干 Machine（被控机），每台机器有独立 token（见 machines.go）；
+// SSH 用户名写「账号」默认落到唯一那台，多台时用「账号+机器名」指定。
+// 数据库里 Username 明文存放（注册查重、登录查询都按它来），机器 token
+// 和 TOTP 秘钥是 AES-GCM 加密存的，Password 是 bcrypt（自带随机盐）。
 // Contact 是运维备注（负责人邮箱/工单号），只做追溯，不参与认证。
 type Account struct {
-	Username      string    `json:"username"`
-	Password      string    `json:"-"`                         // bcrypt 哈希，只进不出
-	Token         string    `json:"token"`                     // agent 连接令牌，全局唯一
-	Contact       string    `json:"contact,omitempty"`         // 追溯用备注：负责人/联系方式
-	TOTPEnabled   bool      `json:"totp_enabled,omitempty"`    // 绑了 TOTP 验证器就要二因素登录
-	AgentAllowIPs []string  `json:"agent_allow_ips,omitempty"` // agent 连接的来源白名单；空 = 不限
-	AllowIPs      []string  `json:"allow_ips,omitempty"`       // 谁能 SSH 登录这个账号；空 = 不限
-	SSHKeys       []string  `json:"ssh_keys,omitempty"`        // SSH 公钥登录用的钥匙（authorized_keys 格式），给自动化用
-	Disabled      bool      `json:"disabled,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	Username    string    `json:"username"`
+	Password    string    `json:"-"`                      // bcrypt 哈希，只进不出
+	Contact     string    `json:"contact,omitempty"`      // 追溯用备注：负责人/联系方式
+	TOTPEnabled bool      `json:"totp_enabled,omitempty"` // 绑了 TOTP 验证器就要二因素登录
+	AllowIPs    []string  `json:"allow_ips,omitempty"`    // 谁能 SSH 登录这个账号；空 = 不限
+	SSHKeys     []string  `json:"ssh_keys,omitempty"`     // SSH 公钥登录用的钥匙（authorized_keys 格式），给自动化用
+	Disabled    bool      `json:"disabled,omitempty"`
+	Machines    []Machine `json:"machines,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Store 是账号 SQLite 库。CLI（ws2ssh user）和服务器进程各自 Open 同一个库，
@@ -60,18 +60,28 @@ CREATE TABLE IF NOT EXISTS users (
 	id              INTEGER PRIMARY KEY AUTOINCREMENT,
 	username        TEXT    NOT NULL UNIQUE,
 	password_hash   TEXT    NOT NULL,
-	token_enc       BLOB    NOT NULL UNIQUE,
 	contact         TEXT    NOT NULL DEFAULT '',
 	totp_secret_enc BLOB,
 	totp_last_step  INTEGER NOT NULL DEFAULT 0,
-	agent_allow_ips TEXT    NOT NULL DEFAULT '',
-	agent_last_ip   TEXT    NOT NULL DEFAULT '',
 	allow_ips       TEXT    NOT NULL DEFAULT '',
 	ssh_pubkeys     TEXT    NOT NULL DEFAULT '',
 	disabled        INTEGER NOT NULL DEFAULT 0,
 	created_at      TEXT    NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_users_token ON users(token_enc);
+
+-- machines 是账号下的被控机：一个账号可挂多台，每台独立 token。
+-- token_enc 同一把 key、同一个 seal 上下文 "token" 的确定性加密，可索引。
+CREATE TABLE IF NOT EXISTS machines (
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	username        TEXT    NOT NULL,
+	name            TEXT    NOT NULL,
+	token_enc       BLOB    NOT NULL UNIQUE,
+	agent_allow_ips TEXT    NOT NULL DEFAULT '',
+	agent_last_ip   TEXT    NOT NULL DEFAULT '',
+	created_at      TEXT    NOT NULL,
+	UNIQUE(username, name)
+);
+CREATE INDEX IF NOT EXISTS idx_machines_token ON machines(token_enc);
 
 -- mcp_clients 是服务器内嵌 MCP（/mcp）的客户端凭据表：名字 + token +
 -- 可见机器集合 + 来源白名单。token 和 agent token 一样确定性加密存放
@@ -122,20 +132,24 @@ func Open(dbPath, keyPath string) (*Store, error) {
 		return nil, fmt.Errorf("初始化账号库: %w", err)
 	}
 	// 老库缺新列要 ALTER 补上——schema 里的 CREATE IF NOT EXISTS 管不了已存在的表。
-	if err := ensureColumn(db, "ssh_pubkeys", `ALTER TABLE users ADD COLUMN ssh_pubkeys TEXT NOT NULL DEFAULT ''`); err != nil {
+	if err := ensureColumn(db, "users", "ssh_pubkeys", `ALTER TABLE users ADD COLUMN ssh_pubkeys TEXT NOT NULL DEFAULT ''`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("升级账号库: %w", err)
+	}
+	// 老库迁移：users 里的 token/agent 字段搬到 machines 表（每台一个 default）。
+	if err := migrateMachines(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("迁移 machines 表: %w", err)
 	}
 	tightenPerms(dbPath)
 	return &Store{db: db, key: key, dbPath: dbPath}, nil
 }
 
-// ensureColumn 检查 users 表有没有 name 这一列，没有就执行 ddl（一句
-// ALTER TABLE ... ADD COLUMN）补上。给老版本建的库做平滑升级用。
-func ensureColumn(db *sql.DB, name, ddl string) error {
-	rows, err := db.Query(`PRAGMA table_info(users)`)
+// hasColumn 检查表有没有这一列。
+func hasColumn(db *sql.DB, table, name string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -148,17 +162,73 @@ func ensureColumn(db *sql.DB, name, ddl string) error {
 			pk      int
 		)
 		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dflt, &pk); err != nil {
-			return err
+			return false, err
 		}
 		if colName == name {
-			return nil
+			return true, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
+	return false, rows.Err()
+}
+
+// ensureColumn 检查表里有没有 name 这一列，没有就执行 ddl（一句
+// ALTER TABLE ... ADD COLUMN）补上。给老版本建的库做平滑升级用。
+func ensureColumn(db *sql.DB, table, name, ddl string) error {
+	has, err := hasColumn(db, table, name)
+	if err != nil || has {
 		return err
 	}
 	_, err = db.Exec(ddl)
 	return err
+}
+
+// migrateMachines 把老库 users 表的 token_enc/agent_allow_ips/agent_last_ip
+// 搬到 machines 表：每个账号得到一台名为 default 的机器，沿用原 token
+// （同一把 key 同一个 seal 上下文，BLOB 直接搬，不用解密重加密）。
+// 幂等：users 没有 token_enc 列说明已是新库，跳过。
+func migrateMachines(db *sql.DB) error {
+	has, err := hasColumn(db, "users", "token_enc")
+	if err != nil || !has {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
+		`INSERT INTO machines (username, name, token_enc, agent_allow_ips, agent_last_ip, created_at)
+		 SELECT username, 'default', token_enc, agent_allow_ips, agent_last_ip, created_at FROM users`); err != nil {
+		return err
+	}
+	// SQLite 删列的标准做法：建新表 → 搬数据 → 删旧表 → 改名。
+	// DROP TABLE 会连带删掉旧表上的索引（idx_users_token）。
+	if _, err := tx.Exec(`CREATE TABLE users_new (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		username        TEXT    NOT NULL UNIQUE,
+		password_hash   TEXT    NOT NULL,
+		contact         TEXT    NOT NULL DEFAULT '',
+		totp_secret_enc BLOB,
+		totp_last_step  INTEGER NOT NULL DEFAULT 0,
+		allow_ips       TEXT    NOT NULL DEFAULT '',
+		ssh_pubkeys     TEXT    NOT NULL DEFAULT '',
+		disabled        INTEGER NOT NULL DEFAULT 0,
+		created_at      TEXT    NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO users_new (id, username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, created_at)
+		 SELECT id, username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, created_at FROM users`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE users`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE users_new RENAME TO users`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // tightenPerms 把账号库文件权限收到 0600：库里有 bcrypt 哈希和加密 token，
@@ -232,8 +302,9 @@ func randomToken() string {
 
 // ---- 账号操作 ----
 
-// Add 新建账号，生成全局唯一 token。contact 是可选的追溯备注，
-// agentAllowIPs 是 agent 连接的来源白名单（空 = 不限）。
+// Add 新建账号，并自动建一台名为 default 的机器（agentAllowIPs 落到它
+// 身上），返回的 Account.Machines[0] 带明文 token。contact 是可选的
+// 追溯备注。多机器用 AddMachine。
 func (s *Store) Add(username, password string, allowIPs []string, contact string, agentAllowIPs []string) (Account, error) {
 	if !proto.ValidName(username) {
 		return Account{}, fmt.Errorf("用户名 %q 不合法，只能用字母、数字、点、下划线和短横线", username)
@@ -261,10 +332,16 @@ func (s *Store) Add(username, password string, allowIPs []string, contact string
 	if err != nil {
 		return Account{}, err
 	}
-	_, err = s.db.Exec(
-		`INSERT INTO users (username, password_hash, token_enc, contact, agent_allow_ips, allow_ips, disabled, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-		username, hash, tEnc, cleanText(contact), string(agentIPs), string(ips), time.Now().UTC().Format(time.RFC3339),
+	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Account{}, err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(
+		`INSERT INTO users (username, password_hash, contact, allow_ips, disabled, created_at)
+		 VALUES (?, ?, ?, ?, 0, ?)`,
+		username, hash, cleanText(contact), string(ips), now,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -272,43 +349,49 @@ func (s *Store) Add(username, password string, allowIPs []string, contact string
 		}
 		return Account{}, err
 	}
+	if _, err := tx.Exec(
+		`INSERT INTO machines (username, name, token_enc, agent_allow_ips, agent_last_ip, created_at)
+		 VALUES (?, ?, ?, ?, '', ?)`,
+		username, DefaultMachine, tEnc, string(agentIPs), now); err != nil {
+		return Account{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Account{}, err
+	}
 	return Account{
-		Username:      username,
-		Token:         tok,
-		Contact:       contact,
-		AgentAllowIPs: append([]string{}, agentAllowIPs...),
-		AllowIPs:      append([]string{}, allowIPs...),
-		CreatedAt:     time.Now(),
+		Username: username,
+		Contact:  contact,
+		AllowIPs: append([]string{}, allowIPs...),
+		Machines: []Machine{{
+			Username:      username,
+			Name:          DefaultMachine,
+			Token:         tok,
+			AgentAllowIPs: append([]string{}, agentAllowIPs...),
+			CreatedAt:     time.Now(),
+		}},
+		CreatedAt: time.Now(),
 	}, nil
 }
 
-// newUniqueToken 生成不与现有账号重复的 token。
-func (s *Store) newUniqueToken() (string, error) {
-	for i := 0; i < 10; i++ {
-		tok := randomToken()
-		enc, err := s.encToken(tok)
-		if err != nil {
-			return "", err
-		}
-		var one int
-		err = s.db.QueryRow(`SELECT 1 FROM users WHERE token_enc = ?`, enc).Scan(&one)
-		if errors.Is(err, sql.ErrNoRows) {
-			return tok, nil
-		}
-		if err != nil {
-			return "", err
-		}
-	}
-	return "", errors.New("生成唯一 token 失败")
-}
-
-// Remove 删除账号；那台机器的 agent 会因 token 失效而连不上。
+// Remove 删除账号，连带删掉它名下全部机器；那些机器的 agent 会因 token
+// 失效被巡检断开。
 func (s *Store) Remove(username string) error {
-	res, err := s.db.Exec(`DELETE FROM users WHERE username = ?`, username)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	return requireAffected(res, username)
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM machines WHERE username = ?`, username); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, username)
+	if err != nil {
+		return err
+	}
+	if err := requireAffected(res, username); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetPassword 改 SSH 密码（重新 bcrypt，带新的随机盐）。
@@ -359,54 +442,27 @@ func (s *Store) SetContact(username, contact string) error {
 	return requireAffected(res, username)
 }
 
-// SetAgentAllow 设置 agent 连接的来源白名单；传空表示不限。这和 SSH 登录的
-// allow_ips 是两回事：SSH 的来源是登录的人，agent 的来源是被控机器的出口，
-// 混在一起会把 NAT 后面的正常机群挡在外面。
+// SetAgentAllow 兼容包装：只作用于账号恰有一台机器的情况（CLI 老用法）；
+// 多台机器请用 SetMachineAgentAllow 指定哪台。
 func (s *Store) SetAgentAllow(username string, ips []string) error {
-	if err := validateAllowIPs(ips); err != nil {
-		return fmt.Errorf("agent 来源白名单: %w", err)
-	}
-	blob, _ := json.Marshal(ips)
-	res, err := s.db.Exec(`UPDATE users SET agent_allow_ips = ? WHERE username = ?`, string(blob), username)
+	m, err := s.soleMachine(username)
 	if err != nil {
 		return err
 	}
-	return requireAffected(res, username)
+	return s.SetMachineAgentAllow(username, m.Name, ips)
 }
 
-// CheckAgentIP 在 agent 连接时校验来源：
-//   - 账号设了 agent 来源白名单 → 来源不在名单里就拒绝（硬校验）；
-//   - 没设白名单 → 放行。
-//
-// 无论哪种，都把这次的来源 IP 记成 agent_last_ip（拒绝的不记——攻击者不能
-// 靠反复试探挪动基线），并返回上次的来源 IP：调用方用它识别「换了地方连」
-// （合法机器也会换网络，所以变更只审计告警，不拦）。
-func (s *Store) CheckAgentIP(username string, remote net.Addr) (prev string, err error) {
-	var allowBlob, prevIP string
-	err = s.db.QueryRow(
-		`SELECT agent_allow_ips, agent_last_ip FROM users WHERE username = ?`, username).
-		Scan(&allowBlob, &prevIP)
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", ErrNotFound, username)
+// soleMachine 取账号唯一的机器；0 台或不止一台都报错（调用方文案自行翻译）。
+func (s *Store) soleMachine(username string) (Machine, error) {
+	ms := s.Machines(username)
+	switch len(ms) {
+	case 0:
+		return Machine{}, fmt.Errorf("%w: %s 没有机器", ErrNotFound, username)
+	case 1:
+		return ms[0], nil
+	default:
+		return Machine{}, fmt.Errorf("账号 %s 有多台机器，请用 machine 子命令指定（如 %s+%s）", username, username, ms[0].Name)
 	}
-	var items []string
-	_ = json.Unmarshal([]byte(allowBlob), &items)
-	if len(items) > 0 {
-		list, perr := allow.Parse(items)
-		if perr != nil {
-			return "", fmt.Errorf("账号 %s 的 agent 来源白名单配置无效: %w", username, perr)
-		}
-		if !list.AllowsAddr(remote) {
-			return prevIP, fmt.Errorf("来源 %s 不在账号 %s 的 agent 来源白名单里", addrHost(remote), username)
-		}
-	}
-	ip := addrHost(remote)
-	if ip != prevIP {
-		if _, uerr := s.db.Exec(`UPDATE users SET agent_last_ip = ? WHERE username = ?`, ip, username); uerr != nil {
-			return prevIP, uerr
-		}
-	}
-	return prevIP, nil
 }
 
 // addrHost 取地址里的主机部分（去端口）；取不出就原样返回。
@@ -485,7 +541,8 @@ func (s *Store) VerifyTOTP(username, code string) bool {
 	return n == 1
 }
 
-// Rename 改用户名；agent 不用动（它靠 token 认，不靠名字）。
+// Rename 改用户名；agent 不用动（它靠 token 认，不靠名字）。账号下的
+// machines.username 同事务联动。
 func (s *Store) Rename(oldName, newName string) error {
 	if !proto.ValidName(newName) {
 		return fmt.Errorf("用户名 %q 不合法，只能用字母、数字、点、下划线和短横线", newName)
@@ -494,7 +551,12 @@ func (s *Store) Rename(oldName, newName string) error {
 	if err := s.db.QueryRow(`SELECT 1 FROM users WHERE username = ?`, newName).Scan(&one); err == nil {
 		return fmt.Errorf("%w: %s", ErrExists, newName)
 	}
-	res, err := s.db.Exec(`UPDATE users SET username = ? WHERE username = ?`, newName, oldName)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE users SET username = ? WHERE username = ?`, newName, oldName)
 	if err != nil {
 		// 并发下可能恰好有人抢注了新名，UNIQUE 报错也归为重名。
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -502,38 +564,35 @@ func (s *Store) Rename(oldName, newName string) error {
 		}
 		return err
 	}
-	return requireAffected(res, oldName)
+	if err := requireAffected(res, oldName); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE machines SET username = ? WHERE username = ?`, newName, oldName); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// RegenToken 换一个新 token；旧 token 立刻作废，那台机器要改用新 token 重连。
+// RegenToken 兼容包装：换账号唯一那台机器的 token；多台机器请用
+// RegenMachineToken 指定哪台。
 func (s *Store) RegenToken(username string) (string, error) {
-	tok, err := s.newUniqueToken()
+	m, err := s.soleMachine(username)
 	if err != nil {
 		return "", err
 	}
-	tEnc, err := s.encToken(tok)
-	if err != nil {
-		return "", err
-	}
-	res, err := s.db.Exec(`UPDATE users SET token_enc = ? WHERE username = ?`, tEnc, username)
-	if err != nil {
-		return "", err
-	}
-	if err := requireAffected(res, username); err != nil {
-		return "", err
-	}
-	return tok, nil
+	return s.RegenMachineToken(username, m.Name)
 }
 
-// Get 返回账号副本。
+// Get 返回账号副本（含机器列表）。
 func (s *Store) Get(username string) (Account, bool) {
 	row := s.db.QueryRow(
-		`SELECT username, password_hash, token_enc, contact, totp_secret_enc, totp_last_step, agent_allow_ips, allow_ips, ssh_pubkeys, disabled, created_at
+		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, created_at
 		 FROM users WHERE username = ?`, username)
 	a, err := scanAccount(row, s)
 	if err != nil {
 		return Account{}, false
 	}
+	a.Machines = s.Machines(username)
 	return a, true
 }
 
@@ -564,10 +623,10 @@ func (s *Store) ListBasic() []Brief {
 	return out
 }
 
-// List 返回全部账号，按用户名排序。
+// List 返回全部账号（含机器列表），按用户名排序。
 func (s *Store) List() []Account {
 	rows, err := s.db.Query(
-		`SELECT username, password_hash, token_enc, contact, totp_secret_enc, totp_last_step, agent_allow_ips, allow_ips, ssh_pubkeys, disabled, created_at FROM users`)
+		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, created_at FROM users`)
 	if err != nil {
 		return nil
 	}
@@ -580,6 +639,10 @@ func (s *Store) List() []Account {
 		}
 		out = append(out, a)
 	}
+	byUser := s.machinesByUser()
+	for i := range out {
+		out[i].Machines = byUser[out[i].Username]
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
 	return out
 }
@@ -590,41 +653,31 @@ func scanAccount(r rowScanner, s *Store) (Account, error) {
 	var (
 		username    string
 		hash        string
-		tEnc        []byte
 		contact     string
 		totpEnc     []byte // NULL = 未绑定
 		totpLastStp int64
-		agentBlob   string
 		ipsBlob     string
 		keysBlob    string
 		disabled    int
 		createdAt   string
 	)
-	if err := r.Scan(&username, &hash, &tEnc, &contact, &totpEnc, &totpLastStp, &agentBlob, &ipsBlob, &keysBlob, &disabled, &createdAt); err != nil {
-		return Account{}, err
-	}
-	token, err := s.decToken(tEnc)
-	if err != nil {
+	if err := r.Scan(&username, &hash, &contact, &totpEnc, &totpLastStp, &ipsBlob, &keysBlob, &disabled, &createdAt); err != nil {
 		return Account{}, err
 	}
 	var ips []string
 	_ = json.Unmarshal([]byte(ipsBlob), &ips)
-	var agentIPs []string
-	_ = json.Unmarshal([]byte(agentBlob), &agentIPs)
 	var sshKeys []string
 	_ = json.Unmarshal([]byte(keysBlob), &sshKeys)
 	created, _ := time.Parse(time.RFC3339, createdAt)
 	return Account{
-		Username:      username,
-		Password:      hash,
-		Token:         token,
-		Contact:       contact,
-		TOTPEnabled:   len(totpEnc) > 0,
-		AgentAllowIPs: agentIPs,
-		AllowIPs:      ips,
-		SSHKeys:       sshKeys,
-		Disabled:      disabled != 0,
-		CreatedAt:     created,
+		Username:    username,
+		Password:    hash,
+		Contact:     contact,
+		TOTPEnabled: len(totpEnc) > 0,
+		AllowIPs:    ips,
+		SSHKeys:     sshKeys,
+		Disabled:    disabled != 0,
+		CreatedAt:   created,
 	}, nil
 }
 
@@ -753,23 +806,6 @@ func (s *Store) VerifySSHKey(username string, key gossh.PublicKey) bool {
 		}
 	}
 	return false
-}
-
-// UsernameByToken 用 agent token 查账号；token 无效或账号停用时 ok 为 false。
-func (s *Store) UsernameByToken(token string) (string, bool) {
-	enc, err := s.encToken(token)
-	if err != nil {
-		return "", false
-	}
-	var (
-		username string
-		disabled int
-	)
-	err = s.db.QueryRow(`SELECT username, disabled FROM users WHERE token_enc = ?`, enc).Scan(&username, &disabled)
-	if err != nil || disabled != 0 {
-		return "", false
-	}
-	return username, true
 }
 
 func requireAffected(res sql.Result, username string) error {

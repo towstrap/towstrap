@@ -35,7 +35,7 @@ func TestCapacityBench(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tokens = append(tokens, acct.Token)
+		tokens = append(tokens, acct.Machines[0].Token)
 	}
 	t.Logf("建 %d 个账号耗时见上（bcrypt 主导）", n)
 

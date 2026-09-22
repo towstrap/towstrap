@@ -56,7 +56,8 @@ func (s *session) errText() string {
 	return s.errMsg
 }
 
-// agentConn 是一台已上线的机器。名字就是账号用户名（由 token 决定）。
+// agentConn 是一台已上线的机器。名字是机器完整 ID（账号+机器名，
+// 如 alice+office），由 token 决定。
 // token 记住接入时用的那个：开会话前和巡检时都要复核它是否仍然有效，
 // 这样 user token --regen / user remove / --disable 对已连接的 agent 也能
 // 立刻生效（不然撤权只挡新连接，攻击者已经连上的那条一直有效）。
@@ -237,7 +238,8 @@ func NewHub(maxSessions int) *Hub {
 	return &Hub{agents: make(map[string]*agentConn), maxSessions: maxSessions}
 }
 
-// Attach 注册一台机器。同名（= 同账号）再连会顶掉旧连接。
+// Attach 注册一台机器。同名（= 同账号同机器名）再连会顶掉旧连接；
+// 同账号的不同机器名互不干扰。
 func (h *Hub) Attach(name, token string, conn *websocket.Conn) *agentConn {
 	h.mu.Lock()
 	if old, ok := h.agents[name]; ok {
@@ -312,7 +314,22 @@ func (h *Hub) Names() []string {
 	return names
 }
 
-// Agent 按账号用户名取在线机器。
+// MachinesOf 返回某账号名下当前在线的机器 ID（排序）。
+func (h *Hub) MachinesOf(username string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	prefix := username + "+"
+	var out []string
+	for name := range h.agents {
+		if len(name) > len(prefix) && name[:len(prefix)] == prefix {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Agent 按机器 ID（账号+机器名）取在线机器。
 func (h *Hub) Agent(name string) (*agentConn, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -14,7 +14,7 @@
    机器（本机 shell）
 ```
 
-一个账号 = 一台机器 = 一套凭据：外人用的 **SSH 用户名/密码**，和那台机器 agent 用的 **token**（全局唯一，建号时自动生成）。
+账号（人）和机器（agent）是分开的两层：**一个账号可以挂多台机器**，每台机器有自己独立的 **agent token**（`w2s-...`，建号时自动生成第一台）。外人用账号的 **SSH 用户名/密码**登录，登录名写 `账号+机器名` 指定落到哪台（如 `alice+office`）；账号只有一台机器时写账号名就行。
 
 ## 快速开始
 
@@ -28,9 +28,10 @@ make build   # 或：go build -o bin/ws2ssh-server ./cmd/ws2ssh-server && go bui
 ./ws2ssh-server user add office --password 自己设的密码 --allow-ip 1.2.3.4
 ```
 
-输出唯一的 agent token，以及在那台机器上执行的安装命令：
+建号会自动带出一台名为 `default` 的机器，输出它的 agent token 和安装命令：
 
 ```
+默认机器: office+default
 agent token: w2s-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 在那台机器上执行 agent 安装命令：
   ws2ssh-agent --server wss://<服务器地址> --agent-token w2s-xxxx...
@@ -52,7 +53,13 @@ ws2ssh-agent --server wss://你的服务器:443 --agent-token w2s-xxxx...
 ssh office@你的服务器IP -p 2222
 ```
 
-机器没上线会提示 agent 未连接。同名（同账号）的 agent 再连会顶掉旧连接。
+机器没上线会提示 agent 未连接。**同一个账号下可以再挂机器**（每台机器独立 token）：
+
+```bash
+./ws2ssh-server machine add office build   # 再拿一个 w2s-... token，装到第二台机器上
+```
+
+一个账号有多台机器后，`ssh office@...` 会报错并列出机器名单和在线状态，要指名：`ssh office+default@...` 或 `ssh office+build@...`。同一台机器（同名）的 agent 再连会顶掉旧连接，不同机器名互不干扰。
 
 **服务器本身**（配置文件是主入口，旗标只做临时覆盖）：
 
@@ -75,11 +82,16 @@ agent 同理支持 `--config agent.yaml`（见 `examples/agent.yaml`，包括从
 
 | 命令 | 作用 |
 | --- | --- |
-| `ws2ssh-server user add 名字 [--password 密码] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件]` | 建号，生成唯一 token 和安装命令 |
-| `ws2ssh-server user list` | 列出账号、白名单、token、TOTP 状态、公钥数、联系方式 |
-| `ws2ssh-server user set 名字 [--password 密码] [--name 新名] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件] [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys] [--clear-allow] [--disable\|--enable]` | 改密码 / 改名 / 改备注 / 改白名单 / 增删公钥 / 停启用 |
-| `ws2ssh-server user remove 名字` | 删号，token 立刻作废 |
-| `ws2ssh-server user token 名字 [--regen]` | 查看或更换 token |
+| `ws2ssh-server user add 名字 [--password 密码] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件]` | 建号，自动带一台 `default` 机器并打印它的 token 和安装命令 |
+| `ws2ssh-server user list` | 列出账号、名下机器、白名单、TOTP 状态、公钥数、联系方式 |
+| `ws2ssh-server user set 名字 [--password 密码] [--name 新名] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件] [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys] [--clear-allow] [--disable\|--enable]` | 改密码 / 改名 / 改备注 / 改白名单 / 增删公钥 / 停启用（`--agent-allow-ip` 只作用于唯一那台机器，多台时用 `machine set`） |
+| `ws2ssh-server user remove 名字` | 删号，名下机器的 token 全部作废 |
+| `ws2ssh-server user token 名字 [--regen]` | 查看或更换 token（仅当账号只有一台机器；多台时用 `machine token`） |
+| `ws2ssh-server machine add 账号 机器名 [--agent-allow-ip 地址]...` | 在账号下加一台机器，打印它的独立 token 和安装命令 |
+| `ws2ssh-server machine list [账号]` | 列机器（账号、机器名、登录名、agent 白名单、token） |
+| `ws2ssh-server machine set 账号 机器名 [--agent-allow-ip 地址]... [--clear-agent-allow]` | 改这一台机器的 agent 来源白名单 |
+| `ws2ssh-server machine remove 账号 机器名` | 删一台机器，token 立刻作废 |
+| `ws2ssh-server machine token 账号 机器名 [--regen]` | 查看或更换这一台机器的 token |
 | `ws2ssh-server user totp 名字 [--remove]` | 绑定 / 解绑 TOTP 二因素 |
 
 不写 `--password` 会生成 16 位强随机密码，**只显示一次**（库里只有 bcrypt 哈希，丢了只能重设）。密码至少 10 位。改名后 agent 不用动（它靠 token 认，不靠名字）。服务器每次校验都直连账号库，改完立即生效，不用重启。
@@ -88,8 +100,9 @@ agent 同理支持 `--config agent.yaml`（见 `examples/agent.yaml`，包括从
 
 - **密码**：bcrypt 哈希存储——bcrypt 每次哈希自带 128 位随机盐（哈希串里的 `$2a$10$<盐>` 那段），改密码换新盐，库里永远没有明文，也无法还原。
 - **用户名**：明文存放，建了 UNIQUE 索引——注册时重名直接报「账号已存在」，SSH 登录也按它查询。
-- **token**：AES-256-GCM 加密存储（确定性加密，同一明文同一密文，才能按密文建唯一索引和查询）。密钥在单独的 `users.key` 文件里（权限 0600，首次自动生成）。
+- **token**：每台机器一个，存在 `machines` 表里，AES-256-GCM 加密存储（确定性加密，同一明文同一密文，才能按密文建唯一索引和查询）。密钥在单独的 `users.key` 文件里（权限 0600，首次自动生成）。
 - **备份**：`users.db` 和 `users.key` 要一起备份；key 丢了 token 解不开，agent 全部失联，只能挨个换 token。
+- **老库自动迁移**：从旧版本（一个账号一个 token）升级时，`Open` 会把每个账号原有的 token、agent 白名单和最近来源 IP 搬到一台名为 `default` 的机器上——升级后原账号变成 `账号+default`，老 token 不变，agent 不用动。
 
 ## 白名单
 
@@ -112,9 +125,10 @@ ws2ssh-server user set office --clear-allow                               # 清�
 `--allow-ip` 管的是「谁能 SSH 登录」，`--agent-allow-ip` 管的是「被控机器从哪连出来」——两个独立配置，别混：
 
 ```bash
-ws2ssh-server user add office --agent-allow-ip 203.0.113.0/24 ...   # 机器出口在办公网段
-ws2ssh-server user set office --agent-allow-ip 10.0.0.5             # 机器搬去了机房
-ws2ssh-server user set office --clear-agent-allow                   # 清空 = 不限来源
+ws2ssh-server user add office --agent-allow-ip 203.0.113.0/24 ...   # 落到 default 机器上
+ws2ssh-server user set office --agent-allow-ip 10.0.0.5             # 单机时照旧；多台报错
+ws2ssh-server machine set office build --agent-allow-ip 10.0.0.5    # 多台时按台设置
+ws2ssh-server machine set office build --clear-agent-allow          # 清空 = 不限来源
 ```
 
 - 设了 `agent_allow_ips` 就**硬校验**：连接来源不在名单里直接 403，记 `AGENT-DENY`。机器出口 IP 稳定（公司专线、云上固定出口）时建议设上——token 被偷也用不了。
@@ -244,10 +258,11 @@ mcp:
 然后在服务器上给每个客户端签发 token：
 
 ```bash
-ws2ssh-server mcp add laptop --machine bot          # 只显示一次 w2m-... token
-ws2ssh-server mcp add all-machines --machine '*'    # '*' = 全部机器
-ws2ssh-server mcp list / set / remove / token       # 查看、改、删、换 token
-ws2ssh-server mcp set laptop --disable              # 临时停用
+ws2ssh-server mcp add laptop --machine bot            # bot 账号名下的全部机器
+ws2ssh-server mcp add builder --machine alice+build   # 只给 alice+build 这一台
+ws2ssh-server mcp add all-machines --machine '*'      # '*' = 全部机器（'alice+*' = alice 名下全部）
+ws2ssh-server mcp list / set / remove / token         # 查看、改、删、换 token
+ws2ssh-server mcp set laptop --disable                # 临时停用
 ```
 
 客户端（Claude Code 等）只填 URL 和 token：
@@ -274,10 +289,10 @@ ws2ssh-server mcp set laptop --disable              # 临时停用
 
 ```bash
 curl -H "X-Agent-Token: w2s-xxxx" https://服务器:443/status
-# {"ok":true,"http":":8080","ssh":":2222","users":[{"user":"office","online":true}]}
+# {"ok":true,"http":":8080","ssh":":2222","users":[{"user":"office","machine":"office+default","online":true}]}
 ```
 
-`/health` 不需要口令，只表示进程活着。`/status` 按凭据分级：管理口令看全量，账号 token 只看得到自己那一条（普通用户没法枚举整个机群）。
+`/health` 不需要口令，只表示进程活着。`/status` 按凭据分级：管理口令看全量（每台机器一行，`machine` 是完整登录名），机器 token 只看得到自己那一台（普通用户没法枚举整个机群）。
 
 ## 资源与连接限制
 
@@ -317,8 +332,8 @@ ws2ssh-agent ... --audit-log /var/log/w2s.log  # 换审计路径
 - **防爆破**：SSH 密码认证按「账号|来源 IP」限速——连续 5 次失败锁定 1 分钟，之后每多失败一次时长翻倍（封顶 1 小时）；锁定只影响这一个账号从这个 IP 的登录，攻击者刷失败锁不了别人。另外按账号汇总一道更宽松的门（15 分钟内 50 次失败锁 1 分钟起、同样翻倍）：换着 IP 打同一个账号也会被锁——代价是有人能故意刷失败让某个账号暂时登不上，但他本来也进不来。成功登录即清零；重启服务器清零。乱喷用户名的分布式爆破也撑不大失败表（65536 条上限，先清过期再淘汰最旧）。**不存在/停用账号的登录尝试也做一次同等耗时的 bcrypt 比较**——按响应时间枚举用户名不可行。
 - **token 别走命令行**：`--agent-token w2s-...` 会出现在 `ps` 里。用 `--agent-token-file 路径`（文件权限 0600）或环境变量 `WS2SSH_AGENT_TOKEN`，配置文件 `agent_token` 也行。agent 给远程会话起 shell 时会把 `WS2SSH_AGENT_TOKEN` 从环境里去掉，SSH 进来的人 `env` 看不到它。
 - agent 建议用权限较小的账号跑，不要用 root。
-- 谁拿到某个账号的 token，就能把机器挂到那个用户名下；token 泄露就用 `user token 名字 --regen` 换掉——**对已经连着的旧 agent 立刻生效**（它再接会话会被拒，服务器最多 30 秒内把它踢下线），不用重启服务器。
-- 建号的机器和 SSH 登录进的机器是同一台：外人 `ssh office` 落到的是用 office 的 token 连上来的那台机器。
+- 谁拿到某台机器的 token，就能把机器挂到那个 `账号+机器名` 下；token 泄露就用 `machine token 账号 机器名 --regen` 换掉——**对已经连着的旧 agent 立刻生效**（它再接会话会被拒，服务器最多 30 秒内把它踢下线），不用重启服务器。只影响那一台，同账号其他机器照跑。
+- SSH 登录名 = `账号+机器名`；账号只有一台机器时写账号名也行（自动落到那台）。
 
 ## 发布与安装校验
 

@@ -57,16 +57,17 @@ func (s *Server) routes() http.Handler {
 // 但换了地方连会记 AGENT-IPCHANGE——偷走的 token 换个环境用，第一时间可见。
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	token := r.Header.Get("X-Agent-Token")
-	username, ok := s.cfg.Users.UsernameByToken(token)
+	m, ok := s.cfg.Users.MachineByToken(token)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	prevIP, err := s.cfg.Users.CheckAgentIP(username, tcpAddr(r.RemoteAddr))
+	machineID := m.ID()
+	prevIP, err := s.cfg.Users.CheckAgentIP(m.Username, m.Name, tcpAddr(r.RemoteAddr))
 	if err != nil {
 		ip := hostOnly(r.RemoteAddr)
-		s.audit.Log("AGENT-DENY", "id", username, "ip", ip, "reason", "agent-allow")
-		slog.Warn("agent 来源被拒", "id", username, "ip", ip, "err", err)
+		s.audit.Log("AGENT-DENY", "id", machineID, "ip", ip, "reason", "agent-allow")
+		slog.Warn("agent 来源被拒", "id", machineID, "ip", ip, "err", err)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -93,25 +94,25 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	// 版本门槛：agent 自报版本过低就拒（用于机群版本淘汰；版本可伪造，
 	// 不是安全控制）。不上报的旧 agent 按 0.0.0 算。
 	if s.cfg.MinAgentVersion != "" && version.LessThan(hello.Ver, s.cfg.MinAgentVersion) {
-		s.audit.Log("AGENT-DENY", "id", username, "ip", ip, "reason", "old-version",
+		s.audit.Log("AGENT-DENY", "id", machineID, "ip", ip, "reason", "old-version",
 			"ver", hello.Ver, "min", s.cfg.MinAgentVersion)
-		slog.Warn("agent 版本过低被拒", "id", username, "ip", ip, "ver", hello.Ver, "min", s.cfg.MinAgentVersion)
+		slog.Warn("agent 版本过低被拒", "id", machineID, "ip", ip, "ver", hello.Ver, "min", s.cfg.MinAgentVersion)
 		_ = conn.WriteMessage(websocket.TextMessage, proto.Msg{T: proto.TypeErr, Err: "agent 版本过低，请升级"}.Bytes())
 		return
 	}
 	if prevIP != "" && prevIP != ip {
-		s.audit.Log("AGENT-IPCHANGE", "id", username, "old", prevIP, "new", ip)
+		s.audit.Log("AGENT-IPCHANGE", "id", machineID, "old", prevIP, "new", ip)
 		slog.Warn("agent 换了来源 IP（token 泄露的典型信号，确认是机器换网络再放心）",
-			"id", username, "old", prevIP, "new", ip)
+			"id", machineID, "old", prevIP, "new", ip)
 	}
-	if s.Hub.Has(username) {
-		s.audit.Log("AGENT-REPLACE", "id", username, "ip", ip)
+	if s.Hub.Has(machineID) {
+		s.audit.Log("AGENT-REPLACE", "id", machineID, "ip", ip)
 	}
-	a := s.Hub.Attach(username, token, conn)
-	s.audit.Log("AGENT-CONNECT", "id", username, "ip", ip, "version", hello.Ver)
+	a := s.Hub.Attach(machineID, token, conn)
+	s.audit.Log("AGENT-CONNECT", "id", machineID, "ip", ip, "version", hello.Ver)
 	a.readLoop()
 	s.Hub.Detach(conn)
-	s.audit.Log("AGENT-DISCONNECT", "id", username, "ip", ip)
+	s.audit.Log("AGENT-DISCONNECT", "id", machineID, "ip", ip)
 }
 
 // tcpAddr 把 "host:port" 字符串变成 net.Addr（白名单匹配用）。

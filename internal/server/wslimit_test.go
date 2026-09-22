@@ -37,7 +37,7 @@ func TestAgentMessageLimit(t *testing.T) {
 	defer ts.Close()
 
 	hdr := http.Header{}
-	hdr.Set("X-Agent-Token", acct.Token)
+	hdr.Set("X-Agent-Token", acct.Machines[0].Token)
 	c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/agent", hdr)
 	if err != nil {
 		t.Fatal(err)
@@ -49,10 +49,10 @@ func TestAgentMessageLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !s.Hub.Has("alice") {
+	for time.Now().Before(deadline) && !s.Hub.Has("alice+default") {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !s.Hub.Has("alice") {
+	if !s.Hub.Has("alice+default") {
 		t.Fatal("agent 没挂上")
 	}
 

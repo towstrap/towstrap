@@ -53,15 +53,28 @@ func newMCPToken() string {
 	return "w2m-" + base64.RawURLEncoding.EncodeToString(b)
 }
 
-// validMachines 校验 machines 列表：非空，每项是 "*" 或合法账号名。
+// validMachines 校验 machines 列表：非空，每项是四种写法之一：
+//
+//	"*"            全部账号的全部机器
+//	"alice"        alice 账号的全部机器
+//	"alice+*"      同上（显式通配）
+//	"alice+office" 指定一台机器
+//
 // 空列表意味着「什么都不能看」——不批这种客户端（fail-closed）。
 func validMachines(machines []string) error {
 	if len(machines) == 0 {
-		return fmt.Errorf("至少要给一台机器（--machine 账号名，'*' = 全部）")
+		return fmt.Errorf("至少要给一台机器（--machine 账号[+机器名]，'*' = 全部）")
 	}
 	for _, m := range machines {
-		if m != "*" && !proto.ValidName(m) {
-			return fmt.Errorf("机器名 %q 不合法（应为 ws2ssh 账号名或 '*'）", m)
+		if m == "*" {
+			continue
+		}
+		u, mn := SplitMachineID(m)
+		switch {
+		case !proto.ValidName(u):
+			return fmt.Errorf("机器 %q 的账号部分不合法（应为 ws2ssh 账号名或 '*'）", m)
+		case mn != "" && mn != "*" && !proto.ValidName(mn):
+			return fmt.Errorf("机器 %q 的机器名部分不合法", m)
 		}
 	}
 	return nil

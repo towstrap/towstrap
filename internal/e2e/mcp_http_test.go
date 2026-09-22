@@ -42,7 +42,7 @@ func startMCPHTTP(t *testing.T) (srv *server.Server, httpPort int, users *accoun
 
 	mc := &mcpsrv.Config{
 		Machines: map[string]*mcpsrv.Machine{
-			"bot": {Description: "测试机", Roots: []string{rootsDir}},
+			"bot+default": {Description: "测试机", Roots: []string{rootsDir}},
 		},
 		ApprovalsDir: approvalsDir,
 	}
@@ -61,8 +61,8 @@ func startMCPHTTP(t *testing.T) (srv *server.Server, httpPort int, users *accoun
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h-mcp-http")
-	waitAgent(t, srv.Hub, "bot")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h-mcp-http")
+	waitAgent(t, srv.Hub, "bot+default")
 	return srv, httpPort, users, audit, approvalsDir, rootsDir
 }
 
@@ -173,7 +173,7 @@ func TestMCPHTTPTools(t *testing.T) {
 		} `json:"machines"`
 	}
 	decodeStructured(t, res, &lo)
-	if len(lo.Machines) != 1 || lo.Machines[0].Name != "bot" || !lo.Machines[0].Connected {
+	if len(lo.Machines) != 1 || lo.Machines[0].Name != "bot+default" || !lo.Machines[0].Connected {
 		t.Fatalf("list_machines: %+v", lo)
 	}
 
@@ -202,12 +202,12 @@ func TestMCPHTTPTools(t *testing.T) {
 	// write_file 到 roots 内不弹窗；read_file 读回
 	in := filepath.Join(rootsDir, "a.txt")
 	res = callTool(t, cs, "write_file", map[string]any{
-		"machine": "bot", "path": in, "content": "你好",
+		"machine": "bot+default", "path": in, "content": "你好",
 	})
 	if res.IsError {
 		t.Fatalf("roots 内 write_file 应自动放行: %s", resultText(res))
 	}
-	res = callTool(t, cs, "read_file", map[string]any{"machine": "bot", "path": in})
+	res = callTool(t, cs, "read_file", map[string]any{"machine": "bot+default", "path": in})
 	var ro struct {
 		Content string `json:"content"`
 	}
@@ -219,7 +219,7 @@ func TestMCPHTTPTools(t *testing.T) {
 	// roots 外 write_file → 弹窗
 	outside := filepath.Join(t.TempDir(), "b.txt")
 	res = callTool(t, cs, "write_file", map[string]any{
-		"machine": "bot", "path": outside, "content": "x",
+		"machine": "bot+default", "path": outside, "content": "x",
 	})
 	if res.IsError {
 		t.Fatalf("批准后 roots 外 write 应成功: %s", resultText(res))
@@ -296,7 +296,7 @@ func TestMCPHTTPCLIApproval(t *testing.T) {
 		defer cancel()
 		res, _ := cs.CallTool(ctx, &mcp.CallToolParams{
 			Name:      "run_command",
-			Arguments: map[string]any{"machine": "bot", "command": "touch " + target},
+			Arguments: map[string]any{"machine": "bot+default", "command": "touch " + target},
 		})
 		done <- res
 	}()
@@ -357,7 +357,7 @@ func TestMCPHTTPScope(t *testing.T) {
 
 func runHTTP(t *testing.T, cs *mcp.ClientSession, cmd string, extra map[string]any) (*mcp.CallToolResult, runResult) {
 	t.Helper()
-	args := map[string]any{"machine": "bot", "command": cmd}
+	args := map[string]any{"machine": "bot+default", "command": cmd}
 	for k, v := range extra {
 		args[k] = v
 	}

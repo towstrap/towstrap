@@ -15,7 +15,7 @@ key: ~/.ssh/ws2ssh_bot
 known_hosts: ~/.ssh/known_hosts
 # host_key: SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# 被控机列表。键 = ws2ssh 账号名 = SSH 登录用户名。
+# 被控机列表。键 = SSH 登录名：账号名（单机账号）或 账号+机器名（多机账号）。
 machines:
   office:
     description: 开发机，代码在 ~/work/app

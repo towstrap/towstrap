@@ -26,13 +26,13 @@ func TestTLSWSSAgent(t *testing.T) {
 		_ = client.ConnectOnce(client.Config{
 			ID:         "tls-host",
 			Server:     fmt.Sprintf("https://127.0.0.1:%d", httpPort), // https:// 自动转 wss://
-			AgentToken: acct.Token,
+			AgentToken: acct.Machines[0].Token,
 			Shell:      "/bin/bash",
 			Insecure:   true,
 			Quiet:      true,
 			AuditLog:   filepath.Join(dir, "audit.log"),
 		})
 	}()
-	waitAgent(t, srv.Hub, "tlsuser")
+	waitAgent(t, srv.Hub, "tlsuser+default")
 	sshEcho(t, sshPort, "tlsuser", "tlspw12345", "echo hello-tls")
 }

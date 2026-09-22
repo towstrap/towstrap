@@ -33,6 +33,8 @@ func main() {
 		os.Exit(runServer(os.Args[2:]))
 	case "user":
 		os.Exit(runUser(os.Args[2:]))
+	case "machine":
+		os.Exit(runMachine(os.Args[2:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[2:]))
 	case "version", "-v", "--version":
@@ -48,16 +50,22 @@ func usage() {
 
 用法:
   ws2ssh-server [--config 文件.yaml] [选项]        跑服务器
-  ws2ssh-server user  add|list|set|remove|token|totp [选项] 用户名
-  ws2ssh-server mcp   add|list|set|remove|token|pending|approve|deny [选项]
+  ws2ssh-server user    add|list|set|remove|token|totp [选项] 用户名
+  ws2ssh-server machine add|list|set|remove|token [选项] 账号 机器名
+  ws2ssh-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
   ws2ssh-server version
 
 开通一台机器（都在服务器上操作，不用网页）:
   ws2ssh-server user add alice --password 密码 --allow-ip 1.2.3.4   # 自定义用户名密码和白名单
-  # 输出唯一的 agent token 和安装命令，把安装命令放到那台机器上执行
+  # 输出这台默认机器（alice+default）的 agent token 和安装命令：
   ws2ssh-agent --server wss://服务器:443 --agent-token w2s-...
 
 之后外人: ssh alice@服务器 -p 2222 （密码就是上面设置的）
+
+同一账号再加一台机器:
+  ws2ssh-server machine add alice build          # 拿到 build 的独立 token
+  # 多台机器后外人要指名登录：
+  ssh alice+build@服务器 -p 2222                  # 或 ssh alice+default@...
 
 服务端:
   --config 文件.yaml
@@ -91,8 +99,9 @@ func usage() {
   user add   用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]...
                                [--agent-allow-ip 地址]...
                                [--ssh-key 公钥]... [--ssh-key-file 文件]
-                               （不给 --password 会生成强随机密码，只显示一次）
-  user list                                                       列出账号
+                               （不给 --password 会生成强随机密码，只显示一次；
+                               自动建一台 default 机器并打印它的 token）
+  user list                                                       列出账号和名下机器
   user set   用户名 [--password 密码] [--name 新名]
                               [--contact 联系方式] [--clear-contact]
                               [--allow-ip 地址]... [--clear-allow]
@@ -100,9 +109,17 @@ func usage() {
                               [--ssh-key 公钥]... [--ssh-key-file 文件]
                               [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
                               [--disable|--enable]
-  user remove 用户名                                               删号（token 作废）
-  user token 用户名 [--regen]                                      看/换 token
+  user remove 用户名                                               删号（名下机器 token 全作废）
+  user token 用户名 [--regen]                                      看/换 token（仅当账号只有一台机器；
+                                                                  多台用 machine token 指定）
   user totp  用户名 [--remove]                                     绑定/解绑 TOTP 二因素
+
+机器管理（一个账号可挂多台，每台独立 token；SSH 登录名 = 账号+机器名）:
+  machine add    账号 机器名 [--agent-allow-ip 地址]...            加机器并打印 token
+  machine list   [账号]                                            列机器（不给账号列全部）
+  machine set    账号 机器名 [--agent-allow-ip 地址]... [--clear-agent-allow]
+  machine remove 账号 机器名                                       删机器（token 作废）
+  machine token  账号 机器名 [--regen]                             看/换这台机器的 token
 
 白名单写法：IP、网段、IP:端口、主机名、*.domain、*。不写就全放行。
 --allow-ip 管的是「谁能 SSH 登录」；--agent-allow-ip 管的是「被控机器从哪连出」——
@@ -110,9 +127,11 @@ func usage() {
 
 内嵌 MCP（server.yaml 里 mcp.enabled: true 时，/mcp 路径挂在网页口上，
 和 /agent 同一端口同一套 TLS；LLM 客户端用 Bearer token 直连）:
-  mcp add    名字 --machine 账号名... [--allow-ip 地址]...   签发客户端 token（只显示一次）
+  mcp add    名字 --machine 授权... [--allow-ip 地址]...    签发客户端 token（只显示一次）
+             --machine 写法：'*' 全部机器；'alice' 或 'alice+*' alice 名下全部；
+             'alice+office' 指定一台
   mcp list                                                  列出 MCP 客户端
-  mcp set    名字 [--machine 账号名]... [--allow-ip 地址]... [--clear-allow]
+  mcp set    名字 [--machine 授权]... [--allow-ip 地址]... [--clear-allow]
                               [--disable|--enable]
   mcp remove 名字                                           删客户端（token 作废）
   mcp token  名字 [--regen]                                 看/换 token
@@ -310,7 +329,8 @@ func usageUser() {
                            [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
                            [--disable] [--enable] [通用选项]
   ws2ssh-server user remove 用户名 [通用选项]
-  ws2ssh-server user token  用户名 [--regen] [通用选项]
+  ws2ssh-server user token  用户名 [--regen] [通用选项]     看/换 token（仅当账号只有一台
+                                                           机器；多台用 machine token 指定）
   ws2ssh-server user totp   用户名 [--remove] [通用选项]    绑定/解绑 TOTP 二因素验证器
 
 通用选项: --config server.yaml（读里面的 users_db/users_key/public_url）、--users-db 路径、--users-key 路径、--server-url 地址
@@ -510,8 +530,10 @@ func userAdd(args []string) int {
 	if len(acct.AllowIPs) > 0 {
 		fmt.Printf("白名单: %s\n", strings.Join(acct.AllowIPs, ", "))
 	}
-	fmt.Printf("agent token: %s\n", acct.Token)
-	printInstallHint(env.serverURL, acct.Token)
+	token := acct.Machines[0].Token
+	fmt.Printf("默认机器: %s\n", acct.Machines[0].ID())
+	fmt.Printf("agent token: %s\n", token)
+	printInstallHint(env.serverURL, token)
 	return 0
 }
 
@@ -539,7 +561,7 @@ func userList(args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "用户名\t状态\tTOTP\t公钥\t联系方式\tSSH白名单\tagent来源\ttoken")
+	fmt.Fprintln(tw, "用户名\t状态\tTOTP\t公钥\t联系方式\tSSH白名单\t机器")
 	for _, a := range list {
 		state := "启用"
 		if a.Disabled {
@@ -557,15 +579,19 @@ func userList(args []string) int {
 		if ips == "" {
 			ips = "-"
 		}
-		agentIPs := strings.Join(a.AgentAllowIPs, ",")
-		if agentIPs == "" {
-			agentIPs = "-"
+		var names []string
+		for _, m := range a.Machines {
+			names = append(names, m.Name)
+		}
+		machines := strings.Join(names, ",")
+		if machines == "" {
+			machines = "-"
 		}
 		contact := a.Contact
 		if contact == "" {
 			contact = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Username, state, totpState, keys, contact, ips, agentIPs, a.Token)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Username, state, totpState, keys, contact, ips, machines)
 	}
 	tw.Flush()
 	return 0
@@ -763,12 +789,16 @@ func userToken(args []string) int {
 		token = t
 		fmt.Println("已换新 token，旧 token 立刻作废")
 	} else {
-		acct, exists := env.store.Get(name)
-		if !exists {
-			slog.Error(accounts.ErrNotFound.Error() + ": " + name)
+		machines := env.store.Machines(name)
+		if len(machines) == 0 {
+			slog.Error("这个账号还没有机器，先用 machine add 加一台", "账号", name)
 			return 2
 		}
-		token = acct.Token
+		if len(machines) != 1 {
+			slog.Error("该账号有多台机器，请用 machine token 指定一台", "账号", name)
+			return 2
+		}
+		token = machines[0].Token
 	}
 	fmt.Printf("agent token: %s\n", token)
 	printInstallHint(env.serverURL, token)
@@ -835,15 +865,223 @@ func (s *stringList) Set(v string) error {
 	return nil
 }
 
+// ---- 机器管理：一个账号下挂多台 agent ----
+
+func usageMachine() {
+	fmt.Fprintf(os.Stderr, `用法:
+  ws2ssh-server machine add    账号 机器名 [--agent-allow-ip 地址]... [通用选项]
+                               加一台机器并打印它的 agent token（只显示一次）。
+                               SSH 登录名随之变成 账号+机器名（如 alice+build）。
+  ws2ssh-server machine list   [账号] [通用选项]                列机器（不给账号列全部）
+  ws2ssh-server machine set    账号 机器名 [--agent-allow-ip 地址]...
+                               [--clear-agent-allow] [通用选项]
+  ws2ssh-server machine remove 账号 机器名 [通用选项]           删机器（token 作废，
+                               连着的 agent 会被巡检断开）
+  ws2ssh-server machine token  账号 机器名 [--regen] [通用选项] 看/换这台机器的 token
+
+通用选项: --config server.yaml（读 users_db/users_key/public_url）、--users-db 路径、
+          --users-key 路径、--server-url 地址
+`)
+}
+
+func runMachine(args []string) int {
+	if len(args) == 0 {
+		usageMachine()
+		return 2
+	}
+	verb, rest := args[0], args[1:]
+	switch verb {
+	case "add":
+		return machineAdd(rest)
+	case "list":
+		return machineList(rest)
+	case "set":
+		return machineSet(rest)
+	case "remove":
+		return machineRemove(rest)
+	case "token":
+		return machineToken(rest)
+	default:
+		usageMachine()
+		return 2
+	}
+}
+
+// machineArgs 解析「账号 机器名」两个位置参数。
+func machineArgs(rest []string) (user, name string, ok bool) {
+	if len(rest) != 2 {
+		return "", "", false
+	}
+	return rest[0], rest[1], true
+}
+
+func machineAdd(args []string) int {
+	fs := flag.NewFlagSet("machine add", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	var agentAllowIPs stringList
+	fs.Var(&agentAllowIPs, "agent-allow-ip", "")
+	rest := parseMix(fs, args)
+	user, name, ok := machineArgs(rest)
+	if !ok {
+		usageMachine()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	m, err := env.store.AddMachine(user, name, agentAllowIPs)
+	if err != nil {
+		slog.Error(err.Error())
+		return 2
+	}
+	fmt.Printf("已在 %s 下建好机器 %s（SSH 登录名 %s）\n", m.Username, m.Name, m.ID())
+	fmt.Printf("agent token: %s\n", m.Token)
+	printInstallHint(env.serverURL, m.Token)
+	return 0
+}
+
+func machineList(args []string) int {
+	fs := flag.NewFlagSet("machine list", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	rest := parseMix(fs, args)
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	var machines []accounts.Machine
+	if user := firstArg(rest); user != "" {
+		if _, exists := env.store.Get(user); !exists {
+			slog.Error(accounts.ErrNotFound.Error() + ": " + user)
+			return 2
+		}
+		machines = env.store.Machines(user)
+	} else {
+		for _, a := range env.store.List() {
+			machines = append(machines, a.Machines...)
+		}
+	}
+	if len(machines) == 0 {
+		fmt.Println("没有机器；用 ws2ssh-server machine add 账号 机器名 加一台")
+		return 0
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "账号\t机器\t登录名\tagent来源\ttoken\t创建于")
+	for _, m := range machines {
+		ips := strings.Join(m.AgentAllowIPs, ",")
+		if ips == "" {
+			ips = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			m.Username, m.Name, m.ID(), ips, m.Token, m.CreatedAt.Format("2006-01-02 15:04"))
+	}
+	tw.Flush()
+	return 0
+}
+
+func machineSet(args []string) int {
+	fs := flag.NewFlagSet("machine set", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	var agentAllowIPs stringList
+	fs.Var(&agentAllowIPs, "agent-allow-ip", "")
+	clearAgentAllow := fs.Bool("clear-agent-allow", false, "")
+	rest := parseMix(fs, args)
+	user, name, ok := machineArgs(rest)
+	if !ok {
+		usageMachine()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	if len(agentAllowIPs) == 0 && !*clearAgentAllow {
+		slog.Error("没给要改的内容（--agent-allow-ip / --clear-agent-allow）")
+		return 2
+	}
+	ips := []string(agentAllowIPs)
+	if *clearAgentAllow {
+		ips = nil
+	}
+	if err := env.store.SetMachineAgentAllow(user, name, ips); err != nil {
+		slog.Error(err.Error())
+		return 2
+	}
+	if len(ips) == 0 {
+		fmt.Println("agent 来源白名单已清空（不限来源，仅记录变更）")
+	} else {
+		fmt.Printf("agent 来源白名单已更新: %s\n", strings.Join(ips, ", "))
+	}
+	return 0
+}
+
+func machineRemove(args []string) int {
+	fs := flag.NewFlagSet("machine remove", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	rest := parseMix(fs, args)
+	user, name, ok := machineArgs(rest)
+	if !ok {
+		usageMachine()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	if err := env.store.RemoveMachine(user, name); err != nil {
+		slog.Error(err.Error())
+		return 2
+	}
+	fmt.Printf("已删除机器 %s+%s（它的 token 立刻作废）\n", user, name)
+	return 0
+}
+
+func machineToken(args []string) int {
+	fs := flag.NewFlagSet("machine token", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	regen := fs.Bool("regen", false, "")
+	rest := parseMix(fs, args)
+	user, name, ok := machineArgs(rest)
+	if !ok {
+		usageMachine()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	token := ""
+	if *regen {
+		t, err := env.store.RegenMachineToken(user, name)
+		if err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		token = t
+		fmt.Println("已换新 token，旧 token 立刻作废")
+	} else {
+		m, exists := env.store.GetMachine(user, name)
+		if !exists {
+			slog.Error(fmt.Sprintf("机器不存在: %s+%s", user, name))
+			return 2
+		}
+		token = m.Token
+	}
+	fmt.Printf("agent token: %s\n", token)
+	printInstallHint(env.serverURL, token)
+	return 0
+}
+
 // ---- 内嵌 MCP 的客户端管理 + 批准兜底 ----
 
 func usageMCP() {
 	fmt.Fprintf(os.Stderr, `用法:
-  ws2ssh-server mcp add    名字 --machine 账号名... [--allow-ip 地址]... [通用选项]
+  ws2ssh-server mcp add    名字 --machine 授权... [--allow-ip 地址]... [通用选项]
                            签发一个 MCP 客户端 token（w2m-...，只显示一次）。
-                           --machine '*' 表示全部机器。
+                           --machine 写法：'*' 全部机器；'alice' 或 'alice+*'
+                           alice 名下全部；'alice+office' 指定一台。
   ws2ssh-server mcp list   [通用选项]                          列出客户端
-  ws2ssh-server mcp set    名字 [--machine 账号名]... [--allow-ip 地址]...
+  ws2ssh-server mcp set    名字 [--machine 授权]... [--allow-ip 地址]...
                            [--clear-allow] [--disable|--enable] [通用选项]
   ws2ssh-server mcp remove 名字 [通用选项]                     删除（token 作废）
   ws2ssh-server mcp token  名字 [--regen] [通用选项]           看/换 token
@@ -960,11 +1198,20 @@ func mcpAdd(args []string) int {
 	if !ok {
 		return 2
 	}
-	// 机器账号现在不存在不挡（可以先建凭据后开账号），但提醒一声。
+	// 机器现在不存在不挡（可以先建凭据后建账号/机器），但提醒一声。
 	for _, m := range machines {
-		if m != "*" {
-			if _, ok := env.store.Get(m); !ok {
-				slog.Warn("机器账号还不存在，之后建了才生效", "machine", m)
+		if m == "*" {
+			continue
+		}
+		u, mn := accounts.SplitMachineID(m)
+		switch {
+		case mn == "" || mn == "*":
+			if _, ok := env.store.Get(u); !ok {
+				slog.Warn("账号还不存在，之后建了才生效", "machine", m)
+			}
+		default:
+			if _, ok := env.store.GetMachine(u, mn); !ok {
+				slog.Warn("机器还不存在，之后建了才生效", "machine", m)
 			}
 		}
 	}

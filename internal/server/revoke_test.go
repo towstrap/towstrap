@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	url2 "net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,8 +177,9 @@ func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token string) 
 	}))
 	dial := func(name, token string) *websocket.Conn {
 		t.Helper()
-		url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/?name=" + name + "&token=" + token
-		c, _, err := websocket.DefaultDialer.Dial(url, nil)
+		q := url2.Values{"name": {name}, "token": {token}}
+		u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/?" + q.Encode()
+		c, _, err := websocket.DefaultDialer.Dial(u, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,7 +248,7 @@ func TestRevokeStaleAgents(t *testing.T) {
 
 	srv, dial := wsAttach(t, s.Hub)
 	defer srv.Close()
-	c := dial("alice", acct.Token)
+	c := dial("alice+default", acct.Machines[0].Token)
 	defer c.Close()
 	waitAgentCount(t, s.Hub, 1)
 
@@ -272,7 +274,7 @@ func TestRevokeStaleAgents(t *testing.T) {
 	if !ok {
 		t.Fatal("bob 不存在")
 	}
-	c2 := dial("bob", b.Token)
+	c2 := dial("bob+default", b.Machines[0].Token)
 	defer c2.Close()
 	waitAgentCount(t, s.Hub, 2) // alice 的连接还挂在 hub 里（已关闭但未 Detach），加 bob 共 2
 	if err := users.Remove("bob"); err != nil {

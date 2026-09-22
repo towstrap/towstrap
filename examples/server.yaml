@@ -33,10 +33,11 @@ server:
   #   #   ws2ssh-server mcp pending / approve <id> / deny <id>
   #   # 在服务器上兜底处理。
   #   # machines 是 MCP 侧元数据（说明 + write_file 自动放行目录），
-  #   # 键 = ws2ssh 账号名；客户端能看哪几台由它 token 的 --machine 列表定，
-  #   # 这里不配也能跑，只是没说明、write_file 没有自动放行目录。
+  #   # 键 = 机器完整 ID（账号+机器名，如 bot+default）；客户端能看哪几台
+  #   # 由它 token 的 --machine 列表定，这里不配也能跑，只是没说明、
+  #   # write_file 没有自动放行目录。
   #   machines:
-  #     bot:
+  #     bot+default:
   #       description: 办公机
   #       roots: ["~/work"]     # 目录里别放指向外面的符号链接
   #   # policy/limits 与 examples/mcp.yaml 同格式（deny/allow/default/ask_timeout

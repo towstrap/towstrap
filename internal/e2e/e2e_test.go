@@ -216,8 +216,8 @@ func TestSSHWithOwnPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = startAgent(t, httpPort, acct.Token, "whatever-hostname")
-	waitAgent(t, srv.Hub, "alice")
+	_ = startAgent(t, httpPort, acct.Machines[0].Token, "whatever-hostname")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	// 用户名密码是安装时自己设的
 	sshEcho(t, sshPort, "alice", "alicepw123", "echo hello-alice")
@@ -246,8 +246,8 @@ func TestFromAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	audit := startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	audit := startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	sshEcho(t, sshPort, "alice", "alicepw123", "echo hello-alice")
 
@@ -316,10 +316,10 @@ func TestTwoUsersTwoMachines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = startAgent(t, httpPort, alice.Token, "h1")
-	_ = startAgent(t, httpPort, bob.Token, "h2")
-	waitAgent(t, srv.Hub, "alice")
-	waitAgent(t, srv.Hub, "bob")
+	_ = startAgent(t, httpPort, alice.Machines[0].Token, "h1")
+	_ = startAgent(t, httpPort, bob.Machines[0].Token, "h2")
+	waitAgent(t, srv.Hub, "alice+default")
+	waitAgent(t, srv.Hub, "bob+default")
 
 	sshEcho(t, sshPort, "alice", "alicepw123", "echo hello-alice")
 	sshEcho(t, sshPort, "bob", "bobpw12345", "echo hello-bob")
@@ -331,8 +331,8 @@ func TestAgentTokenGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	_ = startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	// 无效 token 连不上
 	_ = startAgent(t, httpPort, "w2s-not-a-real-token", "h2")
@@ -367,8 +367,8 @@ func TestStatusNeedsToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	_ = startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", httpPort))
 	if err != nil {
@@ -381,7 +381,7 @@ func TestStatusNeedsToken(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/status", httpPort), nil)
-	req.Header.Set("X-Agent-Token", acct.Token)
+	req.Header.Set("X-Agent-Token", acct.Machines[0].Token)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -400,8 +400,8 @@ func TestTOTPSecondFactor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	secret, _ := totp.Generate("ws2ssh", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
@@ -460,8 +460,8 @@ func TestTOTPWrongCodeLocksOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	secret, _ := totp.Generate("ws2ssh", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
@@ -520,8 +520,8 @@ func TestIdleReverifyTOTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	secret, _ := totp.Generate("ws2ssh", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
@@ -654,8 +654,8 @@ func TestTokenRegenRevokesLiveAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 	sshEcho(t, sshPort, "alice", "alicepw123", "echo hello-before")
 
 	// 换 token：旧 agent 的 WebSocket 还连着，但凭据已经失效
@@ -681,8 +681,8 @@ func TestSessionLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	// hold 占住一个会话并返回引用——必须保住引用，不然连接被 GC 回收，
 	// 会话就掉了，上限也就无从触发。
@@ -734,8 +734,8 @@ func TestStatusScopeByCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	// alice 的机器在线，OK 才是 200（离线时 503 是既有语义）
-	startAgent(t, httpPort, alice.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, alice.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	get := func(hdr, val string) string {
 		t.Helper()
@@ -754,7 +754,7 @@ func TestStatusScopeByCredential(t *testing.T) {
 	}
 
 	// 账号 token：只看自己
-	body := get("X-Agent-Token", alice.Token)
+	body := get("X-Agent-Token", alice.Machines[0].Token)
 	if !strings.Contains(body, "alice") {
 		t.Fatalf("应看到自己: %s", body)
 	}
@@ -777,8 +777,8 @@ func TestServerAuditLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	// 一次失败 + 一次成功的登录
 	if c, err := gossh.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", sshPort), &gossh.ClientConfig{
@@ -821,15 +821,15 @@ func TestAgentSourceIPCheck(t *testing.T) {
 	}
 
 	// 白名单放行 127.0.0.1：正常上线干活
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 	sshEcho(t, sshPort, "alice", "alicepw123", "echo hello-allow")
 
 	// 白名单收紧到别的网段：新连接被拒（已连着的不受影响）
 	if err := users.SetAgentAllow("alice", []string{"10.0.0.0/8"}); err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h2")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h2")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && !containsAudit(t, audit, "AGENT-DENY") {
 		time.Sleep(50 * time.Millisecond)
@@ -842,10 +842,10 @@ func TestAgentSourceIPCheck(t *testing.T) {
 	if err := users.SetAgentAllow("alice", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := users.CheckAgentIP("alice", &net.TCPAddr{IP: net.ParseIP("203.0.113.7")}); err != nil {
+	if _, err := users.CheckAgentIP("alice", "default", &net.TCPAddr{IP: net.ParseIP("203.0.113.7")}); err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h3") // 127.0.0.1，与预置的不同
+	startAgent(t, httpPort, acct.Machines[0].Token, "h3") // 127.0.0.1，与预置的不同
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && !containsAudit(t, audit, "AGENT-IPCHANGE") {
 		time.Sleep(50 * time.Millisecond)
@@ -878,12 +878,12 @@ func TestMinAgentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && !containsAudit(t, audit, "old-version") {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if srv.Hub.Has("alice") {
+	if srv.Hub.Has("alice+default") {
 		t.Fatal("低于版本门槛的 agent 不应上线")
 	}
 	if !containsAudit(t, audit, "reason=old-version") {
@@ -900,8 +900,8 @@ func TestMinAgentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort2, acct2.Token, "h2")
-	waitAgent(t, srv2.Hub, "alice")
+	startAgent(t, httpPort2, acct2.Machines[0].Token, "h2")
+	waitAgent(t, srv2.Hub, "alice+default")
 	if !containsAudit(t, audit2, "version=0.2.0") {
 		t.Fatal("AGENT-CONNECT 应记录自报版本")
 	}
@@ -936,8 +936,8 @@ func TestExecCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
 	var stdout, stderr bytes.Buffer
@@ -963,8 +963,8 @@ func TestExecStdin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
 	sess.Stdin = strings.NewReader("abc")
@@ -998,8 +998,8 @@ func TestExecNoPtyShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
 	stdin, err := sess.StdinPipe()
@@ -1041,8 +1041,8 @@ func TestPublicKeyAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	newSigner := func() gossh.Signer {
 		t.Helper()
@@ -1108,8 +1108,8 @@ func TestExecLargeOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "h1")
-	waitAgent(t, srv.Hub, "alice")
+	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
+	waitAgent(t, srv.Hub, "alice+default")
 
 	_, sess := execDial(t, sshPort, gossh.Password("alicepw123"))
 	out, err := sess.Output(`head -c 1000000 /dev/zero | tr '\0' a`)

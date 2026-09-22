@@ -63,8 +63,8 @@ func startMCPProto(t *testing.T, handler func(context.Context, *mcp.ElicitReques
 	if err := users.AddSSHKey("bot", strings.TrimSpace(string(gossh.MarshalAuthorizedKey(signer.PublicKey())))); err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Token, "mcp-test-host")
-	waitAgent(t, srv.Hub, "bot")
+	startAgent(t, httpPort, acct.Machines[0].Token, "mcp-test-host")
+	waitAgent(t, srv.Hub, "bot+default")
 
 	// 私钥落盘；服务器主机密钥指纹从生成的 host key 文件算，写进 host_key 钉死。
 	keyPath := filepath.Join(dir, "id_ed25519")
