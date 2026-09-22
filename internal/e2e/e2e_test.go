@@ -53,7 +53,9 @@ func startServerOpt(t *testing.T, opt server.Config) (srv *server.Server, httpPo
 	}
 	opt.HTTPAddr = fmt.Sprintf("127.0.0.1:%d", httpPort)
 	opt.SSHAddr = fmt.Sprintf("127.0.0.1:%d", sshPort)
-	opt.HostKeyPath = filepath.Join(dir, "host_key")
+	if opt.HostKeyPath == "" {
+		opt.HostKeyPath = filepath.Join(dir, "host_key")
+	}
 	opt.Users = users
 	srv = server.New(opt)
 	go func() { _ = srv.Run() }()

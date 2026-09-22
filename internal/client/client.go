@@ -60,7 +60,16 @@ func prepare(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
+// warnIfRoot agent 以 root 跑意味着每个远程会话都是 root shell，提醒使用者
+// 换专用低权限用户。Run 和 ConnectOnce 都查一次。
+func warnIfRoot() {
+	if os.Geteuid() == 0 {
+		slog.Warn("agent 正以 root 运行：远程登录者将拿到 root shell。强烈建议建一个专用低权限用户运行 agent（见 README「被控端感知」节）")
+	}
+}
+
 func ConnectOnce(cfg Config) error {
+	warnIfRoot()
 	cfg, err := prepare(cfg)
 	if err != nil {
 		return err
@@ -71,6 +80,7 @@ func ConnectOnce(cfg Config) error {
 }
 
 func Run(cfg Config) error {
+	warnIfRoot()
 	var err error
 	cfg, err = prepare(cfg)
 	if err != nil {

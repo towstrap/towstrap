@@ -1,0 +1,30 @@
+# ws2ssh-agent 的 systemd 单元示例。要点：agent 用专用低权限用户跑——
+# 每个远程会话拿到的都是这个用户的 shell，以 root 跑等于把 root shell 发出去。
+#
+# 先建用户和配置目录：
+#   sudo useradd -r -m -s /bin/bash ws2ssh
+#   sudo mkdir -p /etc/ws2ssh
+#   sudo cp agent.yaml /etc/ws2ssh/agent.yaml
+#   # token 文件（agent.yaml 里 token_file 指向的那个）要能让 ws2ssh 用户读：
+#   sudo chown ws2ssh:ws2ssh /etc/ws2ssh/agent.yaml /path/to/token_file
+#   sudo chmod 600 /path/to/token_file
+#
+#   sudo cp ws2ssh-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ws2ssh-agent
+
+[Unit]
+Description=ws2ssh agent（被控端）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ws2ssh
+Group=ws2ssh
+ExecStart=/usr/local/bin/ws2ssh-agent --config /etc/ws2ssh/agent.yaml
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,48 @@
+# ws2ssh-mcp 配置，默认读 ~/.config/ws2ssh/mcp.yaml。
+# 这个文件让 LLM 应用通过 MCP 工具在被控机上跑命令、读写文件。
+
+# ws2ssh 服务器的 SSH 入口（server.yaml 里 ssh_addr 那个地址）。
+server: ssh.example.com:2222
+
+# 登录用的私钥。必须无口令（MCP 没地方给你输 passphrase）。
+# 建议单独生成一把专用钥匙：ssh-keygen -t ed25519 -f ~/.ssh/ws2ssh_bot -N ""
+# 然后在服务器上登记：ws2ssh-server user set <账号> --ssh-key-file ~/.ssh/ws2ssh_bot.pub
+key: ~/.ssh/ws2ssh_bot
+
+# 校验服务器主机密钥，二选一：
+#   known_hosts —— 标准 known_hosts 文件（第一次先 ssh-keyscan 进去）
+#   host_key    —— 直接钉死 SHA256 指纹；设了就不看 known_hosts
+known_hosts: ~/.ssh/known_hosts
+# host_key: SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 被控机列表。键 = ws2ssh 账号名 = SSH 登录用户名。
+machines:
+  office:
+    description: 开发机，代码在 ~/work/app
+    # write_file 写到这些目录里自动放行；之外的路径要人工批准。
+    # 用绝对路径或 ~/ 开头；~ 按文本匹配远端路径里的 ~/。
+    # 注意：匹配不解析远端符号链接，目录里别放指向外面的符号链接。
+    roots: [~/work]
+
+policy:
+  # 落不进 allow/deny 名单的命令怎么办：run（直接放行）| ask（问人）| deny（拒绝）。
+  # 不写 = ask。
+  default: ask
+  # 正则名单。不写某一项就用内置默认（见 internal/mcpsrv/policy.go 的
+  # DefaultAllow / DefaultDeny / DefaultDenyPaths）；写了就整份替换，
+  # 不是在默认上追加。策略只是方便过滤，不是安全边界。
+  allow: []
+  deny: []
+  # read_file/write_file 禁碰的路径正则。
+  deny_paths: []
+  # 等待人工批准的最长时间。
+  ask_timeout: 5m
+
+limits:
+  timeout: 120s        # run_command 的默认超时
+  max_timeout: 1h      # timeout_seconds 参数的上限
+  max_output: 65536    # stdout/stderr 各自返回上限（字节），超了保留头尾
+  max_file: 1048576    # read_file/write_file 的文件大小上限
+
+# 客户端不支持弹确认框时，待批请求写到这里，用 ws2ssh-mcp pending/approve/deny 处理。
+approvals_dir: ~/.config/ws2ssh/approvals

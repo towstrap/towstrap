@@ -1,4 +1,4 @@
-# ws2ssh 构建/发布。发布产物是两个二进制：服务器端（含账号管理）和被控端。
+# ws2ssh 构建/发布。发布产物是三个二进制：服务器端（含账号管理）、被控端、MCP 入口。
 VERSION := $(shell cat VERSION 2>/dev/null || echo dev)
 LDFLAGS := -X ws2ssh/internal/version.Version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
@@ -8,6 +8,7 @@ PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/ws2ssh-server ./cmd/ws2ssh-server
 	go build -ldflags "$(LDFLAGS)" -o bin/ws2ssh-agent ./cmd/ws2ssh-agent
+	go build -ldflags "$(LDFLAGS)" -o bin/ws2ssh-mcp ./cmd/ws2ssh-mcp
 
 test:
 	go vet ./...
@@ -23,10 +24,12 @@ release: clean
 			-o dist/ws2ssh-server-$$os-$$arch ./cmd/ws2ssh-server; \
 		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
 			-o dist/ws2ssh-agent-$$os-$$arch ./cmd/ws2ssh-agent; \
+		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+			-o dist/ws2ssh-mcp-$$os-$$arch ./cmd/ws2ssh-mcp; \
 	done
 	cd dist && shasum -a 256 * > SHA256SUMS
 	@if [ -n "$$MINISIGN_KEY_FILE" ]; then \
-		cd dist && minisign -H -Sm ws2ssh-server-* ws2ssh-agent-* SHA256SUMS; \
+		cd dist && minisign -H -Sm ws2ssh-server-* ws2ssh-agent-* ws2ssh-mcp-* SHA256SUMS; \
 		echo "已用 minisign 签名"; \
 	else \
 		echo "提示：设 MINISIGN_KEY_FILE 可在发布时签名"; \

@@ -184,7 +184,38 @@ ws2ssh-server user add bot --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" --allow-ip �
 
 **安全姿势**：被控机上的 agent 用低权限用户跑——LLM 能碰的就是那个用户能碰的。服务器审计 `SESSION-START` 记 `mode=exec cmd=…`（超过 512 字节截断）、`SESSION-END` 记 `code=` 退出码，agent 侧 `START` 同样记 `cmd`。桌面/终端通知同一来源 10 分钟内最多弹一对（审计每条都记，只是不刷屏）。单条命令上限 64KB。
 
-**自己写 LLM 应用**：直接用任意 SSH 库调——Go 的 `golang.org/x/crypto/ssh`、Python 的 paramiko 都行，认证就是公钥。MCP 封装后续提供。
+**自己写 LLM 应用**：直接用任意 SSH 库调——Go 的 `golang.org/x/crypto/ssh`、Python 的 paramiko 都行，认证就是公钥。要 MCP 封装的话看下一节。
+
+## MCP：给自己写的 LLM 应用 / 支持 MCP 的客户端
+
+`ws2ssh-mcp` 是 MCP server：LLM 应用挂上它，就能用四个工具在被控机上干活——`list_machines`（看有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。跑命令和上一节的 `ssh host 'cmd'` 走的是同一条 SSH 通道。
+
+**安装与配置**：`make build` 产出 `bin/ws2ssh-mcp`（发布包里是 `ws2ssh-mcp-<os>-<arch>`）。配置写在 `~/.config/ws2ssh/mcp.yaml`（`--config` 可换路径，`examples/mcp.yaml` 有全量注释模板）：服务器 SSH 入口、无口令私钥、known_hosts 或钉死的 `host_key` 指纹、机器列表（键就是 ws2ssh 账号名）、策略和限额。
+
+Claude Code 的 `mcpServers` 写法（`command` 要给绝对路径）：
+
+```json
+{
+  "mcpServers": {
+    "ws2ssh": {
+      "command": "/usr/local/bin/ws2ssh-mcp",
+      "args": ["--config", "/Users/you/.config/ws2ssh/mcp.yaml"]
+    }
+  }
+}
+```
+
+**批准环节分三层**：被控机上 agent 的系统用户权限是第一层（真正的边界）；`policy` 名单是第二层——`deny` 直接拒、`allow` 只读命令直接放行、其余进第三层人工批准。批准有两条路：客户端支持确认弹窗（elicitation）就弹「允许执行」；不支持就把待批请求落到 `approvals_dir`，人去终端跑：
+
+```bash
+ws2ssh-mcp pending          # 看谁在等
+ws2ssh-mcp approve <id>     # 批准；--all 全批
+ws2ssh-mcp deny <id>        # 拒绝；--all 全拒
+```
+
+弹窗里勾「本次会话内相同命令不再询问」后，同一条命令同一个 MCP 会话里不再问。等到 `ask_timeout` 没人理就超时拒绝。
+
+**提醒**：策略名单只是方便过滤，**不是安全边界**——shell 语法总能绕过朴素切段，别把它当沙箱；真正兜底的是 agent 跑在哪个系统用户下。内置 allow/deny 名单在 `internal/mcpsrv/policy.go` 的 `DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`，yaml 里写了对应项就整份替换。另外 roots 只按文本前缀匹配路径、不解析远端符号链接：`~/work/link -> /etc` 这种指向外面的链接会让 `write_file ~/work/link/x` 逃过 roots 检查——roots 目录里别放这类符号链接。
 
 ## 监控
 
@@ -219,6 +250,8 @@ ws2ssh 本质是远程控制：agent 装好后，持有账号密码的人随时�
 - **审计日志**：agent 每次启动记一条 `AGENT-START`（时间、版本、连哪台服务器、shell、insecure/quiet 等参数）；每个远程会话的开始/结束各记一条（会话 id、来源 `登录账号@IP`）。默认位置 root 是 `/var/lib/ws2ssh/audit.log`，普通用户是 `~/.ws2ssh/audit.log`，`--audit-log` 可改。机器主人随时能查「这台机器被谁连过、agent 是怎么配的」。
 - 通知发不出去（没桌面、权限没批）不影响会话；审计日志才是保底。
 
+**别用 root 跑 agent**：远程会话拿到的是 agent 进程那个用户的 shell——agent 以 root 跑，每个连进来的人直接是 root。agent 启动时发现自己是 root 会打一条警告，`AGENT-START` 审计里也记 `uid=`。建议建一个专用低权限用户，`examples/ws2ssh-agent.service` 是现成的 systemd 单元（`User=ws2ssh`、`NoNewPrivileges` 等都配好了）。
+
 想安静是显式动作，不是默认：`--quiet`（或 agent.yaml 的 `quiet: true`）只关通知，**审计日志照写**。
 
 ```bash
@@ -238,10 +271,11 @@ ws2ssh-agent ... --audit-log /var/log/w2s.log  # 换审计路径
 
 ## 发布与安装校验
 
-发布产物是**两个独立的二进制**（制品最小化：装在被控机上的 agent 不含 SQLite 账号库、SSH 服务端这些服务器侧代码）：
+发布产物是**三个独立的二进制**（制品最小化：装在被控机上的 agent 不含 SQLite 账号库、SSH 服务端这些服务器侧代码）：
 
 - `ws2ssh-server-<os>-<arch>` — 服务器端 + 账号管理（`user` 子命令）
 - `ws2ssh-agent-<os>-<arch>` — 被控机上的 agent
+- `ws2ssh-mcp-<os>-<arch>` — MCP 入口，装在跑 LLM 应用的机器上（见「MCP」节）
 
 `make release` 交叉编译全平台并生成 `SHA256SUMS`；设 `MINISIGN_KEY_FILE` 环境变量会顺带 minisign 签名。**安装时先校验再执行**：
 

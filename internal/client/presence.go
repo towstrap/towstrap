@@ -151,5 +151,6 @@ func (p *presence) Startup(id, server, shell string, insecure, quiet bool, ver s
 	p.audit.Log("AGENT-START",
 		"version", ver, "id", id, "server", server, "shell", shell,
 		"insecure", fmt.Sprintf("%t", insecure), "quiet", fmt.Sprintf("%t", quiet),
+		"uid", fmt.Sprintf("%d", os.Geteuid()),
 		"audit", p.path)
 }
