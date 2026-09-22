@@ -52,7 +52,7 @@ func TestPresenceNotifyTransitions(t *testing.T) {
 
 // TestSafeFrom From 白名单：合法来源放行，注入尝试一律脱敏。
 func TestSafeFrom(t *testing.T) {
-	for _, ok := range []string{"alice@1.2.3.4", "office@::1", "a.b_c@host.example.com"} {
+	for _, ok := range []string{"alice@1.2.3.4", "office@::1", "a.b_c@host.example.com", "mcp:laptop@127.0.0.1"} {
 		if got := safeFrom(ok); got != ok {
 			t.Fatalf("%q 应放行, got %q", ok, got)
 		}

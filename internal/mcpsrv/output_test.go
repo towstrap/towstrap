@@ -6,7 +6,7 @@ import (
 )
 
 func TestCapWriterUnderLimit(t *testing.T) {
-	w := newCapWriter(100)
+	w := NewCapWriter(100)
 	in := "hello, 世界"
 	if _, err := w.Write([]byte(in)); err != nil {
 		t.Fatal(err)
@@ -20,7 +20,7 @@ func TestCapWriterUnderLimit(t *testing.T) {
 }
 
 func TestCapWriterOverLimit(t *testing.T) {
-	w := newCapWriter(100)
+	w := NewCapWriter(100)
 	// 300 字节：'a'*150 + 'b'*150，超过 100，应留头 50 + 尾 50。
 	in := strings.Repeat("a", 150) + strings.Repeat("b", 150)
 	if _, err := w.Write([]byte(in)); err != nil {
@@ -42,7 +42,7 @@ func TestCapWriterOverLimit(t *testing.T) {
 }
 
 func TestCapWriterSplitWrites(t *testing.T) {
-	w := newCapWriter(10)
+	w := NewCapWriter(10)
 	_, _ = w.Write([]byte("0123456789")) // 恰好满
 	if w.Truncated() {
 		t.Error("恰好等于上限不算截断")

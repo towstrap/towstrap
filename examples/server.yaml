@@ -17,3 +17,27 @@ server:
   # max_conns_per_ip: 64       # SSH 每来源 IP 并发连接上限（只对 SSH；0 不限）
   # ssh_idle_timeout: 30m      # SSH 空闲超时（治未认证连接挂死；会断开空闲会话，慎开）
   # ssh_max_timeout: 24h       # SSH 连接绝对寿命（0 不限）
+
+  # ── 内嵌 MCP（Streamable HTTP）────────────────────────────
+  # 打开后 LLM 客户端用 Bearer token 直连 /mcp，命令经 Hub 在 agent 上执行，
+  # 不绕 SSH。客户端凭据用 ws2ssh-server mcp add 签发（存在 users_db 的
+  # mcp_clients 表里，加密存放）。
+  # mcp:
+  #   enabled: true
+  #   path: /mcp               # 挂的路径，默认 /mcp
+  #   # Bearer token 是凭据：tls 没开且监听非回环地址时拒绝启动。
+  #   # 确认只在内网/隧道里跑才允许明文：
+  #   # allow_plain_http: true
+  #   # approvals_dir: /var/lib/ws2ssh/approvals  # 默认：审计日志目录旁的 approvals/
+  #   # 客户端不支持批准弹窗时，待批请求写在这，用
+  #   #   ws2ssh-server mcp pending / approve <id> / deny <id>
+  #   # 在服务器上兜底处理。
+  #   # machines 是 MCP 侧元数据（说明 + write_file 自动放行目录），
+  #   # 键 = ws2ssh 账号名；客户端能看哪几台由它 token 的 --machine 列表定，
+  #   # 这里不配也能跑，只是没说明、write_file 没有自动放行目录。
+  #   machines:
+  #     bot:
+  #       description: 办公机
+  #       roots: ["~/work"]     # 目录里别放指向外面的符号链接
+  #   # policy/limits 与 examples/mcp.yaml 同格式（deny/allow/default/ask_timeout
+  #   # 及 timeout/max_timeout/max_output/max_file），不写用内置默认。

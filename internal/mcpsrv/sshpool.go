@@ -167,7 +167,7 @@ func (p *Pool) runOnce(ctx context.Context, machine, cmd string, stdin []byte, t
 		return Result{}, fmt.Errorf("开 SSH 会话: %w", err)
 	}
 	defer sess.Close()
-	outW, errW := newCapWriter(maxOut), newCapWriter(maxOut)
+	outW, errW := NewCapWriter(maxOut), NewCapWriter(maxOut)
 	sess.Stdout = outW
 	sess.Stderr = errW
 	if len(stdin) > 0 {

@@ -34,6 +34,13 @@ var upgrader = websocket.Upgrader{
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
+	if s.cfg.MCP != nil {
+		path := s.cfg.MCPPath
+		if path == "" {
+			path = "/mcp"
+		}
+		mux.Handle(path, s.mcpHandler())
+	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, "ok\n")
 	})

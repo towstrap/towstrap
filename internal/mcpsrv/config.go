@@ -23,6 +23,18 @@ type Config struct {
 	Policy       PolicyCfg           `yaml:"policy"`
 	Limits       LimitsCfg           `yaml:"limits"`
 	ApprovalsDir string              `yaml:"approvals_dir"` // 本地批准回退的待批目录
+
+	// 下面三个字段不走 yaml，由调用方按运行模式填。
+	// ApproveCmd 是错误文案和 instructions 里提示的批准命令：stdio 模式是
+	// "ws2ssh-mcp approve"，服务器内嵌模式是在服务器上跑的
+	// "ws2ssh-server mcp approve"。
+	ApproveCmd string `yaml:"-"`
+	// LocalNotify 控制本地批准回退要不要弹桌面通知：stdio 模式弹（进程跑在
+	// 用户的电脑上），服务器模式不弹（服务器大概率没桌面）。
+	LocalNotify bool `yaml:"-"`
+	// Audit 是审计回调：策略拒绝、批准进出、批准结果各记一条。nil 时用
+	// slog 写 stderr；服务器模式换成服务器自己的审计器。
+	Audit func(event string, kv ...string) `yaml:"-"`
 }
 
 // Machine 一台被控机。Roots 里的目录 write_file 自动放行。
@@ -75,34 +87,50 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Key = expandTilde(cfg.Key)
 	cfg.KnownHosts = expandTilde(cfg.KnownHosts)
 	cfg.ApprovalsDir = expandTilde(cfg.ApprovalsDir)
+	cfg.ApplyDefaults()
 	if cfg.ApprovalsDir == "" {
 		cfg.ApprovalsDir = DefaultApprovalsDir()
 	}
-	if cfg.Policy.Default == "" {
-		cfg.Policy.Default = "ask"
+	if cfg.ApproveCmd == "" {
+		cfg.ApproveCmd = "ws2ssh-mcp approve"
 	}
-	if cfg.Policy.AskTimeout == 0 {
-		cfg.Policy.AskTimeout = 5 * time.Minute
+	cfg.LocalNotify = true
+	if err := cfg.validateSSH(); err != nil {
+		return nil, fmt.Errorf("配置 %s: %w", path, err)
 	}
-	if cfg.Limits.Timeout == 0 {
-		cfg.Limits.Timeout = 120 * time.Second
-	}
-	if cfg.Limits.MaxTimeout == 0 {
-		cfg.Limits.MaxTimeout = time.Hour
-	}
-	if cfg.Limits.MaxOutput == 0 {
-		cfg.Limits.MaxOutput = 65536
-	}
-	if cfg.Limits.MaxFile == 0 {
-		cfg.Limits.MaxFile = 1 << 20
-	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("配置 %s: %w", path, err)
 	}
 	return &cfg, nil
 }
 
-func (c *Config) validate() error {
+// ApplyDefaults 填策略/限额的缺省值（ApprovalsDir 不在此列——stdio 和
+// 服务器内嵌模式的默认目录不一样，各自填）。服务器内嵌模式用它而不是
+// LoadConfig：那份配置是 server.yaml 的 mcp: 小节组出来的。
+func (c *Config) ApplyDefaults() {
+	if c.Policy.Default == "" {
+		c.Policy.Default = "ask"
+	}
+	if c.Policy.AskTimeout == 0 {
+		c.Policy.AskTimeout = 5 * time.Minute
+	}
+	if c.Limits.Timeout == 0 {
+		c.Limits.Timeout = 120 * time.Second
+	}
+	if c.Limits.MaxTimeout == 0 {
+		c.Limits.MaxTimeout = time.Hour
+	}
+	if c.Limits.MaxOutput == 0 {
+		c.Limits.MaxOutput = 65536
+	}
+	if c.Limits.MaxFile == 0 {
+		c.Limits.MaxFile = 1 << 20
+	}
+}
+
+// validateSSH 是 stdio 模式专属的校验：SSH 入口、私钥、至少一台机器
+// （内嵌模式下机器集合来自 MCP 客户端凭据，不在配置里要求）。
+func (c *Config) validateSSH() error {
 	if c.Server == "" {
 		return fmt.Errorf("server 必填（ws2ssh 服务器的 SSH 入口 host:port）")
 	}
@@ -112,6 +140,12 @@ func (c *Config) validate() error {
 	if len(c.Machines) == 0 {
 		return fmt.Errorf("machines 至少要配一台（键是 ws2ssh 账号名）")
 	}
+	return nil
+}
+
+// Validate 是策略和限额的通用校验，两种模式都跑（导出给服务器内嵌模式
+// 用，它没有 SSH 入口那套必填项）。
+func (c *Config) Validate() error {
 	switch c.Policy.Default {
 	case "run", "ask", "deny":
 	default:

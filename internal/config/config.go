@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"gopkg.in/yaml.v3"
+
+	"ws2ssh/internal/mcpsrv"
 )
 
 type Server struct {
@@ -33,6 +35,22 @@ type Server struct {
 	AuditLog string `yaml:"audit_log"`
 	// MinAgentVersion：agent 自报版本低于此值拒绝接入（版本淘汰用；空 = 不限）
 	MinAgentVersion string `yaml:"min_agent_version"`
+
+	// MCP 是服务器内嵌 MCP（HTTP /mcp）的开关和策略；nil = 不开。
+	MCP *MCP `yaml:"mcp"`
+}
+
+// MCP 是 server.yaml 里 mcp: 小节：服务器内嵌 MCP（Streamable HTTP）的
+// 开关和策略。开启后客户端凭 ws2ssh-server mcp 子命令签发的 Bearer token
+// 访问，能碰哪些机器由凭据里的 machines 决定，不是这里。
+type MCP struct {
+	Enabled        bool                       `yaml:"enabled"`
+	Path           string                     `yaml:"path"`             // 默认 /mcp
+	AllowPlainHTTP bool                       `yaml:"allow_plain_http"` // 明文 HTTP + 非回环监听时必须显式 true
+	ApprovalsDir   string                     `yaml:"approvals_dir"`
+	Machines       map[string]*mcpsrv.Machine `yaml:"machines"` // 每台机器的说明和 write_file 放行目录；键 = 账号名
+	Policy         mcpsrv.PolicyCfg           `yaml:"policy"`
+	Limits         mcpsrv.LimitsCfg           `yaml:"limits"`
 }
 
 type Agent struct {
@@ -71,6 +89,7 @@ type file struct {
 	SSHMaxTimeout   string    `yaml:"ssh_max_timeout"`
 	AuditLog        string    `yaml:"audit_log"`
 	MinAgentVersion string    `yaml:"min_agent_version"`
+	MCP             *MCP      `yaml:"mcp"`
 }
 
 func loadFile(path string) (file, error) {
@@ -118,6 +137,7 @@ func LoadServer(path string) (Server, error) {
 		SSHMaxTimeout:   f.SSHMaxTimeout,
 		AuditLog:        f.AuditLog,
 		MinAgentVersion: f.MinAgentVersion,
+		MCP:             f.MCP,
 	}, nil
 }
 
@@ -261,6 +281,8 @@ func MergeServer(file Server, set map[string]string) Server {
 	if v, ok := set["min-agent-version"]; ok {
 		out.MinAgentVersion = v
 	}
+	// mcp: 小节没有对应命令行旗标，yaml 里写了就透传。
+	out.MCP = file.MCP
 	// 主机密钥默认跟着 users.db 走（同目录），不写死当前目录——服务常从
 	// 别的工作目录启动，密钥落哪得可预期。
 	if out.HostKey == "" {

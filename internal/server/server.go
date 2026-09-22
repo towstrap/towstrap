@@ -4,11 +4,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"ws2ssh/internal/accounts"
 	"ws2ssh/internal/allow"
 	"ws2ssh/internal/auditlog"
+	"ws2ssh/internal/mcpsrv"
 )
 
 type Config struct {
@@ -50,6 +52,13 @@ type Config struct {
 	// MinAgentVersion 非空时，hello 自报版本低于它的 agent 拒绝接入
 	//（机群版本淘汰用；版本是自报的，不是安全控制）。空 = 不限。
 	MinAgentVersion string
+
+	// MCP 非 nil 时在 HTTP 口挂 Streamable HTTP 的 MCP 服务（路径 MCPPath，
+	// 默认 /mcp）。MCP.Machines 在这里只当元数据用（说明、roots）；实际
+	// 能看到哪些机器由 MCP 客户端凭据决定。
+	MCP               *mcpsrv.Config
+	MCPPath           string
+	MCPAllowPlainHTTP bool
 }
 
 type Server struct {
@@ -57,6 +66,9 @@ type Server struct {
 	Hub   *Hub
 	guard *authGuard
 	audit *auditlog.Writer
+
+	mcpMu      sync.Mutex
+	mcpAuditAt map[string]time.Time // MCP-SESSION 审计去重窗口
 }
 
 // DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/ws2ssh，
@@ -82,6 +94,12 @@ func New(cfg Config) *Server {
 }
 
 func (s *Server) Run() error {
+	// Bearer token 不能走明文出公网：起监听之前先拦。
+	if s.cfg.MCP != nil {
+		if err := mcpPlainHTTPAllowed(s.cfg.HTTPAddr, s.cfg.TLS, s.cfg.MCPAllowPlainHTTP); err != nil {
+			return err
+		}
+	}
 	errCh := make(chan error, 2)
 	go func() { errCh <- s.startHTTP() }()
 	go func() { errCh <- s.startSSH() }()

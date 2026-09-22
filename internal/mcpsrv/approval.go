@@ -134,19 +134,43 @@ func (s *Server) evalElicit(sess *mcp.ServerSession, req ApprovalRequest, er *mc
 // approve 走两层批准：客户端支持 elicitation 就弹确认框（本轮返回
 // askAgain=true，调用方把 elicitRequest 的结果交出去，SDK 完成往返后会
 // 把 handler 再调一次、InputResponses 里带着答复）；不支持就在
-// approvals_dir 里落一个待批文件，等用户跑 ws2ssh-mcp approve。
+// approvals_dir 里落一个待批文件，等用户跑批准命令。
+// 进出批准环节都记审计：MCP-ASK（via=elicit|local）、
+// MCP-APPROVED / MCP-DENIED / MCP-ASK-TIMEOUT。
 func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar ApprovalRequest) (out Outcome, askAgain bool, err error) {
+	s.watchSession(req.Session)
 	if s.isRemembered(req.Session, ar) {
 		return ApprovedRemember, false, nil
 	}
 	if er := elicitResult(req); er != nil {
-		return s.evalElicit(req.Session, ar, er), false, nil
+		out = s.evalElicit(req.Session, ar, er)
+		s.auditOutcome(out, ar)
+		return out, false, nil
 	}
 	if supportsElicitation(req.Session) {
+		s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "elicit")
 		return Approved, true, nil
 	}
+	s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "local")
 	out, err = s.waitLocal(ctx, ar)
+	s.auditOutcome(out, ar)
 	return out, false, err
+}
+
+// auditOutcome 把批准结果记成审计事件。
+func (s *Server) auditOutcome(out Outcome, ar ApprovalRequest) {
+	var ev string
+	switch out {
+	case Approved, ApprovedRemember:
+		ev = "MCP-APPROVED"
+	case DeniedByUser:
+		ev = "MCP-DENIED"
+	case Timeout:
+		ev = "MCP-ASK-TIMEOUT"
+	default:
+		return // Unavailable 之类的由调用方报错，不记结果事件
+	}
+	s.audit(ev, "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail)
 }
 
 // waitLocal 是本地批准回退：写 <id>.json、弹桌面通知、每 500ms 看一次
@@ -166,12 +190,15 @@ func (s *Server) waitLocal(ctx context.Context, req ApprovalRequest) (Outcome, e
 	if err := os.WriteFile(jsonPath, b, 0600); err != nil {
 		return Unavailable, fmt.Errorf("写待批文件 %s: %w", jsonPath, err)
 	}
-	detail := req.Detail
-	if len(detail) > 80 {
-		detail = detail[:80] + "…"
+	// 服务器模式不弹桌面通知（服务器大概率没桌面，通知也到不了用户）。
+	if s.cfg.LocalNotify {
+		detail := req.Detail
+		if len(detail) > 80 {
+			detail = detail[:80] + "…"
+		}
+		notify.Desktop("ws2ssh 需要批准",
+			fmt.Sprintf("%s: %s；运行 %s %s", req.Machine, detail, s.cfg.ApproveCmd, id))
 	}
-	notify.Desktop("ws2ssh-mcp 需要批准",
-		fmt.Sprintf("%s: %s；运行 ws2ssh-mcp approve %s", req.Machine, detail, id))
 
 	approved := filepath.Join(dir, id+".approved")
 	denied := filepath.Join(dir, id+".denied")

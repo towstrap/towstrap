@@ -67,11 +67,12 @@ func newPresence(cfg Config) *presence {
 	}
 }
 
-// fromRe 是 From 字段（「SSH 登录账号@来源 IP/主机」）的白名单：
-// 用户名沿用 proto.ValidName 的字符集，主机允许 IPv4/IPv6/主机名。
+// fromRe 是 From 字段（「来源@IP/主机」）的白名单：
+// 用户名沿用 proto.ValidName 的字符集，另允许冒号——服务器内嵌 MCP 的
+// 来源形如「mcp:客户端名@IP」。主机允许 IPv4/IPv6/主机名。
 // agent 不盲信服务器下发的文本——格式对不上就脱敏，纵深防御，
 // 即使服务器被攻破也借不了通知渠道注入任意内容。
-var fromRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}@[0-9A-Za-z.:-]{1,75}$`)
+var fromRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}@[0-9A-Za-z.:-]{1,75}$`)
 
 func safeFrom(from string) string {
 	if fromRe.MatchString(from) {

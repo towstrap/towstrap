@@ -91,7 +91,12 @@ func serve(cfgPath string) {
 		slog.Error("读配置失败", "path", cfgPath, "err", err)
 		os.Exit(1)
 	}
-	srv, err := mcpsrv.New(cfg)
+	pool, err := mcpsrv.NewPool(cfg)
+	if err != nil {
+		slog.Error("初始化失败", "err", err)
+		os.Exit(1)
+	}
+	srv, err := mcpsrv.New(cfg, pool)
 	if err != nil {
 		slog.Error("初始化失败", "err", err)
 		os.Exit(1)

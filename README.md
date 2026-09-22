@@ -188,7 +188,18 @@ ws2ssh-server user add bot --ssh-key "$(cat ~/.ssh/id_ed25519.pub)" --allow-ip �
 
 ## MCP：给自己写的 LLM 应用 / 支持 MCP 的客户端
 
-`ws2ssh-mcp` 是 MCP server：LLM 应用挂上它，就能用四个工具在被控机上干活——`list_machines`（看有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。跑命令和上一节的 `ssh host 'cmd'` 走的是同一条 SSH 通道。
+LLM 应用通过 MCP 拿到四个工具在被控机上干活：`list_machines`（看有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。接入方式有两种，工具行为完全一致，区别只在 MCP server 跑在哪：
+
+| | stdio（`ws2ssh-mcp`） | 服务器内嵌 HTTP（`/mcp`） |
+| --- | --- | --- |
+| MCP server 跑在 | 跑 LLM 应用的那台机器 B | ws2ssh 服务器 S 上 |
+| B 上要装的东西 | `ws2ssh-mcp` 二进制 + SSH 私钥 | 不用装，填 URL + Bearer token |
+| 执行通道 | B 经 SSH 登录 S，再落到 agent | S 内部直连 agent（Hub），不走 SSH 回环 |
+| 能碰哪些机器 | mcp.yaml 里写死 | 每个客户端 token 各自的 `--machine` 列表 |
+| 人工批准兜底 | `ws2ssh-mcp approve`（在 B 上跑） | `ws2ssh-server mcp approve`（在 S 上跑） |
+| 适用 | 自己本机用 | 给别人/多台客户端用 |
+
+### 方式一：stdio（ws2ssh-mcp）
 
 **安装与配置**：`make build` 产出 `bin/ws2ssh-mcp`（发布包里是 `ws2ssh-mcp-<os>-<arch>`）。配置写在 `~/.config/ws2ssh/mcp.yaml`（`--config` 可换路径，`examples/mcp.yaml` 有全量注释模板）：服务器 SSH 入口、无口令私钥、known_hosts 或钉死的 `host_key` 指纹、机器列表（键就是 ws2ssh 账号名）、策略和限额。
 
@@ -214,6 +225,46 @@ ws2ssh-mcp deny <id>        # 拒绝；--all 全拒
 ```
 
 弹窗里勾「本次会话内相同命令不再询问」后，同一条命令同一个 MCP 会话里不再问。等到 `ask_timeout` 没人理就超时拒绝。
+
+### 方式二：服务器内嵌 HTTP（/mcp）
+
+`server.yaml` 里加 `mcp:` 小节打开（完整注释见 `examples/server.yaml`）：
+
+```yaml
+mcp:
+  enabled: true
+  # path: /mcp                 # 默认 /mcp，和 /agent 同一端口同一套 TLS
+  # approvals_dir: ...         # 批准文件目录，默认在审计日志旁边的 approvals/
+  # allow_plain_http: false    # 明文 HTTP + 非回环监听时拒绝启动；确认只在内网/隧道里用才开
+  # machines:                  # 可选：给 MCP 客户端看的机器说明、write_file 放行目录
+  #   bot: { description: "办公机", roots: ["~/work"] }
+  # policy / limits 与 mcp.yaml 同格式
+```
+
+然后在服务器上给每个客户端签发 token：
+
+```bash
+ws2ssh-server mcp add laptop --machine bot          # 只显示一次 w2m-... token
+ws2ssh-server mcp add all-machines --machine '*'    # '*' = 全部机器
+ws2ssh-server mcp list / set / remove / token       # 查看、改、删、换 token
+ws2ssh-server mcp set laptop --disable              # 临时停用
+```
+
+客户端（Claude Code 等）只填 URL 和 token：
+
+```json
+{
+  "mcpServers": {
+    "ws2ssh": {
+      "type": "http",
+      "url": "https://服务器:8080/mcp",
+      "headers": { "Authorization": "Bearer w2m-..." }
+    }
+  }
+}
+```
+
+内嵌模式下建议客户端支持批准弹窗（elicitation）；不支持时待批请求落在服务器的 `approvals_dir`，管理员在服务器上跑 `ws2ssh-server mcp pending / approve / deny` 兜底。机器范围收窄到 `machines=["other"]` 的客户端只能看到自己那几台。审计上：认证失败记 `MCP-AUTH-FAIL`，批准流转记 `MCP-ASK`/`MCP-APPROVED`/`MCP-DENIED`/`MCP-ASK-TIMEOUT`/`MCP-POLICY-DENY`，命令会话记 `SESSION-START mode=mcp from=mcp:客户端名@IP`。
 
 **提醒**：策略名单只是方便过滤，**不是安全边界**——shell 语法总能绕过朴素切段，别把它当沙箱；真正兜底的是 agent 跑在哪个系统用户下。内置 allow/deny 名单在 `internal/mcpsrv/policy.go` 的 `DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`，yaml 里写了对应项就整份替换。另外 roots 只按文本前缀匹配路径、不解析远端符号链接：`~/work/link -> /etc` 这种指向外面的链接会让 `write_file ~/work/link/x` 逃过 roots 检查——roots 目录里别放这类符号链接。
 

@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS users (
 	created_at      TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_token ON users(token_enc);
+
+-- mcp_clients 是服务器内嵌 MCP（/mcp）的客户端凭据表：名字 + token +
+-- 可见机器集合 + 来源白名单。token 和 agent token 一样确定性加密存放
+--（seal 可索引），库里不留明文。
+CREATE TABLE IF NOT EXISTS mcp_clients (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	name       TEXT    NOT NULL UNIQUE,
+	token_enc  BLOB    NOT NULL UNIQUE,
+	machines   TEXT    NOT NULL DEFAULT '', -- JSON 数组；["*"] = 全部机器
+	allow_ips  TEXT    NOT NULL DEFAULT '',
+	disabled   INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 `
 
 // DefaultKeyPath 由数据库路径推出密钥文件路径：users.db -> users.key。

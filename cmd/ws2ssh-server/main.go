@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"ws2ssh/internal/accounts"
 	"ws2ssh/internal/allow"
 	"ws2ssh/internal/config"
+	"ws2ssh/internal/mcpsrv"
 	"ws2ssh/internal/server"
 	"ws2ssh/internal/totp"
 	"ws2ssh/internal/version"
@@ -31,6 +33,8 @@ func main() {
 		os.Exit(runServer(os.Args[2:]))
 	case "user":
 		os.Exit(runUser(os.Args[2:]))
+	case "mcp":
+		os.Exit(runMCP(os.Args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -45,6 +49,7 @@ func usage() {
 用法:
   ws2ssh-server [--config 文件.yaml] [选项]        跑服务器
   ws2ssh-server user  add|list|set|remove|token|totp [选项] 用户名
+  ws2ssh-server mcp   add|list|set|remove|token|pending|approve|deny [选项]
   ws2ssh-server version
 
 开通一台机器（都在服务器上操作，不用网页）:
@@ -102,6 +107,21 @@ func usage() {
 白名单写法：IP、网段、IP:端口、主机名、*.domain、*。不写就全放行。
 --allow-ip 管的是「谁能 SSH 登录」；--agent-allow-ip 管的是「被控机器从哪连出」——
 不设不限，设了就硬校验。没设时 agent 换了来源 IP 只记审计（AGENT-IPCHANGE）不拦。
+
+内嵌 MCP（server.yaml 里 mcp.enabled: true 时，/mcp 路径挂在网页口上，
+和 /agent 同一端口同一套 TLS；LLM 客户端用 Bearer token 直连）:
+  mcp add    名字 --machine 账号名... [--allow-ip 地址]...   签发客户端 token（只显示一次）
+  mcp list                                                  列出 MCP 客户端
+  mcp set    名字 [--machine 账号名]... [--allow-ip 地址]... [--clear-allow]
+                              [--disable|--enable]
+  mcp remove 名字                                           删客户端（token 作废）
+  mcp token  名字 [--regen]                                 看/换 token
+  mcp pending|approve <id>|deny <id> [--all] [--approvals-dir 目录]
+             处理等待人工批准的命令（LLM 客户端不支持弹窗时的兜底通道）
+
+安全提示：mcp 开在明文 HTTP 且监听非回环地址时会拒绝启动（Bearer token
+不能明文传输）；确认只在内网/隧道里用才设 mcp.allow_plain_http: true。
+token 是凭据：别贴进 shell 历史（命令行里用文件/环境变量传），别进日志。
 `)
 }
 
@@ -200,6 +220,38 @@ func runServer(args []string) int {
 	if _, set := visited(fs)["min-agent-version"]; !set && cfg.MinAgentVersion != "" {
 		minAgent = cfg.MinAgentVersion
 	}
+
+	// 内嵌 MCP：yaml 的 mcp.enabled 才开。这里组装的 machines 只是元数据
+	//（说明、write_file 放行目录）；客户端能看哪些机器由它 token 对应的
+	// mcp_clients.machines 决定，在 server 包里按请求解析。
+	var mcpCfg *mcpsrv.Config
+	mcpPath, mcpState := "", "关闭"
+	if cfg.MCP != nil && cfg.MCP.Enabled {
+		mc := &mcpsrv.Config{
+			Machines:     cfg.MCP.Machines,
+			Policy:       cfg.MCP.Policy,
+			Limits:       cfg.MCP.Limits,
+			ApprovalsDir: cfg.MCP.ApprovalsDir,
+		}
+		if mc.Machines == nil {
+			mc.Machines = map[string]*mcpsrv.Machine{}
+		}
+		if mc.ApprovalsDir == "" {
+			mc.ApprovalsDir = filepath.Join(filepath.Dir(server.DefaultAuditPath()), "approvals")
+		}
+		mc.ApprovalsDir = expandHome(mc.ApprovalsDir)
+		mc.ApplyDefaults()
+		if err := mc.Validate(); err != nil {
+			slog.Error("mcp 配置不合法: " + err.Error())
+			return 2
+		}
+		mcpCfg = mc
+		mcpPath = cfg.MCP.Path
+		if mcpPath == "" {
+			mcpPath = "/mcp"
+		}
+		mcpState = mcpPath
+	}
 	// 启动回显生效配置（秘密只显示设没设）：排查「yaml 到底生效没」靠这行。
 	adminTokenState := "未设置"
 	if cfg.AdminToken != "" {
@@ -214,25 +266,28 @@ func runServer(args []string) int {
 		"max_sessions", cfg.MaxSessions,
 		"max_conns", cfg.MaxConns, "max_conns_per_ip", cfg.MaxConnsPerIP,
 		"ssh_idle_timeout", sshIdle.String(), "ssh_max_timeout", sshMax.String(),
-		"audit_log", auditPath)
+		"audit_log", auditPath, "mcp", mcpState)
 	s := server.New(server.Config{
-		HTTPAddr:        cfg.HTTP,
-		SSHAddr:         cfg.SSH,
-		HostKeyPath:     cfg.HostKey,
-		TLS:             cfg.TLS,
-		CertPath:        cfg.Cert,
-		KeyPath:         cfg.Key,
-		Users:           users,
-		AdminToken:      cfg.AdminToken,
-		AllowIPs:        ips,
-		IdleVerify:      idle,
-		AuditLog:        auditPath,
-		MinAgentVersion: minAgent,
-		MaxSessions:     cfg.MaxSessions,
-		MaxConns:        cfg.MaxConns,
-		MaxConnsPerIP:   cfg.MaxConnsPerIP,
-		SSHIdleTimeout:  sshIdle,
-		SSHMaxTimeout:   sshMax,
+		HTTPAddr:          cfg.HTTP,
+		SSHAddr:           cfg.SSH,
+		HostKeyPath:       cfg.HostKey,
+		TLS:               cfg.TLS,
+		CertPath:          cfg.Cert,
+		KeyPath:           cfg.Key,
+		Users:             users,
+		AdminToken:        cfg.AdminToken,
+		AllowIPs:          ips,
+		IdleVerify:        idle,
+		AuditLog:          auditPath,
+		MinAgentVersion:   minAgent,
+		MaxSessions:       cfg.MaxSessions,
+		MaxConns:          cfg.MaxConns,
+		MaxConnsPerIP:     cfg.MaxConnsPerIP,
+		SSHIdleTimeout:    sshIdle,
+		SSHMaxTimeout:     sshMax,
+		MCP:               mcpCfg,
+		MCPPath:           mcpPath,
+		MCPAllowPlainHTTP: cfg.MCP != nil && cfg.MCP.AllowPlainHTTP,
 	})
 	if err := s.Run(); err != nil {
 		slog.Error("server", "err", err)
@@ -778,4 +833,337 @@ func (s *stringList) String() string { return "" }
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
 	return nil
+}
+
+// ---- 内嵌 MCP 的客户端管理 + 批准兜底 ----
+
+func usageMCP() {
+	fmt.Fprintf(os.Stderr, `用法:
+  ws2ssh-server mcp add    名字 --machine 账号名... [--allow-ip 地址]... [通用选项]
+                           签发一个 MCP 客户端 token（w2m-...，只显示一次）。
+                           --machine '*' 表示全部机器。
+  ws2ssh-server mcp list   [通用选项]                          列出客户端
+  ws2ssh-server mcp set    名字 [--machine 账号名]... [--allow-ip 地址]...
+                           [--clear-allow] [--disable|--enable] [通用选项]
+  ws2ssh-server mcp remove 名字 [通用选项]                     删除（token 作废）
+  ws2ssh-server mcp token  名字 [--regen] [通用选项]           看/换 token
+  ws2ssh-server mcp pending  [--approvals-dir 目录] [--config server.yaml]
+  ws2ssh-server mcp approve <id>|--all  [--approvals-dir 目录] [--config server.yaml]
+  ws2ssh-server mcp deny    <id>|--all  [--approvals-dir 目录] [--config server.yaml]
+
+通用选项: --config server.yaml（读 users_db/users_key/public_url/mcp 小节）、
+          --users-db 路径、--users-key 路径、--server-url 地址
+
+批准目录的查找顺序：--approvals-dir > server.yaml 的 mcp.approvals_dir >
+审计日志目录下的 approvals/。token 是凭据，别写进脚本和日志。
+`)
+}
+
+func runMCP(args []string) int {
+	if len(args) == 0 {
+		usageMCP()
+		return 2
+	}
+	verb, rest := args[0], args[1:]
+	switch verb {
+	case "add":
+		return mcpAdd(rest)
+	case "list":
+		return mcpList(rest)
+	case "set":
+		return mcpSet(rest)
+	case "remove":
+		return mcpRemove(rest)
+	case "token":
+		return mcpToken(rest)
+	case "pending":
+		return mcpPending(rest)
+	case "approve", "deny":
+		return mcpSettle(verb, rest)
+	default:
+		usageMCP()
+		return 2
+	}
+}
+
+// expandHome 把开头的 ~ 换成家目录（和 mcpsrv 里的 expandTilde 同一约定）。
+func expandHome(p string) string {
+	if p == "~" {
+		if h, err := os.UserHomeDir(); err == nil {
+			return h
+		}
+	}
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
+}
+
+// mcpApprovalsDir 决定 pending/approve/deny 操作哪个目录：
+// --approvals-dir > server.yaml 的 mcp.approvals_dir > 审计日志目录下的 approvals/。
+func mcpApprovalsDir(flagDir, configPath string) string {
+	if flagDir != "" {
+		return expandHome(flagDir)
+	}
+	if configPath != "" {
+		if s, err := config.LoadServer(configPath); err == nil &&
+			s.MCP != nil && s.MCP.ApprovalsDir != "" {
+			return expandHome(s.MCP.ApprovalsDir)
+		}
+	}
+	return filepath.Join(filepath.Dir(server.DefaultAuditPath()), "approvals")
+}
+
+// mcpEndpointURL 给客户端配置示例用：public-url 优先，没配就留个占位。
+func mcpEndpointURL(serverURL, configPath string) string {
+	path := "/mcp"
+	if configPath != "" {
+		if s, err := config.LoadServer(configPath); err == nil &&
+			s.MCP != nil && s.MCP.Path != "" {
+			path = s.MCP.Path
+		}
+	}
+	base := serverURL
+	if base == "" {
+		base = "https://<服务器>:<HTTP端口>"
+	}
+	// public_url 是 ws/wss scheme，给 MCP 客户端的得是 http/https。
+	switch {
+	case strings.HasPrefix(base, "wss://"):
+		base = "https://" + base[len("wss://"):]
+	case strings.HasPrefix(base, "ws://"):
+		base = "http://" + base[len("ws://"):]
+	}
+	return strings.TrimSuffix(base, "/") + path
+}
+
+func mcpCommonFlags(fs *flag.FlagSet) (configPath, usersDB, usersKey, serverURL *string) {
+	return fs.String("config", "", ""), fs.String("users-db", "", ""),
+		fs.String("users-key", "", ""), fs.String("server-url", "", "")
+}
+
+func mcpAdd(args []string) int {
+	fs := flag.NewFlagSet("mcp add", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	var machines, allowIPs stringList
+	fs.Var(&machines, "machine", "")
+	fs.Var(&allowIPs, "allow-ip", "")
+	rest := parseMix(fs, args)
+	name := firstArg(rest)
+	if name == "" {
+		usageMCP()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	// 机器账号现在不存在不挡（可以先建凭据后开账号），但提醒一声。
+	for _, m := range machines {
+		if m != "*" {
+			if _, ok := env.store.Get(m); !ok {
+				slog.Warn("机器账号还不存在，之后建了才生效", "machine", m)
+			}
+		}
+	}
+	c, token, err := env.store.MCPAdd(name, machines, allowIPs)
+	if err != nil {
+		slog.Error(err.Error())
+		return 2
+	}
+	fmt.Printf("MCP 客户端 %q 已创建\n", c.Name)
+	fmt.Printf("token: %s\n（只显示这一次；忘了就 mcp token %s --regen 换一个，旧的立刻作废）\n\n", token, c.Name)
+	fmt.Printf("支持 MCP 的客户端（如 Claude Code）这样配：\n")
+	fmt.Printf("  \"mcpServers\": {\"ws2ssh\": {\"type\": \"http\", \"url\": %q,\n"+
+		"      \"headers\": {\"Authorization\": \"Bearer %s\"}}}\n",
+		mcpEndpointURL(env.serverURL, *configPath), token)
+	return 0
+}
+
+func mcpList(args []string) int {
+	fs := flag.NewFlagSet("mcp list", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	_ = parseMix(fs, args)
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	list := env.store.MCPList()
+	if len(list) == 0 {
+		fmt.Println("还没有 MCP 客户端；用 ws2ssh-server mcp add 签发")
+		return 0
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "名字\t机器\t来源白名单\t状态\t创建于")
+	for _, c := range list {
+		state := "启用"
+		if c.Disabled {
+			state = "停用"
+		}
+		mach := strings.Join(c.Machines, ",")
+		ips := strings.Join(c.AllowIPs, ",")
+		if ips == "" {
+			ips = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			c.Name, mach, ips, state, c.CreatedAt.Format("2006-01-02 15:04"))
+	}
+	tw.Flush()
+	return 0
+}
+
+func mcpSet(args []string) int {
+	fs := flag.NewFlagSet("mcp set", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	var machines, allowIPs stringList
+	fs.Var(&machines, "machine", "")
+	fs.Var(&allowIPs, "allow-ip", "")
+	clearAllow := fs.Bool("clear-allow", false, "")
+	disable := fs.Bool("disable", false, "")
+	enable := fs.Bool("enable", false, "")
+	rest := parseMix(fs, args)
+	name := firstArg(rest)
+	if name == "" {
+		usageMCP()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	var machinesP, allowIPsP *[]string
+	var disabledP *bool
+	if len(machines) > 0 {
+		m := []string(machines)
+		machinesP = &m
+	}
+	if len(allowIPs) > 0 || *clearAllow {
+		ips := []string(allowIPs)
+		allowIPsP = &ips
+	}
+	if *disable {
+		b := true
+		disabledP = &b
+	} else if *enable {
+		b := false
+		disabledP = &b
+	}
+	if machinesP == nil && allowIPsP == nil && disabledP == nil {
+		slog.Error("没给要改的内容（--machine / --allow-ip / --clear-allow / --disable / --enable）")
+		return 2
+	}
+	if err := env.store.MCPSet(name, machinesP, allowIPsP, disabledP); err != nil {
+		slog.Error(err.Error())
+		return 2
+	}
+	fmt.Printf("MCP 客户端 %q 已更新\n", name)
+	return 0
+}
+
+func mcpRemove(args []string) int {
+	fs := flag.NewFlagSet("mcp remove", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	rest := parseMix(fs, args)
+	name := firstArg(rest)
+	if name == "" {
+		usageMCP()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	if err := env.store.MCPRemove(name); err != nil {
+		slog.Error(err.Error())
+		return 2
+	}
+	fmt.Printf("MCP 客户端 %q 已删除，token 作废\n", name)
+	return 0
+}
+
+func mcpToken(args []string) int {
+	fs := flag.NewFlagSet("mcp token", flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	regen := fs.Bool("regen", false, "")
+	rest := parseMix(fs, args)
+	name := firstArg(rest)
+	if name == "" {
+		usageMCP()
+		return 2
+	}
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	token := ""
+	if *regen {
+		t, err := env.store.MCPRegenToken(name)
+		if err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		token = t
+		fmt.Println("已换新 token，旧 token 立刻作废")
+	} else {
+		c, exists := env.store.MCPGet(name)
+		if !exists {
+			slog.Error(accounts.ErrNotFound.Error() + ": " + name)
+			return 2
+		}
+		token = c.Token
+	}
+	fmt.Printf("mcp token: %s\n", token)
+	return 0
+}
+
+func mcpPending(args []string) int {
+	fs := flag.NewFlagSet("mcp pending", flag.ExitOnError)
+	configPath := fs.String("config", "", "")
+	dir := fs.String("approvals-dir", "", "")
+	_ = parseMix(fs, args)
+	list, err := mcpsrv.Pending(mcpApprovalsDir(*dir, *configPath))
+	if err != nil {
+		slog.Error("读批准目录失败", "err", err)
+		return 1
+	}
+	if len(list) == 0 {
+		fmt.Println("没有等待批准的请求")
+		return 0
+	}
+	for _, p := range list {
+		fmt.Printf("%s  %s  %-8s  %s  （等了 %s）\n",
+			p.ID, p.Machine, p.Kind, p.Detail,
+			time.Since(p.Created).Round(time.Second))
+	}
+	fmt.Println("\n批准：ws2ssh-server mcp approve <id>|--all；拒绝：ws2ssh-server mcp deny <id>|--all")
+	return 0
+}
+
+func mcpSettle(verb string, args []string) int {
+	fs := flag.NewFlagSet("mcp "+verb, flag.ExitOnError)
+	configPath := fs.String("config", "", "")
+	dir := fs.String("approvals-dir", "", "")
+	all := fs.Bool("all", false, "")
+	rest := parseMix(fs, args)
+	id := firstArg(rest)
+	if id == "" && !*all {
+		usageMCP()
+		return 2
+	}
+	approvalsDir := mcpApprovalsDir(*dir, *configPath)
+	var n int
+	var err error
+	if verb == "approve" {
+		n, err = mcpsrv.ApprovePending(approvalsDir, id, *all)
+	} else {
+		n, err = mcpsrv.DenyPending(approvalsDir, id, *all)
+	}
+	if err != nil {
+		slog.Error(err.Error())
+		return 1
+	}
+	fmt.Printf("已处理 %d 条\n", n)
+	return 0
 }

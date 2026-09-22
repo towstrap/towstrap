@@ -107,7 +107,11 @@ approvals_dir: %s
 	if err != nil {
 		t.Fatal(err)
 	}
-	mcpSrv, err := mcpsrv.New(cfg)
+	pool, err := mcpsrv.NewPool(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpSrv, err := mcpsrv.New(cfg, pool)
 	if err != nil {
 		t.Fatal(err)
 	}

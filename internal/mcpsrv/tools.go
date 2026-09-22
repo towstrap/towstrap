@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -13,39 +14,80 @@ import (
 	"ws2ssh/internal/version"
 )
 
-// Server 把一份 mcp.yaml 配置变成一个 MCP server：四个工具、策略过滤、
-// 人工批准。remembered 按客户端会话记「相同命令不再问」。
+// Server 把一份配置变成一个 MCP server：四个工具、策略过滤、人工批准。
+// remembered 按客户端会话记「相同命令不再问」。
 type Server struct {
-	cfg  *Config
-	pol  *Policy
-	pool *Pool
+	cfg    *Config
+	pol    *Policy
+	runner Runner
 
 	mu         sync.Mutex
 	remembered map[string]map[string]bool // sessionID -> machine\x00detail
+	watching   map[string]bool            // 已挂上会话清理的 sessionID
 }
 
-// New 建 Server：校验策略、准备 SSH 连接池（不拨号）。
-func New(cfg *Config) (*Server, error) {
+// New 建 Server：编译策略，runner 是命令执行后端（stdio 模式传 *Pool，
+// 服务器内嵌模式传走 Hub 的实现）。
+func New(cfg *Config, runner Runner) (*Server, error) {
 	pol, err := newPolicy(&cfg.Policy)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := NewPool(cfg)
-	if err != nil {
-		return nil, err
+	if cfg.ApproveCmd == "" {
+		cfg.ApproveCmd = "ws2ssh-mcp approve"
 	}
-	return &Server{cfg: cfg, pol: pol, pool: pool, remembered: make(map[string]map[string]bool)}, nil
+	return &Server{cfg: cfg, pol: pol, runner: runner,
+		remembered: make(map[string]map[string]bool), watching: make(map[string]bool)}, nil
 }
 
-// Close 释放 SSH 连接池。
-func (s *Server) Close() { s.pool.Close() }
+// Close 释放执行后端（实现方有关闭方法就调）。
+func (s *Server) Close() {
+	if c, ok := s.runner.(interface{ Close() }); ok {
+		c.Close()
+	}
+}
+
+// audit 记一条 MCP 侧审计；配置没给 Audit 回调就落 slog（stderr）。
+func (s *Server) audit(event string, kv ...string) {
+	if s.cfg.Audit != nil {
+		s.cfg.Audit(event, kv...)
+		return
+	}
+	args := make([]any, 0, len(kv)+1)
+	args = append(args, "event", event)
+	for _, v := range kv {
+		args = append(args, v)
+	}
+	slog.Info("mcp", args...)
+}
+
+// watchSession 在客户端会话结束时清掉它的 remembered 名单，防止会话 ID
+// 在 map 里无限累积。每个会话只挂一次。
+func (s *Server) watchSession(ss *mcp.ServerSession) {
+	s.mu.Lock()
+	if s.watching[ss.ID()] {
+		s.mu.Unlock()
+		return
+	}
+	s.watching[ss.ID()] = true
+	s.mu.Unlock()
+	go func() {
+		_ = ss.Wait()
+		s.mu.Lock()
+		delete(s.remembered, ss.ID())
+		delete(s.watching, ss.ID())
+		s.mu.Unlock()
+	}()
+}
 
 // instructions 是发给 LLM 的「使用须知」，每次握手随 initialize 结果下发。
+// 里头的 %s 是批准命令（stdio 模式 ws2ssh-mcp approve，服务器模式
+// ws2ssh-server mcp approve）。
 const instructions = `你通过 ws2ssh 在真实的远程机器上执行命令。这些机器属于用户，命令以那台机器上 agent 的系统用户身份真实执行，后果不可撤销——把每一条命令都当成在用户的电脑上敲回车。
 
 规则：
 1. 每次 run_command 都是新起的 shell：cd、环境变量、shell 变量不会保留到下一次。用 cwd 参数指定工作目录，不要依赖上一条命令的 cd。
-2. 命令先过策略再执行：deny 名单里的直接拒绝；allow 名单里的只读/低风险命令自动放行；其余需要用户批准（会弹确认框，或在用户终端等待 ws2ssh-mcp approve）。被拒绝或超时时，向用户说明你想执行什么、为什么，由用户决定；不要改写命令绕过策略。
+2. 命令先过策略再执行：deny 名单里的直接拒绝；allow 名单里的只读/低风险命令自动放行；其余需要用户批准（会弹确认框，或由用户运行 %s）。被拒绝或超时时，向用户说明你想执行什么、为什么，由用户决定；不要改写命令绕过策略。
 3. 改文件优先用 write_file（在允许目录内自动放行，用绝对路径或 ~/ 开头），读文件用 read_file；大输出会被截断（标记里有省略字节数），必要时用 head/tail/grep 缩小范围。
 4. 破坏性操作（删除、覆盖、git push --force、reset --hard、改系统配置）即便策略放行，也先向用户确认。
 5. run_command 的 exit_code 才是成败依据，不要只看 stdout。
@@ -64,9 +106,9 @@ func (s *Server) MCP() *mcp.Server {
 		m := s.cfg.Machines[n]
 		fmt.Fprintf(&mb, "\n- %s：%s", n, m.Description)
 	}
-	inst := fmt.Sprintf("%s\n\n机器列表：%s\n\n策略：默认 %s；allow 名单 %d 条、deny 名单 %d 条；批准方式：弹窗或用户终端 ws2ssh-mcp approve。",
-		instructions, mb.String(), s.cfg.Policy.Default,
-		len(s.pol.allow), len(s.pol.deny))
+	inst := fmt.Sprintf(instructions+"\n\n机器列表：%s\n\n策略：默认 %s；allow 名单 %d 条、deny 名单 %d 条；批准方式：弹窗或用户终端运行 %s。",
+		s.cfg.ApproveCmd, mb.String(), s.cfg.Policy.Default,
+		len(s.pol.allow), len(s.pol.deny), s.cfg.ApproveCmd)
 
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "ws2ssh-mcp",
@@ -84,7 +126,7 @@ type machineInfo struct {
 	Name        string   `json:"name" jsonschema:"机器名（ws2ssh 账号名）"`
 	Description string   `json:"description" jsonschema:"用户给的机器说明"`
 	Roots       []string `json:"roots" jsonschema:"write_file 自动放行的目录"`
-	Connected   bool     `json:"connected" jsonschema:"当前是否已有到这台机器的 SSH 连接"`
+	Connected   bool     `json:"connected" jsonschema:"这台机器当前是否在线（服务器模式）/已有 SSH 连接（stdio 模式）"`
 }
 
 type listOut struct {
@@ -142,7 +184,7 @@ func (s *Server) addTools(srv *mcp.Server) {
 		Description: "在被控机上执行一条 shell 命令。每次都是新起的 shell：" +
 			"cd、环境变量不会带到下一次，工作目录用 cwd 参数。命令先过策略：" +
 			"deny 名单直接拒绝，allow 名单（只读/低风险）自动放行，其余要用户" +
-			"批准（弹确认框或终端 ws2ssh-mcp approve）。成败看 exit_code，" +
+			"批准（弹确认框或终端 " + s.cfg.ApproveCmd + "）。成败看 exit_code，" +
 			"stdout/stderr 分开返回，超过上限各截断并标记省略字节数；" +
 			"timed_out 为 true 表示命令被超时杀掉。",
 	}, s.runCommand)
@@ -189,7 +231,7 @@ func (s *Server) listMachines(_ context.Context, _ *mcp.CallToolRequest, _ listI
 		m := s.cfg.Machines[n]
 		out.Machines = append(out.Machines, machineInfo{
 			Name: n, Description: m.Description, Roots: m.Roots,
-			Connected: s.pool.Connected(n),
+			Connected: s.runner.Connected(n),
 		})
 		fmt.Fprintf(&tb, "- %s：%s（roots: %s）\n", n, m.Description, strings.Join(m.Roots, ", "))
 	}
@@ -216,6 +258,7 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 	dec, reason := s.pol.Command(in.Command)
 	switch dec {
 	case Deny:
+		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "command", "detail", in.Command, "reason", reason)
 		r, e := errResult("策略拒绝：%s。不要改写命令绕过；如确有必要，请向用户说明并由用户调整策略。", reason)
 		return r, runOut{}, e
 	case Ask:
@@ -239,7 +282,7 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 			r, e := errResult("用户拒绝了这条命令。请向用户说明你想执行什么、为什么，由用户决定；也可以请用户把它加进 policy.allow 名单。")
 			return r, runOut{}, e
 		case Timeout:
-			r, e := errResult("等待批准超时（%s）：用户在弹窗里没表态，也没在终端跑 ws2ssh-mcp approve。请向用户说明情况再决定是否重试。", s.cfg.Policy.AskTimeout)
+			r, e := errResult("等待批准超时（%s）：用户在弹窗里没表态，也没在终端跑 %s。请向用户说明情况再决定是否重试。", s.cfg.Policy.AskTimeout, s.cfg.ApproveCmd)
 			return r, runOut{}, e
 		default:
 			r, e := errResult("批准环节不可用：%v", err)
@@ -251,7 +294,7 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 	if in.Cwd != "" {
 		cmd = fmt.Sprintf("cd -- %s && (\n%s\n)", shellQuote(in.Cwd), in.Command)
 	}
-	res, err := s.pool.Run(ctx, in.Machine, cmd, []byte(in.Stdin), timeout, s.cfg.Limits.MaxOutput)
+	res, err := s.runner.Run(ctx, in.Machine, cmd, []byte(in.Stdin), timeout, s.cfg.Limits.MaxOutput)
 	if err != nil {
 		r, e := errResult("执行失败：%v", err)
 		return r, runOut{}, e
@@ -280,12 +323,13 @@ func (s *Server) readFile(ctx context.Context, _ *mcp.CallToolRequest, in readIn
 		return r, readOut{}, e
 	}
 	if !s.pol.Path(in.Path) {
+		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "read_file", "detail", in.Path, "reason", "deny_paths")
 		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths（私钥、凭证、agent 配置这类文件不开放）。如确有必要，请向用户说明并由用户调整策略。", in.Path)
 		return r, readOut{}, e
 	}
 	// 多读一个字节用来判断超限；head -c 对不存在的文件也会走 stderr 报错。
 	cmd := fmt.Sprintf("head -c %d -- %s", s.cfg.Limits.MaxFile+1, shellQuote(in.Path))
-	res, err := s.pool.Run(ctx, in.Machine, cmd, nil, s.cfg.Limits.Timeout, s.cfg.Limits.MaxFile+1024)
+	res, err := s.runner.Run(ctx, in.Machine, cmd, nil, s.cfg.Limits.Timeout, s.cfg.Limits.MaxFile+1024)
 	if err != nil {
 		r, e := errResult("执行失败：%v", err)
 		return r, readOut{}, e
@@ -312,6 +356,7 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 		return r, writeOut{}, e
 	}
 	if !s.pol.Path(in.Path) {
+		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "write_file", "detail", in.Path, "reason", "deny_paths")
 		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths。如确有必要，请向用户说明并由用户调整策略。", in.Path)
 		return r, writeOut{}, e
 	}
@@ -345,7 +390,7 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 			return r, writeOut{}, e
 		}
 	}
-	res, err := s.pool.Run(ctx, in.Machine,
+	res, err := s.runner.Run(ctx, in.Machine,
 		fmt.Sprintf("cat > %s", shellQuote(in.Path)), []byte(in.Content),
 		s.cfg.Limits.Timeout, 4096)
 	if err != nil {
