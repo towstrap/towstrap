@@ -59,6 +59,28 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 minisign -Vm towstrap-agent-linux-amd64   # 有签名文件时
 ```
 
+### 一键安装脚本（agent 推荐）
+
+服务器直接吐安装脚本——从哪台服务器下载，就默认连回哪台，不用手填地址：
+
+```bash
+# Linux / macOS
+curl -fsSL https://你的服务器:8080/install.sh | sh -s -- --token tsa-…
+
+# Windows（PowerShell）
+powershell -Command "& { $(irm https://你的服务器:8080/install.ps1) } -Token tsa-…"
+```
+
+脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap-agent`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和最小 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。
+
+也可以从 GitHub 直接拉脚本（此时必须显式给 `--server`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-… --server wss://你的服务器:443
+```
+
+`machine add` / `user add` / `@machine add` 打印的接入指引里就带这条一键命令。自签证书时 curl 加 `-k`。
+
 支持 Linux、macOS 和 Windows（amd64/arm64）。Windows 上 agent 默认用 `cmd.exe` 跑命令（配 `shell` 可换 `powershell`/`pwsh`/git-bash 的 `bash`，按 shell 名自动选 `/c` 或 `-Command`）；交互式会话走 **ConPTY**（Windows 10 1809 / Server 2019 及以上），`ssh -t`、vim、top 都能用。服务器端在 Windows 上能跑但属小众用法，默认路径（`/etc/towstrap` 等）是 Unix 风格，请用命令行旗标或配置文件显式指定。
 
 ---

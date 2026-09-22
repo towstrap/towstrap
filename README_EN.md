@@ -79,10 +79,13 @@ go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
 towstrap-server user add alice    # prints a random password and the first machine's agent token
 towstrap-server &                 # SSH :2222, HTTP :8080
 
-# On the controlled machine
-go install github.com/towstrap/towstrap/cmd/towstrap-agent@latest
-echo 'tsa-…' > ~/.towstrap-token && chmod 600 ~/.towstrap-token
-towstrap-agent --server ws://S:8080 --agent-token-file ~/.towstrap-token
+# On the controlled machine, one command (the token is what `user add` printed;
+# the script is served by that server so the address is already baked in)
+curl -fsSL http://S:8080/install.sh | sh -s -- --token tsa-…
+# It downloads the right binary, verifies SHA256, and writes the token file
+# plus a minimal config; add --systemd to install a service. Manual way:
+# download towstrap-agent, then
+#   towstrap-agent --server ws://S:8080 --agent-token-file ~/.towstrap-token
 
 # On your laptop
 ssh -p 2222 alice@S                            # land in that machine's shell
@@ -171,6 +174,7 @@ Authorization is layered: the agent's OS user is the real boundary, MCP policy (
 │   ├── totp/              # TOTP second factor
 │   └── e2e/               # end-to-end tests (real server, real agent)
 ├── skills/towstrap/       # LLM skill shipped with the project (embedded)
+├── scripts/               # install.sh / install.ps1 one-line installers (served at /install.*)
 ├── examples/              # server.yaml / agent.yaml / mcp.yaml / systemd unit
 ├── docs/                  # Chinese & English user guides and technical manuals
 └── assets/                # logo and other assets

@@ -59,6 +59,28 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 minisign -Vm towstrap-agent-linux-amd64   # when a signature file exists
 ```
 
+### One-line install script (recommended for agents)
+
+The server serves the install script itself — whichever server you download it from becomes the default `server`, no address to type:
+
+```bash
+# Linux / macOS
+curl -fsSL https://your-server:8080/install.sh | sh -s -- --token tsa-…
+
+# Windows (PowerShell)
+powershell -Command "& { $(irm https://your-server:8080/install.ps1) } -Token tsa-…"
+```
+
+What the script does: downloads the `towstrap-agent` binary for your OS/arch from GitHub Releases, verifies it against `SHA256SUMS`, installs to `/usr/local/bin` (falling back to `~/.local/bin`), writes a `0600` token file and a minimal `agent.yaml` (under `/etc/towstrap` when root, `~/.config/towstrap` otherwise). With `--systemd` it also installs a service: as root it creates a dedicated `towstrap` user plus a system unit and starts it; as a regular user it writes a `~/.config/systemd/user` unit.
+
+You can also pull the script straight from GitHub — then `--server` is required:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-… --server wss://your-server:443
+```
+
+`machine add` / `user add` / `@machine add` print this one-liner in their install hint. With a self-signed cert add `-k` to curl.
+
 Linux, macOS and Windows are supported (amd64/arm64). On Windows the agent runs commands through `cmd.exe` by default (set `shell` to `powershell`/`pwsh`/git-bash `bash` — the flag is picked from the shell name: `/c` or `-Command`); interactive sessions go through **ConPTY** (Windows 10 1809 / Server 2019+), so `ssh -t`, vim, top all work. The server compiles for Windows too but that's a niche setup; its default paths (`/etc/towstrap` etc.) are Unix-style, so set them explicitly via flags or config.
 
 ---

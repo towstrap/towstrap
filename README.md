@@ -78,10 +78,12 @@ go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
 towstrap-server user add alice    # 建号；打印随机密码和第一台机器的 agent token
 towstrap-server &                 # SSH :2222，HTTP :8080
 
-# 被控机上
-go install github.com/towstrap/towstrap/cmd/towstrap-agent@latest
-echo 'tsa-…' > ~/.towstrap-token && chmod 600 ~/.towstrap-token
-towstrap-agent --server ws://S:8080 --agent-token-file ~/.towstrap-token
+# 被控机上一条命令装好（token 是上面 user add 打印的那个；
+# 脚本从这台服务器拉取，地址已自动填好）
+curl -fsSL http://S:8080/install.sh | sh -s -- --token tsa-…
+# 它会下载对应平台的二进制、校验 SHA256、写 token 文件和最小配置；
+# 加 --systemd 顺带装成服务。手动方式：下载 towstrap-agent 后
+#   towstrap-agent --server ws://S:8080 --agent-token-file ~/.towstrap-token
 
 # 你的电脑上
 ssh -p 2222 alice@S                            # 进那台机器的 shell
@@ -170,6 +172,7 @@ TowStrap 给 LLM 提供 MCP 工具 `list_machines / run_command / read_file / wr
 │   ├── totp/              # TOTP 二因素
 │   └── e2e/               # 端到端测试（起真服务器真 agent）
 ├── skills/towstrap/       # 随项目发布的 LLM skill（embed 进二进制）
+├── scripts/               # install.sh / install.ps1 一键安装（服务器 /install.* 下发）
 ├── examples/              # server.yaml / agent.yaml / mcp.yaml / systemd 单元
 ├── docs/                  # 中英用户手册与技术手册
 └── assets/                # logo 等资源

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -321,16 +322,28 @@ func MergeAgent(file Agent, set map[string]string) Agent {
 	return out
 }
 
-// AgentInstallHint 生成把 agent 装到目标机上的提示文案。publicURL 为空时
-// 用占位符并提醒把地址换成实际的。CLI 和 SSH 自助管理命令共用。
+// AgentInstallHint 生成把 agent 装到目标机上的提示文案。有 public_url
+// 就给一键安装命令（脚本从服务器拉取，地址自动填好）；没有就退到手工
+// 命令。CLI 和 SSH 自助管理命令共用。
 func AgentInstallHint(publicURL, token string) string {
-	url := publicURL
-	if url == "" {
-		url = "wss://<服务器>:<端口>"
-	}
-	s := fmt.Sprintf("在那台机器上执行 agent 安装命令：\n  towstrap-agent --server %s --agent-token %s", url, token)
 	if publicURL == "" {
-		s += "\n（服务器没配 public_url，请把上面的地址换成实际地址）"
+		return fmt.Sprintf(`在那台机器上装 agent：
+  towstrap-agent --server wss://<服务器>:<端口> --agent-token %s
+（服务器没配 public_url，请把上面的地址换成实际地址）`, token)
 	}
-	return s
+	b := strings.TrimSuffix(publicURL, "/")
+	switch {
+	case strings.HasPrefix(b, "wss://"):
+		b = "https://" + b[len("wss://"):]
+	case strings.HasPrefix(b, "ws://"):
+		b = "http://" + b[len("ws://"):]
+	}
+	return fmt.Sprintf(`在那台机器上一条命令装好（脚本自带服务器地址）：
+  curl -fsSL %s/install.sh | sh -s -- --token %s
+Windows 用 PowerShell：
+  powershell -Command "& { $(irm %s/install.ps1) } -Token %s"
+已装好二进制的也可以直接跑：
+  towstrap-agent --server %s --agent-token-file <token文件路径>
+（token 要写成 0600 的文件才能远程换发；自签证书 curl 加 -k）`,
+		b, token, b, token, publicURL)
 }

@@ -28,7 +28,7 @@
 
 三个进程：
 
-- **towstrap-server**（`cmd/towstrap-server`，`internal/server`）：一个进程两个端口——SSH 口（gliderlabs/ssh）面向人，HTTP 口面向 agent（`/agent` 的 WebSocket）、监控（`/health` `/status`）、MCP（`/mcp`）、token 换发（`/token/refresh`）和公开 skill（`/skill`）。`Hub` 是核心：机器 ID → 已连接 agent 的映射，所有会话都经它建立。账号库是 SQLite（`internal/accounts`）。
+- **towstrap-server**（`cmd/towstrap-server`，`internal/server`）：一个进程两个端口——SSH 口（gliderlabs/ssh）面向人，HTTP 口面向 agent（`/agent` 的 WebSocket）、监控（`/health` `/status`）、MCP（`/mcp`）、token 换发（`/token/refresh`）、公开 skill（`/skill`）和一键安装脚本（`/install.sh`、`/install.ps1`）。`Hub` 是核心：机器 ID → 已连接 agent 的映射，所有会话都经它建立。账号库是 SQLite（`internal/accounts`）。
 - **towstrap-agent**（`cmd/towstrap-agent`，`internal/client`）：被控机上的常驻进程。主动 WebSocket 连出到 `/agent`，收 `open` 消息起本地进程（PTY 或 exec），双向搬运数据；处理 `token` 消息做远程换发；本地写审计、弹通知。
 - **towstrap-mcp**（`cmd/towstrap-mcp`）：stdio MCP server。内部起 `mcpsrv.Server`，执行后端是 SSH 连接池（`Pool`）——它自己当 SSH 客户端登到服务器，走和普通 `ssh` 客户端一样的路。
 
@@ -401,6 +401,8 @@ towstrap-mcp connect [list|uninstall|print-mcp] [--path] [--force] [--dry-run]
 | `/mcp` | POST 等 | `Authorization: Bearer tsm-…` | Streamable HTTP MCP；401 记 `MCP-AUTH-FAIL`；明文+非回环拒启动 |
 | `/token/refresh` | POST | `X-Agent-Token` + JSON 密码/TOTP | 见 §6；`{"results":[…]}`；401/403/429 记 `TOKEN-REFRESH-DENY` |
 | `/skill` | GET/HEAD | 无（公开文档） | `text/markdown; charset=utf-8`，`Cache-Control: public, max-age=3600`；其他方法 405 |
+| `/install.sh` | GET/HEAD | 无（公开文档） | unix 一键安装脚本；`__TOWSTRAP_DEFAULT_SERVER__` 换成 `public_url`（没配则按请求 Host + TLS 推导），`Cache-Control: no-cache` |
+| `/install.ps1` | GET/HEAD | 无（公开文档） | Windows PowerShell 版，同上 |
 
 HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBytes 16KB`；TLS 最低 1.2。
 

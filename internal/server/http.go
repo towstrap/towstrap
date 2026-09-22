@@ -15,6 +15,7 @@ import (
 
 	"github.com/towstrap/towstrap/internal/proto"
 	"github.com/towstrap/towstrap/internal/version"
+	"github.com/towstrap/towstrap/scripts"
 	"github.com/towstrap/towstrap/skills"
 )
 
@@ -58,6 +59,23 @@ func (s *Server) routes() http.Handler {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		w.Write(skills.SkillMD())
 	})
+	// /install.sh、/install.ps1 下发一键安装脚本：地址占位符换成这台
+	// 服务器自己的地址（public_url 优先，否则按请求 Host + 是否 TLS
+	// 推导）——从哪台下载就默认连回哪台。公开内容，没有秘密。
+	serveInstall := func(render func(string) []byte, ct string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Cache-Control", "no-cache") // 地址随请求推导，别缓存
+			w.Write(render(s.installServerURL(r)))
+		}
+	}
+	mux.HandleFunc("/install.sh", serveInstall(scripts.InstallSH, "text/x-shellscript; charset=utf-8"))
+	mux.HandleFunc("/install.ps1", serveInstall(scripts.InstallPS1, "text/plain; charset=utf-8"))
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/agent", s.handleAgent)
 	mux.HandleFunc("/token/refresh", s.handleTokenRefresh)
@@ -65,6 +83,20 @@ func (s *Server) routes() http.Handler {
 		http.NotFound(w, r)
 	})
 	return mux
+}
+
+// installServerURL 推导给安装脚本填的 ws(s) 地址：public_url 优先；没配
+// 用请求的 Host（有 TLS 就 wss，否则 ws）。本项目不建议放反代后，r.Host
+// 就是用户 curl 时看到的地址。
+func (s *Server) installServerURL(r *http.Request) string {
+	if s.cfg.PublicURL != "" {
+		return s.cfg.PublicURL
+	}
+	scheme := "ws"
+	if r.TLS != nil {
+		scheme = "wss"
+	}
+	return scheme + "://" + r.Host
 }
 
 // handleAgent 是 agent 连入的地方：token 对上哪个账号，机器就挂到那个用户名下。

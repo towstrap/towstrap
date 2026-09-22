@@ -28,7 +28,7 @@ For anyone integrating, auditing, or extending TowStrap. Everything below is wri
 
 Three processes:
 
-- **towstrap-server** (`cmd/towstrap-server`, `internal/server`): one process, two ports — an SSH port (gliderlabs/ssh) for humans, and an HTTP port serving the agent WebSocket (`/agent`), monitoring (`/health` `/status`), MCP (`/mcp`), token rotation (`/token/refresh`), and the public skill (`/skill`). The `Hub` is the core: a machine-ID → connected-agent map through which every session is established. Accounts live in SQLite (`internal/accounts`).
+- **towstrap-server** (`cmd/towstrap-server`, `internal/server`): one process, two ports — an SSH port (gliderlabs/ssh) for humans, and an HTTP port serving the agent WebSocket (`/agent`), monitoring (`/health` `/status`), MCP (`/mcp`), token rotation (`/token/refresh`), the public skill (`/skill`), and the one-line installers (`/install.sh`, `/install.ps1`). The `Hub` is the core: a machine-ID → connected-agent map through which every session is established. Accounts live in SQLite (`internal/accounts`).
 - **towstrap-agent** (`cmd/towstrap-agent`, `internal/client`): a daemon on the controlled machine. Dials out to `/agent`, spawns local processes on `open` (PTY or exec), pumps data both ways, handles `token` messages for remote rotation, and keeps a local audit log + notifications.
 - **towstrap-mcp** (`cmd/towstrap-mcp`): a stdio MCP server. Hosts `mcpsrv.Server` whose execution backend is an SSH connection pool (`Pool`) — it acts as an SSH client to the server, same path as any `ssh` client.
 
@@ -401,6 +401,8 @@ towstrap-mcp connect [list|uninstall|print-mcp] [--path] [--force] [--dry-run]
 | `/mcp` | POST etc. | `Authorization: Bearer tsm-…` | Streamable HTTP MCP; 401 logged as `MCP-AUTH-FAIL`; plaintext + non-loopback refuses to start |
 | `/token/refresh` | POST | `X-Agent-Token` + JSON password/TOTP | see §6; `{"results":[…]}`; 401/403/429 logged as `TOKEN-REFRESH-DENY` |
 | `/skill` | GET/HEAD | none (public document) | `text/markdown; charset=utf-8`, `Cache-Control: public, max-age=3600`; other methods 405 |
+| `/install.sh` | GET/HEAD | none (public document) | unix one-line install script; `__TOWSTRAP_DEFAULT_SERVER__` replaced with `public_url` (or derived from request Host + TLS), `Cache-Control: no-cache` |
+| `/install.ps1` | GET/HEAD | none (public document) | Windows PowerShell version, same substitution |
 
 Fixed HTTP server parameters: `ReadHeaderTimeout 10s`, `IdleTimeout 2m`, `MaxHeaderBytes 16KB`; TLS minimum version 1.2.
 
