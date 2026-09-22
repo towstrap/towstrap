@@ -278,7 +278,7 @@ ssh -p 2222 alice+office@服务器   # 多机账号必须指名
 ### TOTP 二因素
 
 ```bash
-towstrap-server user totp alice          # 打印 otpauth:// URI 和手动录入秘钥，输一次码确认绑定
+towstrap-server user totp alice          # 终端里显示二维码（扫不了时用 otpauth:// URI 或手动录入秘钥），输一次码确认绑定
 towstrap-server user totp alice --remove # 解绑，退回纯密码
 ```
 

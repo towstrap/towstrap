@@ -278,7 +278,7 @@ Logging into a multi-machine account without a suffix prints the machine list (w
 ### TOTP second factor
 
 ```bash
-towstrap-server user totp alice          # prints otpauth:// URI + manual secret; enter a code to confirm
+towstrap-server user totp alice          # shows a scannable QR code in the terminal (URI + manual secret as fallback); enter a code to confirm
 towstrap-server user totp alice --remove # unenroll, back to password-only
 ```
 

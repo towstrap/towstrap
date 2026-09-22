@@ -12,11 +12,13 @@ import (
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 
 	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/allow"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/qrcode"
 	"github.com/towstrap/towstrap/internal/server"
 	"github.com/towstrap/towstrap/internal/totp"
 	"github.com/towstrap/towstrap/internal/version"
@@ -864,6 +866,12 @@ func userTOTP(args []string) int {
 
 	secret, uri := totp.Generate("towstrap", name)
 	fmt.Println("在验证器（Google Authenticator / 1Password / Aegis 等）里添加：")
+	// 终端里直接给二维码扫；输出被管道/重定向时不画（免得脚本里混进画板）
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		if qr, err := qrcode.Terminal(uri); err == nil {
+			fmt.Print(qr)
+		}
+	}
 	fmt.Printf("  %s\n", uri)
 	fmt.Printf("手动录入用秘钥: %s\n", totp.SecretString(secret))
 	fmt.Print("输入验证器上现在的 6 位码确认绑定: ")
