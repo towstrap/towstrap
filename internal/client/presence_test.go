@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"ws2ssh/internal/auditlog"
+	"towstrap/internal/auditlog"
 )
 
 // TestPresenceNotifyTransitions 通知只在活跃数 0→1 和 1→0 的边沿发，

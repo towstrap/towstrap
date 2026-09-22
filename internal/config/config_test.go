@@ -49,10 +49,10 @@ server:
 
 func TestMergeServerDefaults(t *testing.T) {
 	m := MergeServer(Server{}, nil)
-	if m.HTTP != ":8080" || m.SSH != ":2222" || m.HostKey != "/etc/ws2ssh/ssh_host_key" {
+	if m.HTTP != ":8080" || m.SSH != ":2222" || m.HostKey != "/etc/towstrap/ssh_host_key" {
 		t.Fatalf("%#v", m)
 	}
-	if m.UsersDB != "/etc/ws2ssh/users.db" {
+	if m.UsersDB != "/etc/towstrap/users.db" {
 		t.Fatalf("账号库默认路径: %#v", m)
 	}
 }
@@ -61,28 +61,28 @@ func TestLoadAgentSectionAndFlat(t *testing.T) {
 	path := write(t, `
 agent:
   server: wss://1.2.3.4:443
-  agent_token: w2s-abc
+  agent_token: tsa-abc
   insecure: true
 `)
 	a, err := LoadAgent(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Server != "wss://1.2.3.4:443" || a.AgentToken != "w2s-abc" || !a.Insecure {
+	if a.Server != "wss://1.2.3.4:443" || a.AgentToken != "tsa-abc" || !a.Insecure {
 		t.Fatalf("%#v", a)
 	}
 
-	flat := write(t, "server: wss://5.6.7.8:443\nagent_token: w2s-flat\n")
+	flat := write(t, "server: wss://5.6.7.8:443\nagent_token: tsa-flat\n")
 	a2, err := LoadAgent(flat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a2.Server != "wss://5.6.7.8:443" || a2.AgentToken != "w2s-flat" || a2.Insecure {
+	if a2.Server != "wss://5.6.7.8:443" || a2.AgentToken != "tsa-flat" || a2.Insecure {
 		t.Fatalf("%#v", a2)
 	}
 
-	m := MergeAgent(a2, map[string]string{"agent-token": "w2s-new", "insecure": "true"})
-	if m.AgentToken != "w2s-new" || !m.Insecure || m.Server != a2.Server {
+	m := MergeAgent(a2, map[string]string{"agent-token": "tsa-new", "insecure": "true"})
+	if m.AgentToken != "tsa-new" || !m.Insecure || m.Server != a2.Server {
 		t.Fatalf("%#v", m)
 	}
 }

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
 )
 
 type refreshReq struct {

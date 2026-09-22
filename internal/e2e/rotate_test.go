@@ -16,9 +16,9 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/client"
-	"ws2ssh/internal/server"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/client"
+	"towstrap/internal/server"
+	"towstrap/internal/totp"
 )
 
 func gosshPassword() gossh.AuthMethod { return gossh.Password("alicepw123") }
@@ -113,7 +113,7 @@ func TestTokenRefreshE2E(t *testing.T) {
 			t.Fatal(err)
 		}
 		newTok := strings.TrimSpace(string(raw))
-		if !strings.HasPrefix(newTok, "w2s-") {
+		if !strings.HasPrefix(newTok, "tsa-") {
 			t.Fatalf("文件 %d 里应是新 token: %q", i, newTok)
 		}
 		m, ok := users.MachineByToken(newTok)
@@ -198,7 +198,7 @@ func TestTokenRefreshTOTP(t *testing.T) {
 	startAgentFile(t, httpPort, fileA, acct.Machines[0].Token, "host-a")
 	waitAgent(t, srv.Hub, "alice+default")
 
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, time.Now().Unix()/30-1); err != nil {
 		t.Fatal(err)
 	}

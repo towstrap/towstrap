@@ -41,7 +41,7 @@ func TestMachineCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build.ID() != "alice+build" || !strings.HasPrefix(build.Token, "w2s-") {
+	if build.ID() != "alice+build" || !strings.HasPrefix(build.Token, "tsa-") {
 		t.Fatalf("新机器: %+v", build)
 	}
 	if build.Token == a.Machines[0].Token {
@@ -320,12 +320,12 @@ func TestMigrateMachinesFromOldDB(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := raw.Exec(
 		`INSERT INTO users (username, password_hash, token_enc, contact, agent_allow_ips, agent_last_ip, allow_ips, created_at)
-		 VALUES ('alice', 'hash1', ?, '', '["10.0.0.0/8"]', '1.2.3.4', '[]', ?)`, seal("w2s-aliceold"), now); err != nil {
+		 VALUES ('alice', 'hash1', ?, '', '["10.0.0.0/8"]', '1.2.3.4', '[]', ?)`, seal("tsa-aliceold"), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := raw.Exec(
 		`INSERT INTO users (username, password_hash, token_enc, allow_ips, created_at)
-		 VALUES ('bob', 'hash2', ?, '[]', ?)`, seal("w2s-bobold"), now); err != nil {
+		 VALUES ('bob', 'hash2', ?, '[]', ?)`, seal("tsa-bobold"), now); err != nil {
 		t.Fatal(err)
 	}
 	if err := raw.Close(); err != nil {
@@ -340,7 +340,7 @@ func TestMigrateMachinesFromOldDB(t *testing.T) {
 
 	// 每人一台 default 机器，旧 token 直接命中
 	for _, tc := range []struct{ user, tok string }{
-		{"alice", "w2s-aliceold"}, {"bob", "w2s-bobold"},
+		{"alice", "tsa-aliceold"}, {"bob", "tsa-bobold"},
 	} {
 		ms := s.Machines(tc.user)
 		if len(ms) != 1 || ms[0].Name != DefaultMachine || ms[0].Token != tc.tok {

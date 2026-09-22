@@ -10,11 +10,11 @@ import (
 func TestResolveAgentTokenPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	tokFile := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokFile, []byte("  w2s-from-file\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokFile, []byte("  tsa-from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	yamlFile := filepath.Join(dir, "yaml-token")
-	if err := os.WriteFile(yamlFile, []byte("w2s-from-yaml-file\n"), 0o600); err != nil {
+	if err := os.WriteFile(yamlFile, []byte("tsa-from-yaml-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -23,11 +23,11 @@ func TestResolveAgentTokenPrecedence(t *testing.T) {
 		flagToken, flagFile, env, yamlTok, yamlF string
 		want, wantSrc                            string
 	}{
-		{"显式旗标最高", "w2s-flag", tokFile, "w2s-env", "w2s-yaml", yamlFile, "w2s-flag", "旗标"},
-		{"文件旗标次之（去空白）", "", tokFile, "w2s-env", "w2s-yaml", yamlFile, "w2s-from-file", "--agent-token-file"},
-		{"环境变量再次", "", "", " w2s-env ", "w2s-yaml", yamlFile, "w2s-env", "环境变量"},
-		{"yaml 直写优先于 yaml 文件", "", "", "", "w2s-yaml", yamlFile, "w2s-yaml", "配置 agent_token"},
-		{"yaml 文件兜底", "", "", "", "", yamlFile, "w2s-from-yaml-file", "agent_token_file"},
+		{"显式旗标最高", "tsa-flag", tokFile, "tsa-env", "tsa-yaml", yamlFile, "tsa-flag", "旗标"},
+		{"文件旗标次之（去空白）", "", tokFile, "tsa-env", "tsa-yaml", yamlFile, "tsa-from-file", "--agent-token-file"},
+		{"环境变量再次", "", "", " tsa-env ", "tsa-yaml", yamlFile, "tsa-env", "环境变量"},
+		{"yaml 直写优先于 yaml 文件", "", "", "", "tsa-yaml", yamlFile, "tsa-yaml", "配置 agent_token"},
+		{"yaml 文件兜底", "", "", "", "", yamlFile, "tsa-from-yaml-file", "agent_token_file"},
 	}
 	for _, c := range cases {
 		got, src, _, err := resolveAgentToken(c.flagToken, c.flagFile, c.env, c.yamlTok, c.yamlF)
@@ -57,7 +57,7 @@ func TestResolveAgentTokenPrecedence(t *testing.T) {
 	}
 
 	// 只有「从文件读」的来源才带出文件路径（远程换发/重连重读的前提）
-	_, _, f1, _ := resolveAgentToken("w2s-x", tokFile, "", "", yamlFile)
+	_, _, f1, _ := resolveAgentToken("tsa-x", tokFile, "", "", yamlFile)
 	if f1 != "" {
 		t.Fatalf("--agent-token 来源不该有文件路径: %q", f1)
 	}

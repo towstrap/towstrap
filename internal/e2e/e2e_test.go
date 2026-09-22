@@ -19,10 +19,10 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/client"
-	"ws2ssh/internal/server"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/accounts"
+	"towstrap/internal/client"
+	"towstrap/internal/server"
+	"towstrap/internal/totp"
 )
 
 func freePort(t *testing.T) int {
@@ -335,13 +335,13 @@ func TestAgentTokenGate(t *testing.T) {
 	waitAgent(t, srv.Hub, "alice+default")
 
 	// 无效 token 连不上
-	_ = startAgent(t, httpPort, "w2s-not-a-real-token", "h2")
+	_ = startAgent(t, httpPort, "tsa-not-a-real-token", "h2")
 	time.Sleep(300 * time.Millisecond)
 	if srv.Hub.Has("h2") {
 		t.Fatal("无效 token 不应上线")
 	}
 	// 删号后 token 作废、SSH 拒绝。
-	// 用另一个连接删（模拟 ws2ssh user remove），服务器直接查库，立刻可见。
+	// 用另一个连接删（模拟 towstrap user remove），服务器直接查库，立刻可见。
 	cli, err := accounts.Open(users.Path(), "")
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +403,7 @@ func TestTOTPSecondFactor(t *testing.T) {
 	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
 	waitAgent(t, srv.Hub, "alice+default")
 
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func TestTOTPWrongCodeLocksOut(t *testing.T) {
 	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
 	waitAgent(t, srv.Hub, "alice+default")
 
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +523,7 @@ func TestIdleReverifyTOTP(t *testing.T) {
 	startAgent(t, httpPort, acct.Machines[0].Token, "h1")
 	waitAgent(t, srv.Hub, "alice+default")
 
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -1086,7 +1086,7 @@ func TestPublicKeyAuth(t *testing.T) {
 	}
 
 	// 绑了 TOTP 公钥仍能登录
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}

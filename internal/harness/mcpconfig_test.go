@@ -7,7 +7,7 @@ import (
 )
 
 func TestMCPSnippetsHTTP(t *testing.T) {
-	r := MCPRequest{URL: "https://s.example.com:8080/mcp", Token: "w2m-secret"}
+	r := MCPRequest{URL: "https://s.example.com:8080/mcp", Token: "tsm-secret"}
 	snips := MCPSnippets(r)
 	if len(snips) != 6 {
 		t.Fatalf("snippets = %d，想要 6", len(snips))
@@ -51,7 +51,7 @@ func TestMCPSnippetsHTTP(t *testing.T) {
 }
 
 func TestMCPSnippetsStdio(t *testing.T) {
-	r := MCPRequest{Stdio: true, Command: "/usr/local/bin/ws2ssh-mcp", Config: "/home/u/.config/ws2ssh/mcp.yaml"}
+	r := MCPRequest{Stdio: true, Command: "/usr/local/bin/towstrap-mcp", Config: "/home/u/.config/towstrap/mcp.yaml"}
 	snips := MCPSnippets(r)
 	if len(snips) != 6 {
 		t.Fatalf("snippets = %d，想要 6", len(snips))

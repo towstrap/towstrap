@@ -15,7 +15,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
-	"ws2ssh/internal/totp"
+	"towstrap/internal/totp"
 )
 
 func openTest(t *testing.T) *Store {
@@ -65,7 +65,7 @@ func TestAddVerifyRemove(t *testing.T) {
 		t.Fatalf("新建账号应自带 default 机器: %+v", a.Machines)
 	}
 	token := a.Machines[0].Token
-	if token == "" || !strings.HasPrefix(token, "w2s-") {
+	if token == "" || !strings.HasPrefix(token, "tsa-") {
 		t.Fatalf("token = %q", token)
 	}
 
@@ -79,7 +79,7 @@ func TestAddVerifyRemove(t *testing.T) {
 	if m, ok := s.MachineByToken(token); !ok || m.ID() != "alice+default" {
 		t.Fatalf("token 应对应 alice+default: %+v %v", m, ok)
 	}
-	if _, ok := s.MachineByToken("w2s-bogus"); ok {
+	if _, ok := s.MachineByToken("tsa-bogus"); ok {
 		t.Fatal("无效 token 应拒绝")
 	}
 
@@ -136,7 +136,7 @@ func TestTOTPFlow(t *testing.T) {
 	if _, err := s.Add("alice", "password12", nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 
 	// 未绑定：验证一律拒绝
 	if s.VerifyTOTP("alice", totp.Code(secret, time.Now())) {
@@ -325,7 +325,7 @@ func TestEncryptedAtRest(t *testing.T) {
 	if err := raw.QueryRow(`SELECT token_enc FROM machines`).Scan(&tEnc); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(tEnc), a.Machines[0].Token) || strings.Contains(string(tEnc), "w2s-") {
+	if strings.Contains(string(tEnc), a.Machines[0].Token) || strings.Contains(string(tEnc), "tsa-") {
 		t.Fatal("token 在库里是明文")
 	}
 	if !strings.HasPrefix(hash, "$2") {
@@ -430,18 +430,18 @@ func TestCryptoDeterministicAndPurposeBound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a1, err := k1.seal("token", []byte("w2s-aaa"))
+	a1, err := k1.seal("token", []byte("tsa-aaa"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, err := k2.seal("token", []byte("w2s-aaa"))
+	a2, err := k2.seal("token", []byte("tsa-aaa"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(a1) != string(a2) {
 		t.Fatal("同一密钥同一明文应是确定性加密")
 	}
-	b1, err := k1.seal("token", []byte("w2s-bbb"))
+	b1, err := k1.seal("token", []byte("tsa-bbb"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestCryptoDeterministicAndPurposeBound(t *testing.T) {
 	}
 
 	// 用途绑定：一个用途的密文不能当另一个用途解
-	c1, err := k1.seal("other", []byte("w2s-aaa"))
+	c1, err := k1.seal("other", []byte("tsa-aaa"))
 	if err != nil {
 		t.Fatal(err)
 	}

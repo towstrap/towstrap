@@ -11,10 +11,10 @@ import (
 	"fmt"
 	"time"
 
-	"ws2ssh/internal/proto"
+	"towstrap/internal/proto"
 )
 
-// MCPClient 一个 MCP 客户端凭据。Machines 是它能看到的 ws2ssh 账号名
+// MCPClient 一个 MCP 客户端凭据。Machines 是它能看到的 towstrap 账号名
 // 列表，["*"] 表示全部。
 type MCPClient struct {
 	Name      string    `json:"name"`
@@ -50,7 +50,7 @@ func (s *Store) decMCPToken(blob []byte) (string, error) {
 func newMCPToken() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
-	return "w2m-" + base64.RawURLEncoding.EncodeToString(b)
+	return "tsm-" + base64.RawURLEncoding.EncodeToString(b)
 }
 
 // validMachines 校验 machines 列表：非空，每项是四种写法之一：
@@ -72,7 +72,7 @@ func validMachines(machines []string) error {
 		u, mn := SplitMachineID(m)
 		switch {
 		case !proto.ValidName(u):
-			return fmt.Errorf("机器 %q 的账号部分不合法（应为 ws2ssh 账号名或 '*'）", m)
+			return fmt.Errorf("机器 %q 的账号部分不合法（应为 towstrap 账号名或 '*'）", m)
 		case mn != "" && mn != "*" && !proto.ValidName(mn):
 			return fmt.Errorf("机器 %q 的机器名部分不合法", m)
 		}

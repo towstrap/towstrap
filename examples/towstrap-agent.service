@@ -1,0 +1,33 @@
+# towstrap-agent 的 systemd 单元示例。要点：agent 用专用低权限用户跑——
+# 每个远程会话拿到的都是这个用户的 shell，以 root 跑等于把 root shell 发出去。
+#
+# 先建用户和配置目录：
+#   sudo useradd -r -m -s /bin/bash towstrap
+#   sudo mkdir -p /etc/towstrap
+#   sudo cp agent.yaml /etc/towstrap/agent.yaml
+#   # token 文件（agent.yaml 里 agent_token_file 指向的那个）要能让 towstrap
+#   # 用户读和写——token refresh 换发时 agent 会原子重写它：
+#   sudo chown towstrap:towstrap /etc/towstrap/agent.yaml /path/to/token_file
+#   sudo chmod 600 /path/to/token_file
+#
+#   sudo cp towstrap-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now towstrap-agent
+
+[Unit]
+Description=towstrap agent（被控端）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=towstrap
+Group=towstrap
+ExecStart=/usr/local/bin/towstrap-agent --config /etc/towstrap/agent.yaml
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+# 不用 ProtectSystem=full：它把 /etc 挂成只读，token refresh 换发时 agent
+# 要重写 /etc/towstrap 下的 token 文件会失败；true 只锁 /usr 和 /boot。
+ProtectSystem=true
+
+[Install]
+WantedBy=multi-user.target

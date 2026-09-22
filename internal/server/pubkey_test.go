@@ -10,9 +10,9 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/totp"
 )
 
 // testSigner 生成一把测试用 ed25519 钥匙。
@@ -54,7 +54,7 @@ func TestSSHPubKeyOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	// alice 绑上 TOTP：公钥登录仍应放行
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ type Result struct {
 	Duration        time.Duration
 }
 
-// Pool 按机器懒建立并复用 SSH 连接（机器名 = ws2ssh 账号名 = SSH 用户名）。
+// Pool 按机器懒建立并复用 SSH 连接（机器名 = towstrap 账号名 = SSH 用户名）。
 type Pool struct {
 	cfg       *Config
 	signer    gossh.Signer

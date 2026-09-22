@@ -10,9 +10,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/proto"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/proto"
 )
 
 // TestAgentMessageLimit 超过单条消息上限的 agent 输入应被服务端断开，

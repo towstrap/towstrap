@@ -16,9 +16,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/mcpsrv"
-	"ws2ssh/internal/server"
+	"towstrap/internal/accounts"
+	"towstrap/internal/mcpsrv"
+	"towstrap/internal/server"
 )
 
 // bearerRT 给每个请求挂上 Authorization: Bearer。
@@ -105,7 +105,7 @@ func TestMCPHTTPAuth(t *testing.T) {
 	if _, err := mcpHTTPConnect(t, httpPort, "", nil); err == nil {
 		t.Fatal("没 token 居然连上了")
 	}
-	if _, err := mcpHTTPConnect(t, httpPort, "w2m-错的", nil); err == nil {
+	if _, err := mcpHTTPConnect(t, httpPort, "tsm-错的", nil); err == nil {
 		t.Fatal("错 token 居然连上了")
 	}
 	waitAudit(t, audit, "MCP-AUTH-FAIL")
@@ -279,7 +279,7 @@ func TestMCPHTTPTimeout(t *testing.T) {
 }
 
 // TestMCPHTTPCLIApproval 客户端不声明 elicitation：批准落到
-// approvals_dir，由 ws2ssh-server mcp approve 兜底。
+// approvals_dir，由 towstrap-server mcp approve 兜底。
 func TestMCPHTTPCLIApproval(t *testing.T) {
 	_, httpPort, users, _, approvalsDir, _ := startMCPHTTP(t)
 	_, tok, _ := users.MCPAdd("laptop", []string{"bot"}, nil)

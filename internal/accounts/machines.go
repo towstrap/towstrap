@@ -14,8 +14,8 @@ import (
 	"sort"
 	"time"
 
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/proto"
+	"towstrap/internal/allow"
+	"towstrap/internal/proto"
 )
 
 // DefaultMachine 是账号默认机器的名字：user add 自动建一台，老库迁移

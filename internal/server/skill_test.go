@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/skills"
+	"towstrap/internal/accounts"
+	"towstrap/skills"
 )
 
 // TestSkillEndpoint /skill 公开返回随项目发布的 LLM skill 原文，
-// 让不装 ws2ssh-mcp 的用户也能 curl 下来手工安装。
+// 让不装 towstrap-mcp 的用户也能 curl 下来手工安装。
 func TestSkillEndpoint(t *testing.T) {
 	users, err := accounts.Open(filepath.Join(t.TempDir(), "u.db"), "")
 	if err != nil {

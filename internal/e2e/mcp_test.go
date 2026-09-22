@@ -1,6 +1,6 @@
 package e2e
 
-// ws2ssh-mcp 的端到端测试：真服务器 + 真 agent + 真 SSH（公钥登录），
+// towstrap-mcp 的端到端测试：真服务器 + 真 agent + 真 SSH（公钥登录），
 // MCP 这层用 in-memory transport 连一个可编程 elicitation handler 的客户端。
 
 import (
@@ -20,11 +20,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/mcpsrv"
-	"ws2ssh/internal/server"
+	"towstrap/internal/mcpsrv"
+	"towstrap/internal/server"
 )
 
-// mcpEnv 是一套跑起来的 ws2ssh + MCP server。
+// mcpEnv 是一套跑起来的 towstrap + MCP server。
 type mcpEnv struct {
 	client       *mcp.ClientSession
 	approvalsDir string
@@ -306,7 +306,7 @@ func TestMCPReadWriteFile(t *testing.T) {
 	inRoots := filepath.Join(env.rootsDir, "hello.txt")
 
 	res := callTool(t, env.client, "write_file", map[string]any{
-		"machine": "bot", "path": inRoots, "content": "你好 ws2ssh\n"})
+		"machine": "bot", "path": inRoots, "content": "你好 towstrap\n"})
 	if res.IsError {
 		t.Fatalf("roots 内 write_file 应直接放行: %s", resultText(res))
 	}
@@ -322,7 +322,7 @@ func TestMCPReadWriteFile(t *testing.T) {
 		Content string `json:"content"`
 	}
 	decodeStructured(t, res, &ro)
-	if ro.Content != "你好 ws2ssh\n" {
+	if ro.Content != "你好 towstrap\n" {
 		t.Fatalf("回读不一致: %q", ro.Content)
 	}
 

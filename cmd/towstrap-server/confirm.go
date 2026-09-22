@@ -15,10 +15,10 @@ import (
 
 	"golang.org/x/term"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/auditlog"
-	"ws2ssh/internal/config"
-	"ws2ssh/internal/server"
+	"towstrap/internal/accounts"
+	"towstrap/internal/auditlog"
+	"towstrap/internal/config"
+	"towstrap/internal/server"
 )
 
 // confirmOwner 让账号本人确认：输入账号密码（绑了 TOTP 再输验证码）。

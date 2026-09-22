@@ -12,9 +12,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/totp"
 )
 
 // TestTOTPAccountPasswordAttemptKeepsGuard 回归高危 1：TOTP 账号走纯密码通道
@@ -29,7 +29,7 @@ func TestTOTPAccountPasswordAttemptKeepsGuard(t *testing.T) {
 	if _, err := users.Add("alice", "alicepw123", nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestKbdTOTPWrongCodeCountsTowardLock(t *testing.T) {
 	if _, err := users.Add("alice", "alicepw123", nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}

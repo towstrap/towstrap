@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"ws2ssh/internal/auth"
+	"towstrap/internal/auth"
 )
 
 type UserStatus struct {

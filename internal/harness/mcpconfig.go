@@ -9,9 +9,9 @@ import (
 // HTTP 方式填 URL+Token；Stdio 方式置 Stdio 并填 Command/Config。
 type MCPRequest struct {
 	URL     string // 服务器内嵌 MCP 地址，如 https://S:8080/mcp
-	Token   string // w2m- token，进 Authorization: Bearer 头
-	Stdio   bool   // true → 本机 ws2ssh-mcp 的 stdio 片段
-	Command string // stdio：ws2ssh-mcp 可执行文件绝对路径
+	Token   string // tsm- token，进 Authorization: Bearer 头
+	Stdio   bool   // true → 本机 towstrap-mcp 的 stdio 片段
+	Command string // stdio：towstrap-mcp 可执行文件绝对路径
 	Config  string // stdio：mcp.yaml 路径
 }
 
@@ -46,7 +46,7 @@ func claude(r MCPRequest) Snippet {
 	if r.Stdio {
 		s.Text = jsonSnippet(map[string]any{
 			"mcpServers": map[string]any{
-				"ws2ssh": map[string]any{
+				"towstrap": map[string]any{
 					"command": r.Command,
 					"args":    []string{"--config", r.Config},
 				},
@@ -56,14 +56,14 @@ func claude(r MCPRequest) Snippet {
 	}
 	s.Text = jsonSnippet(map[string]any{
 		"mcpServers": map[string]any{
-			"ws2ssh": map[string]any{
+			"towstrap": map[string]any{
 				"type":    "http",
 				"url":     r.URL,
 				"headers": authHeader(r.Token),
 			},
 		},
 	})
-	s.Extra = "也可以直接跑：claude mcp add --transport http ws2ssh " + r.URL +
+	s.Extra = "也可以直接跑：claude mcp add --transport http towstrap " + r.URL +
 		" --header \"Authorization: Bearer " + r.Token + "\""
 	return s
 }
@@ -75,11 +75,11 @@ func claude(r MCPRequest) Snippet {
 func codex(r MCPRequest) Snippet {
 	s := Snippet{Harness: "Codex", File: "~/.codex/config.toml"}
 	if r.Stdio {
-		s.Text = fmt.Sprintf("[mcp_servers.ws2ssh]\ncommand = %q\nargs = [%q, %q]\n",
+		s.Text = fmt.Sprintf("[mcp_servers.towstrap]\ncommand = %q\nargs = [%q, %q]\n",
 			r.Command, "--config", r.Config)
 		return s
 	}
-	s.Text = fmt.Sprintf("[mcp_servers.ws2ssh]\nurl = %q\nhttp_headers = { \"Authorization\" = \"Bearer %s\" }\n",
+	s.Text = fmt.Sprintf("[mcp_servers.towstrap]\nurl = %q\nhttp_headers = { \"Authorization\" = \"Bearer %s\" }\n",
 		r.URL, r.Token)
 	return s
 }
@@ -90,11 +90,11 @@ func codex(r MCPRequest) Snippet {
 func grok(r MCPRequest) Snippet {
 	s := Snippet{Harness: "Grok Build", File: "~/.grok/config.toml"}
 	if r.Stdio {
-		s.Text = fmt.Sprintf("[mcp_servers.ws2ssh]\ncommand = %q\nargs = [%q, %q]\n",
+		s.Text = fmt.Sprintf("[mcp_servers.towstrap]\ncommand = %q\nargs = [%q, %q]\n",
 			r.Command, "--config", r.Config)
 		return s
 	}
-	s.Text = fmt.Sprintf("[mcp_servers.ws2ssh]\nurl = %q\nheaders = { \"Authorization\" = \"Bearer %s\" }\n",
+	s.Text = fmt.Sprintf("[mcp_servers.towstrap]\nurl = %q\nheaders = { \"Authorization\" = \"Bearer %s\" }\n",
 		r.URL, r.Token)
 	return s
 }
@@ -110,7 +110,7 @@ func cursor(r MCPRequest) Snippet {
 		entry["url"] = r.URL
 		entry["headers"] = authHeader(r.Token)
 	}
-	s.Text = jsonSnippet(map[string]any{"mcpServers": map[string]any{"ws2ssh": entry}})
+	s.Text = jsonSnippet(map[string]any{"mcpServers": map[string]any{"towstrap": entry}})
 	return s
 }
 
@@ -128,7 +128,7 @@ func gemini(r MCPRequest) Snippet {
 		entry["httpUrl"] = r.URL
 		entry["headers"] = authHeader(r.Token)
 	}
-	s.Text = jsonSnippet(map[string]any{"mcpServers": map[string]any{"ws2ssh": entry}})
+	s.Text = jsonSnippet(map[string]any{"mcpServers": map[string]any{"towstrap": entry}})
 	return s
 }
 
@@ -147,6 +147,6 @@ func opencode(r MCPRequest) Snippet {
 		entry["url"] = r.URL
 		entry["headers"] = authHeader(r.Token)
 	}
-	s.Text = jsonSnippet(map[string]any{"mcp": map[string]any{"ws2ssh": entry}})
+	s.Text = jsonSnippet(map[string]any{"mcp": map[string]any{"towstrap": entry}})
 	return s
 }

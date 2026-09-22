@@ -13,13 +13,13 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/config"
-	"ws2ssh/internal/mcpsrv"
-	"ws2ssh/internal/server"
-	"ws2ssh/internal/totp"
-	"ws2ssh/internal/version"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/config"
+	"towstrap/internal/mcpsrv"
+	"towstrap/internal/server"
+	"towstrap/internal/totp"
+	"towstrap/internal/version"
 )
 
 func main() {
@@ -29,7 +29,7 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "server": // 容忍旧的子命令写法（ws2ssh-server server --config ...）
+	case "server": // 容忍旧的子命令写法（towstrap-server server --config ...）
 		os.Exit(runServer(os.Args[2:]))
 	case "user":
 		os.Exit(runUser(os.Args[2:]))
@@ -40,30 +40,30 @@ func main() {
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
-		// 不带子命令直接跑服务器：ws2ssh-server --config server.yaml
+		// 不带子命令直接跑服务器：towstrap-server --config server.yaml
 		os.Exit(runServer(os.Args[1:]))
 	}
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `ws2ssh-server — 服务器端 + 账号管理（被控机上装的是另一个二进制 ws2ssh-agent）
+	fmt.Fprintf(os.Stderr, `towstrap-server — 服务器端 + 账号管理（被控机上装的是另一个二进制 towstrap-agent）
 
 用法:
-  ws2ssh-server [--config 文件.yaml] [选项]        跑服务器
-  ws2ssh-server user    add|list|set|remove|token|totp [选项] 用户名
-  ws2ssh-server machine add|list|set|remove|token [选项] 账号 机器名
-  ws2ssh-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
-  ws2ssh-server version
+  towstrap-server [--config 文件.yaml] [选项]        跑服务器
+  towstrap-server user    add|list|set|remove|token|totp [选项] 用户名
+  towstrap-server machine add|list|set|remove|token [选项] 账号 机器名
+  towstrap-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
+  towstrap-server version
 
 开通一台机器（都在服务器上操作，不用网页）:
-  ws2ssh-server user add alice --password 密码 --allow-ip 1.2.3.4   # 自定义用户名密码和白名单
+  towstrap-server user add alice --password 密码 --allow-ip 1.2.3.4   # 自定义用户名密码和白名单
   # 输出这台默认机器（alice+default）的 agent token 和安装命令：
-  ws2ssh-agent --server wss://服务器:443 --agent-token w2s-...
+  towstrap-agent --server wss://服务器:443 --agent-token tsa-...
 
 之后外人: ssh alice@服务器 -p 2222 （密码就是上面设置的）
 
 同一账号再加一台机器:
-  ws2ssh-server machine add alice build          # 拿到 build 的独立 token
+  towstrap-server machine add alice build          # 拿到 build 的独立 token
   # 多台机器后外人要指名登录：
   ssh alice+build@服务器 -p 2222                  # 或 ssh alice+default@...
 
@@ -86,8 +86,8 @@ func usage() {
   --min-agent-version 0.2.0    agent 上报版本低于此值就拒绝接入（版本淘汰用；
                                版本是自报的，不是安全控制）
   --audit-log 路径             服务器审计日志：认证成败、agent 上下线、会话开关；
-                               默认 root: /var/lib/ws2ssh/server-audit.log，
-                               普通用户 ~/.ws2ssh/server-audit.log；写 /dev/null 关
+                               默认 root: /var/lib/towstrap/server-audit.log，
+                               普通用户 ~/.towstrap/server-audit.log；写 /dev/null 关
   --max-sessions 16            每台机器（每账号）并发 SSH 会话上限；0 不限
   --max-conns 4096             SSH/HTTP 各自并发连接总上限；0 不限
   --max-conns-per-ip 64        SSH 每来源 IP 并发连接上限（只对 SSH；0 不限）
@@ -95,7 +95,7 @@ func usage() {
                                空闲的交互会话，想留住挂机会话就别开
   --ssh-max-timeout 24h        SSH 连接绝对寿命；0 不限
 
-账号管理（--config/--users-db 指定账号库，默认 /etc/ws2ssh/users.db；改完即时生效）:
+账号管理（--config/--users-db 指定账号库，默认 /etc/towstrap/users.db；改完即时生效）:
   user add   用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]...
                                [--agent-allow-ip 地址]...
                                [--ssh-key 公钥]... [--ssh-key-file 文件]
@@ -125,7 +125,7 @@ func usage() {
                                                                   --regen 是应急换法，必须 --admin）
 账号本人确认：add 和 token 会先问账号密码（绑了 TOTP 再问验证码）；
 --admin 跳过确认（打警告并写审计 MACHINE-*-ADMIN）；--audit-log 指定审计文件。
-换 token 的正常通道是在 agent 机器上跑 ws2ssh-agent token refresh（新 token
+换 token 的正常通道是在 agent 机器上跑 towstrap-agent token refresh（新 token
 直接写进那台机器的 token 文件，不断连接），--regen --admin 只用于机器丢了
 
 白名单写法：IP、网段、IP:端口、主机名、*.domain、*。不写就全放行。
@@ -327,22 +327,22 @@ func runServer(args []string) int {
 
 func usageUser() {
 	fmt.Fprintf(os.Stderr, `用法:
-  ws2ssh-server user add  用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]...
+  towstrap-server user add  用户名 [--password 密码] [--contact 联系方式] [--allow-ip 地址]...
                            [--ssh-key 公钥]... [--ssh-key-file 文件] [通用选项]
-  ws2ssh-server user list [通用选项]
-  ws2ssh-server user set   用户名 [--password 密码] [--name 新名] [--contact 联系方式]
+  towstrap-server user list [通用选项]
+  towstrap-server user set   用户名 [--password 密码] [--name 新名] [--contact 联系方式]
                            [--clear-contact] [--allow-ip 地址]... [--clear-allow]
                            [--agent-allow-ip 地址]... [--clear-agent-allow]
                            [--ssh-key 公钥]... [--ssh-key-file 文件]
                            [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
                            [--disable] [--enable] [通用选项]
-  ws2ssh-server user remove 用户名 [通用选项]
-  ws2ssh-server user token  用户名 [--regen] [--admin] [通用选项]
+  towstrap-server user remove 用户名 [通用选项]
+  towstrap-server user token  用户名 [--regen] [--admin] [通用选项]
                            看 token（仅当账号只有一台机器；多台用 machine
                            token 指定）。要账号本人确认：密码 + TOTP；--admin
                            跳过（打警告并写审计 MACHINE-TOKEN-ADMIN）。
                            --regen 是应急换法，必须 --admin
-  ws2ssh-server user totp   用户名 [--remove] [通用选项]    绑定/解绑 TOTP 二因素验证器
+  towstrap-server user totp   用户名 [--remove] [通用选项]    绑定/解绑 TOTP 二因素验证器
 
 通用选项: --config server.yaml（读里面的 users_db/users_key/public_url/audit_log）、
           --users-db 路径、--users-key 路径、--server-url 地址、--audit-log 路径
@@ -406,7 +406,7 @@ func loadUserEnv(configPath, usersDB, usersKey, serverURL string) (userEnv, bool
 		}
 	}
 	if db == "" {
-		db = "/etc/ws2ssh/users.db"
+		db = "/etc/towstrap/users.db"
 	}
 	store, err := accounts.Open(db, key)
 	if err != nil {
@@ -563,7 +563,7 @@ func userList(args []string) int {
 	}
 	list := env.store.List()
 	if len(list) == 0 {
-		fmt.Println("还没有账号。用 ws2ssh user add 用户名 开一个。")
+		fmt.Println("还没有账号。用 towstrap user add 用户名 开一个。")
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
@@ -794,7 +794,7 @@ func userToken(args []string) int {
 	}
 	// 换 token 只允许在 agent 机器上发起（token refresh）；--admin 是应急通道。
 	if *regen && !*admin {
-		slog.Error("换 token 请在 agent 机器上执行 ws2ssh-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
+		slog.Error("换 token 请在 agent 机器上执行 towstrap-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
 		return 2
 	}
 	event := "MACHINE-TOKEN-ADMIN"
@@ -862,7 +862,7 @@ func userTOTP(args []string) int {
 		return 2
 	}
 
-	secret, uri := totp.Generate("ws2ssh", name)
+	secret, uri := totp.Generate("towstrap", name)
 	fmt.Println("在验证器（Google Authenticator / 1Password / Aegis 等）里添加：")
 	fmt.Printf("  %s\n", uri)
 	fmt.Printf("手动录入用秘钥: %s\n", totp.SecretString(secret))
@@ -894,19 +894,19 @@ func (s *stringList) Set(v string) error {
 
 func usageMachine() {
 	fmt.Fprintf(os.Stderr, `用法:
-  ws2ssh-server machine add    账号 机器名 [--agent-allow-ip 地址]... [--admin] [通用选项]
+  towstrap-server machine add    账号 机器名 [--agent-allow-ip 地址]... [--admin] [通用选项]
                                加一台机器并打印它的 agent token（只显示一次）。
                                SSH 登录名随之变成 账号+机器名（如 alice+build）。
-  ws2ssh-server machine list   [账号] [通用选项]                列机器（不给账号列全部）
-  ws2ssh-server machine set    账号 机器名 [--agent-allow-ip 地址]...
+  towstrap-server machine list   [账号] [通用选项]                列机器（不给账号列全部）
+  towstrap-server machine set    账号 机器名 [--agent-allow-ip 地址]...
                                [--clear-agent-allow] [通用选项]
-  ws2ssh-server machine remove 账号 机器名 [通用选项]           删机器（token 作废，
+  towstrap-server machine remove 账号 机器名 [通用选项]           删机器（token 作废，
                                连着的 agent 会被巡检断开）
-  ws2ssh-server machine token  账号 机器名 [--regen] [--admin] [通用选项]
+  towstrap-server machine token  账号 机器名 [--regen] [--admin] [通用选项]
                                看这台机器的 token；--regen 是应急换法（机器
                                离线/丢失时用），必须加 --admin，记
                                MACHINE-TOKEN-REGEN-ADMIN。正常换法是在 agent
-                               机器上跑 ws2ssh-agent token refresh
+                               机器上跑 towstrap-agent token refresh
 
 账号本人确认：add 和 token 会先问这个账号的 SSH 密码（绑了 TOTP 再问验证码），
 防「能碰服务器 DB 就能给任何账号发 token」。--admin 跳过确认：打一条警告，
@@ -1001,7 +1001,7 @@ func machineList(args []string) int {
 		}
 	}
 	if len(machines) == 0 {
-		fmt.Println("没有机器；用 ws2ssh-server machine add 账号 机器名 加一台")
+		fmt.Println("没有机器；用 towstrap-server machine add 账号 机器名 加一台")
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
@@ -1094,7 +1094,7 @@ func machineToken(args []string) int {
 	env.auditPath = cliAuditPath(*auditLog, *configPath)
 	// 换 token 只允许在 agent 机器上发起（token refresh）；--admin 是应急通道。
 	if *regen && !*admin {
-		slog.Error("换 token 请在 agent 机器上执行 ws2ssh-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
+		slog.Error("换 token 请在 agent 机器上执行 towstrap-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
 		return 2
 	}
 	event := "MACHINE-TOKEN-ADMIN"
@@ -1130,18 +1130,18 @@ func machineToken(args []string) int {
 
 func usageMCP() {
 	fmt.Fprintf(os.Stderr, `用法:
-  ws2ssh-server mcp add    名字 --machine 授权... [--allow-ip 地址]... [通用选项]
-                           签发一个 MCP 客户端 token（w2m-...，只显示一次）。
+  towstrap-server mcp add    名字 --machine 授权... [--allow-ip 地址]... [通用选项]
+                           签发一个 MCP 客户端 token（tsm-...，只显示一次）。
                            --machine 写法：'*' 全部机器；'alice' 或 'alice+*'
                            alice 名下全部；'alice+office' 指定一台。
-  ws2ssh-server mcp list   [通用选项]                          列出客户端
-  ws2ssh-server mcp set    名字 [--machine 授权]... [--allow-ip 地址]...
+  towstrap-server mcp list   [通用选项]                          列出客户端
+  towstrap-server mcp set    名字 [--machine 授权]... [--allow-ip 地址]...
                            [--clear-allow] [--disable|--enable] [通用选项]
-  ws2ssh-server mcp remove 名字 [通用选项]                     删除（token 作废）
-  ws2ssh-server mcp token  名字 [--regen] [通用选项]           看/换 token
-  ws2ssh-server mcp pending  [--approvals-dir 目录] [--config server.yaml]
-  ws2ssh-server mcp approve <id>|--all  [--approvals-dir 目录] [--config server.yaml]
-  ws2ssh-server mcp deny    <id>|--all  [--approvals-dir 目录] [--config server.yaml]
+  towstrap-server mcp remove 名字 [通用选项]                     删除（token 作废）
+  towstrap-server mcp token  名字 [--regen] [通用选项]           看/换 token
+  towstrap-server mcp pending  [--approvals-dir 目录] [--config server.yaml]
+  towstrap-server mcp approve <id>|--all  [--approvals-dir 目录] [--config server.yaml]
+  towstrap-server mcp deny    <id>|--all  [--approvals-dir 目录] [--config server.yaml]
 
 通用选项: --config server.yaml（读 users_db/users_key/public_url/mcp 小节）、
           --users-db 路径、--users-key 路径、--server-url 地址
@@ -1236,14 +1236,14 @@ func mcpBaseURL(serverURL string) string {
 	return strings.TrimSuffix(base, "/")
 }
 
-// skillInstallHint 给 mcp add 输出末尾用：不装 ws2ssh-mcp 的用户
+// skillInstallHint 给 mcp add 输出末尾用：不装 towstrap-mcp 的用户
 // 也能直接从服务器的 /skill 路径把 skill 拉下来。
 func skillInstallHint(base string) string {
-	return fmt.Sprintf(`给编码助手装 ws2ssh skill（任选其一）：
-  Claude Code:  mkdir -p ~/.claude/skills/ws2ssh && curl -fsSL %s/skill -o ~/.claude/skills/ws2ssh/SKILL.md
-  Cursor:       mkdir -p ~/.cursor/skills/ws2ssh && curl -fsSL %s/skill -o ~/.cursor/skills/ws2ssh/SKILL.md
-  Codex/Grok:   mkdir -p ~/.agents/skills/ws2ssh && curl -fsSL %s/skill -o ~/.agents/skills/ws2ssh/SKILL.md
-  或下载 ws2ssh-mcp 后执行 ws2ssh-mcp connect（一次装全部）
+	return fmt.Sprintf(`给编码助手装 towstrap skill（任选其一）：
+  Claude Code:  mkdir -p ~/.claude/skills/towstrap && curl -fsSL %s/skill -o ~/.claude/skills/towstrap/SKILL.md
+  Cursor:       mkdir -p ~/.cursor/skills/towstrap && curl -fsSL %s/skill -o ~/.cursor/skills/towstrap/SKILL.md
+  Codex/Grok:   mkdir -p ~/.agents/skills/towstrap && curl -fsSL %s/skill -o ~/.agents/skills/towstrap/SKILL.md
+  或下载 towstrap-mcp 后执行 towstrap-mcp connect（一次装全部）
   （服务器是自签证书的话 curl 要加 -k）`, base, base, base)
 }
 
@@ -1293,7 +1293,7 @@ func mcpAdd(args []string) int {
 	fmt.Printf("MCP 客户端 %q 已创建\n", c.Name)
 	fmt.Printf("token: %s\n（只显示这一次；忘了就 mcp token %s --regen 换一个，旧的立刻作废）\n\n", token, c.Name)
 	fmt.Printf("支持 MCP 的客户端（如 Claude Code）这样配：\n")
-	fmt.Printf("  \"mcpServers\": {\"ws2ssh\": {\"type\": \"http\", \"url\": %q,\n"+
+	fmt.Printf("  \"mcpServers\": {\"towstrap\": {\"type\": \"http\", \"url\": %q,\n"+
 		"      \"headers\": {\"Authorization\": \"Bearer %s\"}}}\n\n",
 		mcpEndpointURL(env.serverURL, *configPath), token)
 	fmt.Println(skillInstallHint(mcpBaseURL(env.serverURL)))
@@ -1310,7 +1310,7 @@ func mcpList(args []string) int {
 	}
 	list := env.store.MCPList()
 	if len(list) == 0 {
-		fmt.Println("还没有 MCP 客户端；用 ws2ssh-server mcp add 签发")
+		fmt.Println("还没有 MCP 客户端；用 towstrap-server mcp add 签发")
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -1455,7 +1455,7 @@ func mcpPending(args []string) int {
 			p.ID, p.Machine, p.Kind, p.Detail,
 			time.Since(p.Created).Round(time.Second))
 	}
-	fmt.Println("\n批准：ws2ssh-server mcp approve <id>|--all；拒绝：ws2ssh-server mcp deny <id>|--all")
+	fmt.Println("\n批准：towstrap-server mcp approve <id>|--all；拒绝：towstrap-server mcp deny <id>|--all")
 	return 0
 }
 

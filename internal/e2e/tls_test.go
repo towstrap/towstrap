@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ws2ssh/internal/client"
-	"ws2ssh/internal/server"
+	"towstrap/internal/client"
+	"towstrap/internal/server"
 )
 
 // TLS 模式：自签证书自动生成，agent 用 wss:// --insecure 连上，SSH 照常。

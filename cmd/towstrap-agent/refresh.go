@@ -1,6 +1,6 @@
 package main
 
-// ws2ssh-agent token refresh 的命令行入口；核心逻辑在 internal/client
+// towstrap-agent token refresh 的命令行入口；核心逻辑在 internal/client
 // （TokenRefresh），这里只做配置解析和旗标接线。
 
 import (
@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"ws2ssh/internal/client"
-	"ws2ssh/internal/config"
+	"towstrap/internal/client"
+	"towstrap/internal/config"
 )
 
 type stringList []string
@@ -44,7 +44,7 @@ func runTokenRefresh(args []string) int {
 		}
 	}
 	cfg := config.MergeAgent(file, visited(fs))
-	tok, _, _, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("WS2SSH_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
+	tok, _, _, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
 	if err != nil {
 		slog.Error(err.Error())
 		return 2

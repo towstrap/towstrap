@@ -1,4 +1,4 @@
-// Package harness 负责把随项目发布的 ws2ssh skill 装进本机各家
+// Package harness 负责把随项目发布的 towstrap skill 装进本机各家
 // AI 编码助手（harness）的 skills 目录，并生成它们的 MCP 配置片段。
 package harness
 

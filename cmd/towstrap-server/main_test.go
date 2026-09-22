@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/accounts"
+	"towstrap/internal/totp"
 )
 
 // mcpEndpointURL 的 public_url 是 ws/wss scheme，打印给 MCP 客户端前
@@ -33,10 +33,10 @@ func TestSkillInstallHint(t *testing.T) {
 	base := "https://ssh.example.com:8080"
 	hint := skillInstallHint(base)
 	for _, want := range []string{
-		"~/.claude/skills/ws2ssh/SKILL.md",
-		"~/.cursor/skills/ws2ssh/SKILL.md",
-		"~/.agents/skills/ws2ssh/SKILL.md",
-		"ws2ssh-mcp connect",
+		"~/.claude/skills/towstrap/SKILL.md",
+		"~/.cursor/skills/towstrap/SKILL.md",
+		"~/.agents/skills/towstrap/SKILL.md",
+		"towstrap-mcp connect",
 		base + "/skill",
 		"-k",
 	} {
@@ -60,7 +60,7 @@ func TestConfirmOwner(t *testing.T) {
 	// 绑 TOTP 的账号：lastStep 记成上一片，当前片的码才有效
 	enroll := func(t *testing.T, s *accounts.Store, user string) []byte {
 		t.Helper()
-		secret, _ := totp.Generate("ws2ssh", user)
+		secret, _ := totp.Generate("towstrap", user)
 		if err := s.EnrollTOTP(user, secret, time.Now().Unix()/30-1); err != nil {
 			t.Fatal(err)
 		}

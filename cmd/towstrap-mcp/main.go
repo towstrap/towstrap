@@ -1,14 +1,14 @@
-// ws2ssh-mcp 是 ws2ssh 的 MCP 入口：LLM 应用通过它跑命令、读写被控机
+// towstrap-mcp 是 towstrap 的 MCP 入口：LLM 应用通过它跑命令、读写被控机
 // 上的文件，带策略过滤和人工批准。
 //
 // 用法：
 //
-//	ws2ssh-mcp [--config 路径] [serve]   起 stdio MCP server（默认）
-//	ws2ssh-mcp [--config 路径] pending   列出等待批准的请求
-//	ws2ssh-mcp [--config 路径] approve <id>|--all
-//	ws2ssh-mcp [--config 路径] deny <id>|--all
-//	ws2ssh-mcp connect ...               把 ws2ssh skill 装进本机 AI 编码助手
-//	ws2ssh-mcp version
+//	towstrap-mcp [--config 路径] [serve]   起 stdio MCP server（默认）
+//	towstrap-mcp [--config 路径] pending   列出等待批准的请求
+//	towstrap-mcp [--config 路径] approve <id>|--all
+//	towstrap-mcp [--config 路径] deny <id>|--all
+//	towstrap-mcp connect ...               把 towstrap skill 装进本机 AI 编码助手
+//	towstrap-mcp version
 //
 // serve 模式下 stdout 是 MCP 协议通道，所有日志只走 stderr。
 package main
@@ -22,8 +22,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ws2ssh/internal/mcpsrv"
-	"ws2ssh/internal/version"
+	"towstrap/internal/mcpsrv"
+	"towstrap/internal/version"
 )
 
 func main() {
@@ -64,13 +64,13 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "未知子命令 %q\n\n", sub)
 		fmt.Fprintf(os.Stderr, `用法：
-  ws2ssh-mcp [--config 路径] [serve]    起 stdio MCP server（默认）
-  ws2ssh-mcp [--config 路径] pending    列出等待批准的请求
-  ws2ssh-mcp [--config 路径] approve <id>|--all   批准
-  ws2ssh-mcp [--config 路径] deny <id>|--all      拒绝
-  ws2ssh-mcp connect ...                把 ws2ssh skill 装进本机 AI 编码助手
+  towstrap-mcp [--config 路径] [serve]    起 stdio MCP server（默认）
+  towstrap-mcp [--config 路径] pending    列出等待批准的请求
+  towstrap-mcp [--config 路径] approve <id>|--all   批准
+  towstrap-mcp [--config 路径] deny <id>|--all      拒绝
+  towstrap-mcp connect ...                把 towstrap skill 装进本机 AI 编码助手
                                         （connect help 看细项）
-  ws2ssh-mcp version                    打印版本
+  towstrap-mcp version                    打印版本
 `)
 		os.Exit(2)
 	}
@@ -107,7 +107,7 @@ func serve(cfgPath string) {
 		os.Exit(1)
 	}
 	defer srv.Close()
-	slog.Info("ws2ssh-mcp 运行中", "server", cfg.Server, "machines", len(cfg.Machines),
+	slog.Info("towstrap-mcp 运行中", "server", cfg.Server, "machines", len(cfg.Machines),
 		"policy", cfg.Policy.Default)
 	// stdout 只走 MCP 协议；slog 默认写 stderr，不要动。
 	if err := srv.MCP().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
@@ -132,7 +132,7 @@ func pending(cfgPath string) {
 			p.ID, p.Machine, p.Kind, p.Detail,
 			time.Since(p.Created).Round(time.Second))
 	}
-	fmt.Println("\n批准：ws2ssh-mcp approve <id>|--all；拒绝：ws2ssh-mcp deny <id>|--all")
+	fmt.Println("\n批准：towstrap-mcp approve <id>|--all；拒绝：towstrap-mcp deny <id>|--all")
 }
 
 func settle(cfgPath, verb, id string, all bool) {

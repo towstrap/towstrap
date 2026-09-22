@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"ws2ssh/internal/proto"
-	"ws2ssh/internal/version"
-	"ws2ssh/skills"
+	"towstrap/internal/proto"
+	"towstrap/internal/version"
+	"towstrap/skills"
 )
 
 var upgrader = websocket.Upgrader{
@@ -46,7 +46,7 @@ func (s *Server) routes() http.Handler {
 		io.WriteString(w, "ok\n")
 	})
 	// /skill 公开提供随项目发布的 LLM skill 原文（公开文档，无秘密，
-	// 不需要口令）：不装 ws2ssh-mcp 的用户也能 curl 下来手工放进
+	// 不需要口令）：不装 towstrap-mcp 的用户也能 curl 下来手工放进
 	// 编码助手的 skills 目录。
 	mux.HandleFunc("/skill", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

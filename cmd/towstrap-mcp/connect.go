@@ -7,28 +7,28 @@ import (
 	"os"
 	"time"
 
-	"ws2ssh/internal/harness"
+	"towstrap/internal/harness"
 )
 
-const connectUsage = `ws2ssh-mcp connect —— 把随项目发布的 ws2ssh skill 装进本机各家 AI 编码助手
+const connectUsage = `towstrap-mcp connect —— 把随项目发布的 towstrap skill 装进本机各家 AI 编码助手
 
 用法：
-  ws2ssh-mcp connect [--dry-run]                  安装到检测到的所有 harness
-  ws2ssh-mcp connect --path <skills目录> [--force] [--dry-run]
+  towstrap-mcp connect [--dry-run]                  安装到检测到的所有 harness
+  towstrap-mcp connect --path <skills目录> [--force] [--dry-run]
                                                   只装到指定目录（如项目级 .claude/skills），不扫描
-  ws2ssh-mcp connect list                         列出支持的 harness、检测状态、安装状态
-  ws2ssh-mcp connect uninstall [--path 目录] [--force] [--dry-run]
+  towstrap-mcp connect list                         列出支持的 harness、检测状态、安装状态
+  towstrap-mcp connect uninstall [--path 目录] [--force] [--dry-run]
                                                   卸载本工具装过的 skill
-  ws2ssh-mcp connect print-mcp --url https://S:8080/mcp --token w2m-...
-  ws2ssh-mcp connect print-mcp --stdio [--config mcp.yaml]
+  towstrap-mcp connect print-mcp --url https://S:8080/mcp --token tsm-...
+  towstrap-mcp connect print-mcp --stdio [--config mcp.yaml]
                                                   打印各家 harness 的 MCP 配置片段（不写文件）
 
 支持的 harness：Claude Code、Codex、Grok Build、Cursor、Gemini CLI、
 OpenCode、GitHub Copilot CLI、Devin CLI。Codex / Grok 共用 ~/.agents/skills，
-只写一次。skill 源文件在仓库 skills/ws2ssh/，也可以手工拷进任意 skills 目录。
+只写一次。skill 源文件在仓库 skills/towstrap/，也可以手工拷进任意 skills 目录。
 `
 
-// connect 是 ws2ssh-mcp connect 的入口；cfgPath 是全局 --config 摘出来的值。
+// connect 是 towstrap-mcp connect 的入口；cfgPath 是全局 --config 摘出来的值。
 func connect(cfgPath string, args []string) {
 	verb := "install"
 	if len(args) > 0 {
@@ -42,13 +42,13 @@ func connect(cfgPath string, args []string) {
 		}
 	}
 
-	fs := flag.NewFlagSet("ws2ssh-mcp connect", flag.ContinueOnError)
+	fs := flag.NewFlagSet("towstrap-mcp connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	path := fs.String("path", "", "只装到指定 skills 目录，不扫描 harness")
 	force := fs.Bool("force", false, "覆盖/删除非本工具安装的同名 skill")
 	dry := fs.Bool("dry-run", false, "只打印会做什么，不写文件")
 	url := fs.String("url", "", "print-mcp：服务器 /mcp 地址")
-	token := fs.String("token", "", "print-mcp：w2m- token")
+	token := fs.String("token", "", "print-mcp：tsm- token")
 	stdio := fs.Bool("stdio", false, "print-mcp：生成本机 stdio 片段")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
 		fmt.Fprint(os.Stderr, connectUsage)
@@ -127,7 +127,7 @@ func connectWrite(path string, force, dry, uninstall bool) {
 		fmt.Printf("%-24s %-46s %s\n", t.Names, harness.Tilde(home, r.TargetDir), r.StatusLine())
 	}
 	if !uninstall {
-		fmt.Println("\n卸载：ws2ssh-mcp connect uninstall")
+		fmt.Println("\n卸载：towstrap-mcp connect uninstall")
 	}
 	if failed {
 		os.Exit(1)
@@ -145,7 +145,7 @@ func connectPrintMCP(cfgPath, url, token string, stdio bool) {
 		r = harness.MCPRequest{Stdio: true, Command: exe, Config: cfgPath}
 	} else {
 		if url == "" || token == "" {
-			fmt.Fprintln(os.Stderr, "print-mcp 需要 --url 和 --token（服务器内嵌 HTTP 方式），或者 --stdio（本机 ws2ssh-mcp 方式）")
+			fmt.Fprintln(os.Stderr, "print-mcp 需要 --url 和 --token（服务器内嵌 HTTP 方式），或者 --stdio（本机 towstrap-mcp 方式）")
 			os.Exit(2)
 		}
 		r = harness.MCPRequest{URL: url, Token: token}

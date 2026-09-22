@@ -7,13 +7,13 @@ import (
 	"os"
 	"strings"
 
-	"ws2ssh/internal/client"
-	"ws2ssh/internal/config"
-	"ws2ssh/internal/version"
+	"towstrap/internal/client"
+	"towstrap/internal/config"
+	"towstrap/internal/version"
 )
 
-// ws2ssh-agent 只含客户端：装在被控机器上，主动连出到 ws2ssh-server。
-// 服务器端和账号管理在另一个二进制 ws2ssh-server 里——被控机上不需要
+// towstrap-agent 只含客户端：装在被控机器上，主动连出到 towstrap-server。
+// 服务器端和账号管理在另一个二进制 towstrap-server 里——被控机上不需要
 // （也不该有）SQLite 账号库、SSH 服务端这些东西。
 
 func main() {
@@ -38,36 +38,36 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `ws2ssh-agent — 装在要被访问的机器上（不用开 sshd），主动连出到服务器
+	fmt.Fprintf(os.Stderr, `towstrap-agent — 装在要被访问的机器上（不用开 sshd），主动连出到服务器
 
 用法:
-  ws2ssh-agent [--config 文件.yaml] [选项]
-  ws2ssh-agent version
+  towstrap-agent [--config 文件.yaml] [选项]
+  towstrap-agent version
 
 选项:
   --config 文件.yaml
   --server wss://主机:443      服务器开了 --tls 就写 wss://
-  --agent-token w2s-...        user add 生成的那个 token（会进 ps，不建议）
+  --agent-token tsa-...        user add 生成的那个 token（会进 ps，不建议）
   --agent-token-file 路径      从文件读 token（推荐，文件权限设 0600）
-                               （也可用环境变量 WS2SSH_AGENT_TOKEN；
+                               （也可用环境变量 TOWSTRAP_AGENT_TOKEN；
                                 配置文件里写 agent_token / agent_token_file 也行）
   --shell /bin/bash            不写用 $SHELL，再不行 /bin/bash
   --insecure                   服务器用自签证书时跳过证书校验
-  --audit-log 路径             会话审计日志（默认 root: /var/lib/ws2ssh/audit.log，
-                               否则 ~/.ws2ssh/audit.log）
+  --audit-log 路径             会话审计日志（默认 root: /var/lib/towstrap/audit.log，
+                               否则 ~/.towstrap/audit.log）
   --quiet                      关掉会话开始/结束的桌面通知和 wall 广播
                                （审计日志不受影响，仍照写）
 
 服务器地址、shell、审计路径这些长久配置建议写进 agent.yaml（见 examples/agent.yaml），
 命令行旗标只做临时覆盖。
 
-换 token 用 ws2ssh-agent token refresh（见 ws2ssh-agent token 不带参数的说明）。
+换 token 用 towstrap-agent token refresh（见 towstrap-agent token 不带参数的说明）。
 `)
 }
 
 func usageToken() {
 	fmt.Fprintf(os.Stderr, `用法:
-  ws2ssh-agent token refresh [--machine 机器名]... [--all] [选项]
+  towstrap-agent token refresh [--machine 机器名]... [--all] [选项]
 
 在一台已登记的 agent 机器上换发 token：本机 token + 账号密码 + TOTP 鉴权，
 新 token 由服务器经各机器的 WebSocket 连接直接下推写进各自的 token 文件，
@@ -88,7 +88,7 @@ func visited(fs *flag.FlagSet) map[string]string {
 }
 
 func runAgent(args []string) int {
-	fs := flag.NewFlagSet("ws2ssh-agent", flag.ExitOnError)
+	fs := flag.NewFlagSet("towstrap-agent", flag.ExitOnError)
 	configPath := fs.String("config", "", "")
 	fs.String("server", "", "")
 	agentToken := fs.String("agent-token", "", "")
@@ -111,7 +111,7 @@ func runAgent(args []string) int {
 	cfg := config.MergeAgent(file, visited(fs))
 	// token 优先级：--agent-token > --agent-token-file > 环境变量 > 配置文件。
 	// 命令行直写 token 会进 ps，尽量用后几种。
-	tok, tokenSource, tokFile, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("WS2SSH_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
+	tok, tokenSource, tokFile, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
 	if err != nil {
 		slog.Error(err.Error())
 		return 2
@@ -152,7 +152,7 @@ func resolveAgentToken(flagToken, flagFile, envToken, yamlToken, yamlFile string
 		return tok, "旗标 --agent-token-file " + flagFile, flagFile, nil
 	}
 	if envToken != "" {
-		return strings.TrimSpace(envToken), "环境变量 WS2SSH_AGENT_TOKEN", "", nil
+		return strings.TrimSpace(envToken), "环境变量 TOWSTRAP_AGENT_TOKEN", "", nil
 	}
 	if yamlToken != "" {
 		return yamlToken, "配置 agent_token", "", nil
@@ -164,7 +164,7 @@ func resolveAgentToken(flagToken, flagFile, envToken, yamlToken, yamlFile string
 		}
 		return tok, "配置 agent_token_file " + yamlFile, yamlFile, nil
 	}
-	return "", "", "", fmt.Errorf("必须提供 agent token：--agent-token、--agent-token-file 文件、环境变量 WS2SSH_AGENT_TOKEN 或配置文件 agent_token/agent_token_file")
+	return "", "", "", fmt.Errorf("必须提供 agent token：--agent-token、--agent-token-file 文件、环境变量 TOWSTRAP_AGENT_TOKEN 或配置文件 agent_token/agent_token_file")
 }
 
 func readTokenFile(path string) (string, error) {

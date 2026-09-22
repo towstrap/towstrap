@@ -20,8 +20,8 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
-	"ws2ssh/internal/proto"
-	"ws2ssh/internal/version"
+	"towstrap/internal/proto"
+	"towstrap/internal/version"
 )
 
 type Config struct {
@@ -132,7 +132,7 @@ func Run(cfg Config) error {
 	}
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
-	slog.Info("ws2ssh agent 运行中（远程访问，本机可感知）",
+	slog.Info("towstrap agent 运行中（远程访问，本机可感知）",
 		"server", cfg.Server, "shell", cfg.Shell, "insecure", cfg.Insecure,
 		"audit_log", p.path, "notify", !cfg.Quiet)
 
@@ -393,12 +393,12 @@ func (p *execProc) Close() error {
 	return nil
 }
 
-// childEnv 给远程会话起 shell 用的环境：剥掉 WS2SSH_AGENT_TOKEN——远程用户
+// childEnv 给远程会话起 shell 用的环境：剥掉 TOWSTRAP_AGENT_TOKEN——远程用户
 // 拿到的是本机 shell，没必要再把 agent 自己的凭据白送给他。
 func childEnv() []string {
 	env := make([]string, 0, 32)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "WS2SSH_AGENT_TOKEN=") {
+		if strings.HasPrefix(kv, "TOWSTRAP_AGENT_TOKEN=") {
 			continue
 		}
 		env = append(env, kv)

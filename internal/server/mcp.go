@@ -1,6 +1,6 @@
 // 服务器内嵌 MCP（Streamable HTTP，/mcp）：给 LLM 客户端一个直接操纵
 // 已上线 agent 的入口。和 SSH 会话一样走 Hub.pipe，不开第二条到 agent
-// 的连接；认证用 ws2ssh-server mcp 子命令签发的 Bearer token。
+// 的连接；认证用 towstrap-server mcp 子命令签发的 Bearer token。
 
 package server
 
@@ -17,10 +17,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/mcpsrv"
-	"ws2ssh/internal/proto"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/mcpsrv"
+	"towstrap/internal/proto"
 )
 
 // mcpPlainHTTPAllowed 决定 /mcp 能不能挂在明文 HTTP 上：Bearer token
@@ -124,7 +124,7 @@ func (s *Server) mcpHandler() http.Handler {
 
 		cfg := *s.cfg.MCP // 浅拷贝：Machines 整个换掉，Policy/Limits 照用
 		cfg.Machines = machines
-		cfg.ApproveCmd = "ws2ssh-server mcp approve（在服务器上执行）"
+		cfg.ApproveCmd = "towstrap-server mcp approve（在服务器上执行）"
 		cfg.LocalNotify = false // 服务器一般没桌面，不弹系统通知
 		ip := hostOnly(r.RemoteAddr)
 		cfg.Audit = func(ev string, kv ...string) {
@@ -150,7 +150,7 @@ func (s *Server) mcpHandler() http.Handler {
 		Logger:         slog.Default(),
 	})
 	return auth.RequireBearerToken(s.mcpBearer, &auth.RequireBearerTokenOptions{
-		AllowMissingExpiration: true, // w2m- token 本身没有过期字段
+		AllowMissingExpiration: true, // tsm- token 本身没有过期字段
 	})(inner)
 }
 

@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"ws2ssh/internal/version"
-	"ws2ssh/skills"
+	"towstrap/internal/version"
+	"towstrap/skills"
 )
 
 // ManifestName 是跟着 SKILL.md 一起写进目标目录的清单文件名，
 // 用来区分「本工具装的」和用户自己放的同名 skill。
-const ManifestName = ".ws2ssh-managed.json"
+const ManifestName = ".towstrap-managed.json"
 
 // manifest 记录这次安装来自哪个版本、SKILL.md 的指纹，卸载和升级时比对用。
 type manifest struct {
@@ -43,7 +43,7 @@ const (
 // Result 是一个目标目录的安装/卸载结果。
 type Result struct {
 	SkillsDir string // 安装根目录（绝对路径）
-	TargetDir string // <SkillsDir>/ws2ssh
+	TargetDir string // <SkillsDir>/towstrap
 	Status    Status
 	Detail    string // 如 "0.2.0→0.3.0"、"已覆盖你改过的内容"、错误信息
 	DryRun    bool
@@ -97,7 +97,7 @@ func manifestPath(skillsDir string) string {
 	return filepath.Join(skillsDir, skills.SkillName, ManifestName)
 }
 
-// Install 把官方 SKILL.md 和 manifest 写进 skillsDir/ws2ssh。
+// Install 把官方 SKILL.md 和 manifest 写进 skillsDir/towstrap。
 // skillsDir 可以是相对路径（按当前目录解析）。force 覆盖非本工具安装的同名
 // skill；dryRun 只做判定不写文件。now 仅为了测试可注入。
 func Install(skillsDir string, force, dryRun bool, now time.Time) Result {
@@ -207,7 +207,7 @@ func writeAtomic(path string, data []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// Uninstall 删除 skillsDir/ws2ssh。只删本工具装且内容没被改过的；
+// Uninstall 删除 skillsDir/towstrap。只删本工具装且内容没被改过的；
 // 用户改过要 --force，不是本工具装的不动。dryRun 只判定不删。
 func Uninstall(skillsDir string, force, dryRun bool) Result {
 	abs, err := filepath.Abs(skillsDir)
@@ -248,7 +248,7 @@ func Uninstall(skillsDir string, force, dryRun bool) Result {
 }
 
 // Installed 报告 skillsDir 下的安装状态，给 connect list 用：
-// present=有 ws2ssh/ 目录，ours=是本工具装的（manifest 可读），ver=装的版本。
+// present=有 towstrap/ 目录，ours=是本工具装的（manifest 可读），ver=装的版本。
 func Installed(skillsDir string) (present, ours bool, ver string) {
 	if _, err := os.Stat(filepath.Join(skillsDir, skills.SkillName)); err != nil {
 		return false, false, ""

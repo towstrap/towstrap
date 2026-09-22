@@ -1,6 +1,6 @@
 // Package notify 提供系统级提醒：桌面通知 + wall 广播到所有已登录终端。
 // 全部 best-effort——发不出去（headless 机器、没装 notify-send、通知权限没批）
-// 也不影响调用方；审计日志才是保底。agent 的会话通知和 ws2ssh-mcp 的
+// 也不影响调用方；审计日志才是保底。agent 的会话通知和 towstrap-mcp 的
 // 本地批准提醒共用这套。
 package notify
 
@@ -23,7 +23,7 @@ func Desktop(title, body string) {
 		cmd = exec.CommandContext(ctx, "osascript", "-e",
 			fmt.Sprintf("display notification %s with title %s", quoteApple(body), quoteApple(title)))
 	case "linux":
-		cmd = exec.CommandContext(ctx, "notify-send", "-a", "ws2ssh", "-u", "critical", "--", title, body)
+		cmd = exec.CommandContext(ctx, "notify-send", "-a", "towstrap", "-u", "critical", "--", title, body)
 	default:
 		return
 	}

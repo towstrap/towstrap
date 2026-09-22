@@ -11,7 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ws2ssh/internal/version"
+	"towstrap/internal/version"
 )
 
 // Server 把一份配置变成一个 MCP server：四个工具、策略过滤、人工批准。
@@ -34,7 +34,7 @@ func New(cfg *Config, runner Runner) (*Server, error) {
 		return nil, err
 	}
 	if cfg.ApproveCmd == "" {
-		cfg.ApproveCmd = "ws2ssh-mcp approve"
+		cfg.ApproveCmd = "towstrap-mcp approve"
 	}
 	return &Server{cfg: cfg, pol: pol, runner: runner,
 		remembered: make(map[string]map[string]bool), watching: make(map[string]bool)}, nil
@@ -81,9 +81,9 @@ func (s *Server) watchSession(ss *mcp.ServerSession) {
 }
 
 // instructions 是发给 LLM 的「使用须知」，每次握手随 initialize 结果下发。
-// 里头的 %s 是批准命令（stdio 模式 ws2ssh-mcp approve，服务器模式
-// ws2ssh-server mcp approve）。
-const instructions = `你通过 ws2ssh 在真实的远程机器上执行命令。这些机器属于用户，命令以那台机器上 agent 的系统用户身份真实执行，后果不可撤销——把每一条命令都当成在用户的电脑上敲回车。
+// 里头的 %s 是批准命令（stdio 模式 towstrap-mcp approve，服务器模式
+// towstrap-server mcp approve）。
+const instructions = `你通过 towstrap 在真实的远程机器上执行命令。这些机器属于用户，命令以那台机器上 agent 的系统用户身份真实执行，后果不可撤销——把每一条命令都当成在用户的电脑上敲回车。
 
 规则：
 1. 每次 run_command 都是新起的 shell：cd、环境变量、shell 变量不会保留到下一次。用 cwd 参数指定工作目录，不要依赖上一条命令的 cd。
@@ -111,7 +111,7 @@ func (s *Server) MCP() *mcp.Server {
 		len(s.pol.allow), len(s.pol.deny), s.cfg.ApproveCmd)
 
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "ws2ssh-mcp",
+		Name:    "towstrap-mcp",
 		Version: version.String(),
 	}, &mcp.ServerOptions{Instructions: inst})
 	s.addTools(srv)
@@ -123,7 +123,7 @@ func (s *Server) MCP() *mcp.Server {
 type listIn struct{}
 
 type machineInfo struct {
-	Name        string   `json:"name" jsonschema:"机器名（ws2ssh 账号名）"`
+	Name        string   `json:"name" jsonschema:"机器名（towstrap 账号名）"`
 	Description string   `json:"description" jsonschema:"用户给的机器说明"`
 	Roots       []string `json:"roots" jsonschema:"write_file 自动放行的目录"`
 	Connected   bool     `json:"connected" jsonschema:"这台机器当前是否在线（服务器模式）/已有 SSH 连接（stdio 模式）"`

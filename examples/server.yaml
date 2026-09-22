@@ -1,15 +1,15 @@
 server:
   http: ":8080"        # /health、/agent、/status
   ssh: ":2222"         # SSH 入口
-  host_key: /var/lib/ws2ssh/ssh_host_key
-  users_db: /etc/ws2ssh/users.db    # 账号 SQLite 库（ws2ssh-server user 改的就是它）
-  users_key: /etc/ws2ssh/users.key  # token 加密密钥（不写则用 users.db 同名的 .key；务必备份）
-  audit_log: /var/lib/ws2ssh/server-audit.log  # 服务器审计：认证/agent/会话事件（16MB 轮转；/dev/null 关）
+  host_key: /var/lib/towstrap/ssh_host_key
+  users_db: /etc/towstrap/users.db    # 账号 SQLite 库（towstrap-server user 改的就是它）
+  users_key: /etc/towstrap/users.key  # token 加密密钥（不写则用 users.db 同名的 .key；务必备份）
+  audit_log: /var/lib/towstrap/server-audit.log  # 服务器审计：认证/agent/会话事件（16MB 轮转；/dev/null 关）
   public_url: wss://ssh.example.com:443 # 写进 user add 生成的安装命令
   # admin_token: 查 /status 用的管理口令（可选；账号 token 也能查）
   # tls: true                  # 网页口走 HTTPS/WSS；不给 cert/key 会自动生成自签证书
-  # cert: /etc/ws2ssh/cert.pem # 正式证书（Let's Encrypt 等）配在这里
-  # key: /etc/ws2ssh/key.pem
+  # cert: /etc/towstrap/cert.pem # 正式证书（Let's Encrypt 等）配在这里
+  # key: /etc/towstrap/key.pem
   # allow_ips: [10.0.0.0/8]    # 全局：谁能连 SSH；账号还可以再设自己的白名单
   # idle_verify: 30m           # 绑了 TOTP 的账号挂机超过这么久，下次敲键重验验证码（0 关闭）
   # max_sessions: 16           # 每台机器（每账号）并发 SSH 会话上限（0 不限）
@@ -20,7 +20,7 @@ server:
 
   # ── 内嵌 MCP（Streamable HTTP）────────────────────────────
   # 打开后 LLM 客户端用 Bearer token 直连 /mcp，命令经 Hub 在 agent 上执行，
-  # 不绕 SSH。客户端凭据用 ws2ssh-server mcp add 签发（存在 users_db 的
+  # 不绕 SSH。客户端凭据用 towstrap-server mcp add 签发（存在 users_db 的
   # mcp_clients 表里，加密存放）。
   # mcp:
   #   enabled: true
@@ -28,9 +28,9 @@ server:
   #   # Bearer token 是凭据：tls 没开且监听非回环地址时拒绝启动。
   #   # 确认只在内网/隧道里跑才允许明文：
   #   # allow_plain_http: true
-  #   # approvals_dir: /var/lib/ws2ssh/approvals  # 默认：审计日志目录旁的 approvals/
+  #   # approvals_dir: /var/lib/towstrap/approvals  # 默认：审计日志目录旁的 approvals/
   #   # 客户端不支持批准弹窗时，待批请求写在这，用
-  #   #   ws2ssh-server mcp pending / approve <id> / deny <id>
+  #   #   towstrap-server mcp pending / approve <id> / deny <id>
   #   # 在服务器上兜底处理。
   #   # machines 是 MCP 侧元数据（说明 + write_file 自动放行目录），
   #   # 键 = 机器完整 ID（账号+机器名，如 bot+default）；客户端能看哪几台

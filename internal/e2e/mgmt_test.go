@@ -19,11 +19,11 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/server"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/server"
+	"towstrap/internal/totp"
 )
 
-var tokenRe = regexp.MustCompile(`w2s-[0-9A-Za-z_-]+`)
+var tokenRe = regexp.MustCompile(`tsa-[0-9A-Za-z_-]+`)
 
 // mgmtDial 建一个 SSH 客户端连接（登录名可以是 alice 或 alice+default）。
 func mgmtDial(t *testing.T, sshPort int, user string, auth gossh.AuthMethod) *gossh.Client {
@@ -86,7 +86,7 @@ func TestMgmtMachineSelfService(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("@machine add 应成功: code=%d stderr=%q", code, se)
 	}
-	if !strings.Contains(out, "alice+build") || !strings.Contains(out, "w2s-") {
+	if !strings.Contains(out, "alice+build") || !strings.Contains(out, "tsa-") {
 		t.Fatalf("add 输出应有机器 ID 和 token: %q", out)
 	}
 	tok := tokenRe.FindString(out)
@@ -109,7 +109,7 @@ func TestMgmtMachineSelfService(t *testing.T) {
 			t.Fatalf("list 输出缺 %q: %q", want, out)
 		}
 	}
-	if strings.Contains(out, "w2s-") {
+	if strings.Contains(out, "tsa-") {
 		t.Fatalf("list 不该显示 token: %q", out)
 	}
 
@@ -163,7 +163,7 @@ func TestMgmtTOTPRecheck(t *testing.T) {
 	if _, err := users.Add("alice", "alicepw123", nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := totp.Generate("ws2ssh", "alice")
+	secret, _ := totp.Generate("towstrap", "alice")
 	if err := users.EnrollTOTP("alice", secret, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestMgmtTOTPRecheck(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("新验证码应通过: code=%d stderr=%q", code, se)
 	}
-	if !strings.Contains(out, "w2s-") {
+	if !strings.Contains(out, "tsa-") {
 		t.Fatalf("add 应打印 token: %q", out)
 	}
 	if _, ok := users.GetMachine("alice", "x"); !ok {
@@ -242,7 +242,7 @@ func TestMgmtTokenRegen(t *testing.T) {
 		t.Fatalf("--regen 应退出 2: code=%d", code)
 	}
 	if !strings.Contains(se, "token refresh") {
-		t.Fatalf("stderr 应指向 ws2ssh-agent token refresh: %q", se)
+		t.Fatalf("stderr 应指向 towstrap-agent token refresh: %q", se)
 	}
 	m, _ := users.GetMachine("alice", "build")
 	if m.Token != build.Token {

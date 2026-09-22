@@ -25,7 +25,7 @@ func TestMCPClientCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(tok, "w2m-") {
+	if !strings.HasPrefix(tok, "tsm-") {
 		t.Fatalf("token 前缀不对: %q", tok)
 	}
 	if !c.Grants("bot") || c.Grants("other") {
@@ -37,7 +37,7 @@ func TestMCPClientCRUD(t *testing.T) {
 	if !ok || got.Name != "laptop" {
 		t.Fatalf("MCPClientByToken 没找到: %v %+v", ok, got)
 	}
-	if _, ok := s.MCPClientByToken("w2m-不存在的"); ok {
+	if _, ok := s.MCPClientByToken("tsm-不存在的"); ok {
 		t.Fatal("假 token 居然过了")
 	}
 

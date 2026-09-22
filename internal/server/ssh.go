@@ -18,9 +18,9 @@ import (
 	glssh "github.com/gliderlabs/ssh"
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/proto"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/proto"
 )
 
 func (s *Server) startSSH() error {
@@ -129,7 +129,7 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	remote := ctx.RemoteAddr()
 	ip := hostOnly(remote.String())
 
-	answers, err := challenger("ws2ssh 登录", "", []string{"密码: "}, []bool{false})
+	answers, err := challenger("towstrap 登录", "", []string{"密码: "}, []bool{false})
 	if err != nil || len(answers) == 0 {
 		return false
 	}
@@ -142,7 +142,7 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
 		return true // 没绑 TOTP：密码对了就行
 	}
-	answers, err = challenger("ws2ssh 登录", "该账号绑定了 TOTP 验证器", []string{"TOTP 验证码: "}, []bool{false})
+	answers, err = challenger("towstrap 登录", "该账号绑定了 TOTP 验证器", []string{"TOTP 验证码: "}, []bool{false})
 	if err != nil || len(answers) == 0 {
 		return false
 	}
@@ -267,7 +267,7 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		switch len(machines) {
 		case 0:
 			s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "no-machine")
-			_, _ = sess.Write([]byte("这个账号还没有机器，先在服务器上跑 ws2ssh-server machine add\n"))
+			_, _ = sess.Write([]byte("这个账号还没有机器，先在服务器上跑 towstrap-server machine add\n"))
 			_ = sess.Exit(1)
 			return
 		case 1:
@@ -291,7 +291,7 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		// 指名机器不存在时也先给个明白话，不用等 Hub.Agent 的通用错误。
 		if _, ok := s.cfg.Users.GetMachine(account, machineName); !ok {
 			s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "no-machine")
-			_, _ = fmt.Fprintf(sess.Stderr(), "机器 %s 不存在（账号 %s 下的机器可以用 ws2ssh-server machine list %s 查看）\n", machineID, account, account)
+			_, _ = fmt.Fprintf(sess.Stderr(), "机器 %s 不存在（账号 %s 下的机器可以用 towstrap-server machine list %s 查看）\n", machineID, account, account)
 			_ = sess.Exit(1)
 			return
 		}
@@ -393,7 +393,7 @@ func (g *idleGate) Read(p []byte) (int, error) {
 // reverifyTOTP 在既有会话里要一个新的 6 位码：提示走 SSH 通道（shell 看不到），
 // 用户的输入被这里直接消费。连错三次断开会话。
 func (s *Server) reverifyTOTP(sess glssh.Session, username string, limit time.Duration) error {
-	fmt.Fprintf(sess, "\r\n[ws2ssh] 空闲超过 %s，继续前请输入 TOTP 验证码（3 次机会，Ctrl-D 断开）\r\n", limit)
+	fmt.Fprintf(sess, "\r\n[towstrap] 空闲超过 %s，继续前请输入 TOTP 验证码（3 次机会，Ctrl-D 断开）\r\n", limit)
 	for i := 0; i < 3; i++ {
 		fmt.Fprint(sess, "验证码: ")
 		line, err := readLine(sess)
@@ -401,7 +401,7 @@ func (s *Server) reverifyTOTP(sess glssh.Session, username string, limit time.Du
 			return err
 		}
 		if s.cfg.Users.VerifyTOTP(username, strings.TrimSpace(line)) {
-			fmt.Fprint(sess, "\r\n[ws2ssh] 验证通过，继续。\r\n")
+			fmt.Fprint(sess, "\r\n[towstrap] 验证通过，继续。\r\n")
 			return nil
 		}
 		fmt.Fprint(sess, "\r\n验证码不对。")

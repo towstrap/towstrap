@@ -1,4 +1,4 @@
-module ws2ssh
+module towstrap
 
 go 1.25.0
 

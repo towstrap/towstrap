@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"ws2ssh/internal/version"
-	"ws2ssh/skills"
+	"towstrap/internal/version"
+	"towstrap/skills"
 )
 
 func mkdir(t *testing.T, p string) {
@@ -67,19 +67,19 @@ func TestInstallFresh(t *testing.T) {
 	if r.Status != StInstalled {
 		t.Fatalf("Status = %v，想要 StInstalled: %s", r.Status, r.Detail)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, "ws2ssh", "SKILL.md"))
+	got, err := os.ReadFile(filepath.Join(dir, "towstrap", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != string(skills.SkillMD()) {
 		t.Fatal("SKILL.md 内容和内嵌的不一致")
 	}
-	st, _ := os.Stat(filepath.Join(dir, "ws2ssh", "SKILL.md"))
+	st, _ := os.Stat(filepath.Join(dir, "towstrap", "SKILL.md"))
 	if st.Mode().Perm() != 0o644 {
 		t.Fatalf("SKILL.md 权限 %v，想要 644", st.Mode().Perm())
 	}
 	var m manifest
-	if err := json.Unmarshal(mustRead(filepath.Join(dir, "ws2ssh", ManifestName)), &m); err != nil {
+	if err := json.Unmarshal(mustRead(filepath.Join(dir, "towstrap", ManifestName)), &m); err != nil {
 		t.Fatalf("manifest 不是合法 JSON: %v", err)
 	}
 	if m.Version != version.String() || m.SHA256 != sha(got) || m.InstalledAt == "" {
@@ -90,19 +90,19 @@ func TestInstallFresh(t *testing.T) {
 func TestInstallCurrentThenUpgrade(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "skills")
 	Install(dir, false, false, time.Now())
-	before := mustRead(filepath.Join(dir, "ws2ssh", "SKILL.md"))
+	before := mustRead(filepath.Join(dir, "towstrap", "SKILL.md"))
 
 	// 同版本再装 → 已是最新，内容不动。
 	r := Install(dir, false, false, time.Now().Add(time.Hour))
 	if r.Status != StCurrent {
 		t.Fatalf("重复装 Status = %v，想要 StCurrent", r.Status)
 	}
-	if string(mustRead(filepath.Join(dir, "ws2ssh", "SKILL.md"))) != string(before) {
+	if string(mustRead(filepath.Join(dir, "towstrap", "SKILL.md"))) != string(before) {
 		t.Fatal("已是最新却改了文件")
 	}
 
 	// 把 manifest 改成旧版本 → 再装是升级。
-	mp := filepath.Join(dir, "ws2ssh", ManifestName)
+	mp := filepath.Join(dir, "towstrap", ManifestName)
 	old := manifest{Version: "0.0.1", SHA256: sha(before), InstalledAt: "2000-01-01T00:00:00Z"}
 	mb, _ := json.Marshal(old)
 	if err := os.WriteFile(mp, mb, 0o644); err != nil {
@@ -116,23 +116,23 @@ func TestInstallCurrentThenUpgrade(t *testing.T) {
 
 func TestInstallForeignAndForce(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "skills")
-	mkdir(t, filepath.Join(dir, "ws2ssh"))
+	mkdir(t, filepath.Join(dir, "towstrap"))
 	mine := []byte("user's own skill")
-	if err := os.WriteFile(filepath.Join(dir, "ws2ssh", "SKILL.md"), mine, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "towstrap", "SKILL.md"), mine, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	r := Install(dir, false, false, time.Now())
 	if r.Status != StSkippedForeign {
 		t.Fatalf("无 manifest 的同名 skill Status = %v，想要 StSkippedForeign", r.Status)
 	}
-	if string(mustRead(filepath.Join(dir, "ws2ssh", "SKILL.md"))) != string(mine) {
+	if string(mustRead(filepath.Join(dir, "towstrap", "SKILL.md"))) != string(mine) {
 		t.Fatal("跳过了却改了用户文件")
 	}
 	r = Install(dir, true, false, time.Now())
 	if r.Status != StInstalled {
 		t.Fatalf("--force Status = %v，想要 StInstalled", r.Status)
 	}
-	if string(mustRead(filepath.Join(dir, "ws2ssh", "SKILL.md"))) != string(skills.SkillMD()) {
+	if string(mustRead(filepath.Join(dir, "towstrap", "SKILL.md"))) != string(skills.SkillMD()) {
 		t.Fatal("--force 没覆盖成官方内容")
 	}
 }
@@ -141,7 +141,7 @@ func TestInstallOverwritesUserEdit(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "skills")
 	Install(dir, false, false, time.Now())
 	// 用户装完后改了文件：磁盘 sha 和 manifest 记录不一致 → 升级并提示。
-	sp := filepath.Join(dir, "ws2ssh", "SKILL.md")
+	sp := filepath.Join(dir, "towstrap", "SKILL.md")
 	if err := os.WriteFile(sp, append(skills.SkillMD(), "user edit"...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -170,13 +170,13 @@ func TestUninstall(t *testing.T) {
 	if r := Uninstall(dir, false, false); r.Status != StUninstalled {
 		t.Fatalf("卸载 Status = %v，想要 StUninstalled", r.Status)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "ws2ssh")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "towstrap")); !os.IsNotExist(err) {
 		t.Fatal("卸载后目录还在")
 	}
 
 	// 用户改过 SKILL.md → 跳过；--force 才删。
 	Install(dir, false, false, time.Now())
-	sp := filepath.Join(dir, "ws2ssh", "SKILL.md")
+	sp := filepath.Join(dir, "towstrap", "SKILL.md")
 	if err := os.WriteFile(sp, []byte("user edit"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestUninstall(t *testing.T) {
 	}
 
 	// 用户自己放的（没有 manifest）→ 不动。
-	mkdir(t, filepath.Join(dir, "ws2ssh"))
+	mkdir(t, filepath.Join(dir, "towstrap"))
 	if err := os.WriteFile(sp, []byte("user's own"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	if r.Status != StInstalled || !r.DryRun {
 		t.Fatalf("dry-run Status = %v DryRun=%v", r.Status, r.DryRun)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "ws2ssh")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "towstrap")); !os.IsNotExist(err) {
 		t.Fatal("dry-run 写了文件")
 	}
 }

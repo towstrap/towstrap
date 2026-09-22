@@ -1,14 +1,14 @@
-# ws2ssh 构建/发布。发布产物是三个二进制：服务器端（含账号管理）、被控端、MCP 入口。
+# towstrap 构建/发布。发布产物是三个二进制：服务器端（含账号管理）、被控端、MCP 入口。
 VERSION := $(shell cat VERSION 2>/dev/null || echo dev)
-LDFLAGS := -X ws2ssh/internal/version.Version=$(VERSION)
+LDFLAGS := -X towstrap/internal/version.Version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
 
 .PHONY: build test release clean
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o bin/ws2ssh-server ./cmd/ws2ssh-server
-	go build -ldflags "$(LDFLAGS)" -o bin/ws2ssh-agent ./cmd/ws2ssh-agent
-	go build -ldflags "$(LDFLAGS)" -o bin/ws2ssh-mcp ./cmd/ws2ssh-mcp
+	go build -ldflags "$(LDFLAGS)" -o bin/towstrap-server ./cmd/towstrap-server
+	go build -ldflags "$(LDFLAGS)" -o bin/towstrap-agent ./cmd/towstrap-agent
+	go build -ldflags "$(LDFLAGS)" -o bin/towstrap-mcp ./cmd/towstrap-mcp
 
 test:
 	go vet ./...
@@ -21,15 +21,15 @@ release: clean
 		os=$${p%/*}; arch=$${p#*/}; \
 		echo "== $$os/$$arch"; \
 		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/ws2ssh-server-$$os-$$arch ./cmd/ws2ssh-server; \
+			-o dist/towstrap-server-$$os-$$arch ./cmd/towstrap-server; \
 		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/ws2ssh-agent-$$os-$$arch ./cmd/ws2ssh-agent; \
+			-o dist/towstrap-agent-$$os-$$arch ./cmd/towstrap-agent; \
 		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/ws2ssh-mcp-$$os-$$arch ./cmd/ws2ssh-mcp; \
+			-o dist/towstrap-mcp-$$os-$$arch ./cmd/towstrap-mcp; \
 	done
 	cd dist && shasum -a 256 * > SHA256SUMS
 	@if [ -n "$$MINISIGN_KEY_FILE" ]; then \
-		cd dist && minisign -H -Sm ws2ssh-server-* ws2ssh-agent-* ws2ssh-mcp-* SHA256SUMS; \
+		cd dist && minisign -H -Sm towstrap-server-* towstrap-agent-* towstrap-mcp-* SHA256SUMS; \
 		echo "已用 minisign 签名"; \
 	else \
 		echo "提示：设 MINISIGN_KEY_FILE 可在发布时签名"; \

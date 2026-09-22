@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"ws2ssh/internal/auditlog"
+	"towstrap/internal/auditlog"
 )
 
-// presence 让被控机的用户能感知到远程会话——ws2ssh 本质是远程控制，
+// presence 让被控机的用户能感知到远程会话——towstrap 本质是远程控制，
 // 默认必须「睁眼能看到」：
 //   - 每个会话的开始/结束都追加写审计日志（谁、什么时候、跑什么命令、
 //     何时结束）；
@@ -39,17 +39,17 @@ type presence struct {
 	announced  bool                 // 本轮 0→1 的开始通知确实发过（结束通知要跟它配对）
 }
 
-// DefaultAuditPath 审计日志默认位置：root 服务装法在 /var/lib/ws2ssh，
-// 普通用户装法在 ~/.ws2ssh。
+// DefaultAuditPath 审计日志默认位置：root 服务装法在 /var/lib/towstrap，
+// 普通用户装法在 ~/.towstrap。
 func DefaultAuditPath() string {
 	if os.Geteuid() == 0 {
-		return "/var/lib/ws2ssh/audit.log"
+		return "/var/lib/towstrap/audit.log"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "ws2ssh-audit.log"
+		return "towstrap-audit.log"
 	}
-	return filepath.Join(home, ".ws2ssh", "audit.log")
+	return filepath.Join(home, ".towstrap", "audit.log")
 }
 
 func newPresence(cfg Config) *presence {
@@ -121,7 +121,7 @@ func (p *presence) sessionStart(id, from, mode, cmd string) {
 	p.mu.Unlock()
 	p.audit.Log("START", "id", id, "from", from, "mode", mode, "cmd", auditCmd(cmd))
 	if fire && p.notify != nil {
-		p.notify("ws2ssh 远程会话开始", body)
+		p.notify("towstrap 远程会话开始", body)
 	}
 }
 
@@ -142,7 +142,7 @@ func (p *presence) sessionEnd(id string) {
 	p.mu.Unlock()
 	p.audit.Log("END", "id", id, "from", from)
 	if fire && p.notify != nil {
-		p.notify("ws2ssh 远程会话结束", "本机已无活跃的远程会话")
+		p.notify("towstrap 远程会话结束", "本机已无活跃的远程会话")
 	}
 }
 

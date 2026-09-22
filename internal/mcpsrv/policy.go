@@ -52,7 +52,7 @@ var (
 		`/etc/(shadow|sudoers)`,
 		`\bsudo\b`,
 		`\bsu\s`,
-		`ws2ssh-agent`,
+		`towstrap-agent`,
 	}
 
 	// DefaultDenyPaths 是 read_file/write_file 默认禁碰的路径：私钥、
@@ -62,7 +62,7 @@ var (
 		`(^|/)\.gnupg/`,
 		`^/etc/(shadow|sudoers)`,
 		`(^|/)\.aws/credentials$`,
-		`ws2ssh/(token|agent\.yaml)$`,
+		`towstrap/(token|agent\.yaml)$`,
 	}
 )
 

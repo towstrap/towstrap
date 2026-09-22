@@ -40,7 +40,7 @@ func ensureCert(certPath, keyPath string) (string, string, error) {
 	}
 	tmpl := x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "ws2ssh"},
+		Subject:               pkix.Name{CommonName: "towstrap"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature,

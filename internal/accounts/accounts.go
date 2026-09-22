@@ -19,9 +19,9 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/proto"
-	"ws2ssh/internal/totp"
+	"towstrap/internal/allow"
+	"towstrap/internal/proto"
+	"towstrap/internal/totp"
 )
 
 var (
@@ -47,7 +47,7 @@ type Account struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// Store 是账号 SQLite 库。CLI（ws2ssh user）和服务器进程各自 Open 同一个库，
+// Store 是账号 SQLite 库。CLI（towstrap user）和服务器进程各自 Open 同一个库，
 // WAL 模式下并发读写由 SQLite 负责，改完不用重启服务器。
 type Store struct {
 	db     *sql.DB
@@ -294,14 +294,14 @@ func hashPassword(pw string) (string, error) {
 	return string(h), err
 }
 
-// NewAgentToken 生成一个新 agent token（w2s-...）。服务器换发 token 时用：
+// NewAgentToken 生成一个新 agent token（tsa-...）。服务器换发 token 时用：
 // 先下推给 agent 写进文件，收到 ack 才调 SetMachineToken 落库。
 func NewAgentToken() string { return randomToken() }
 
 func randomToken() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
-	return "w2s-" + base64.RawURLEncoding.EncodeToString(b)
+	return "tsa-" + base64.RawURLEncoding.EncodeToString(b)
 }
 
 // ---- 账号操作 ----

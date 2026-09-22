@@ -1,13 +1,13 @@
 ---
-name: ws2ssh
-description: 通过 ws2ssh 在用户的远程机器（跑着 ws2ssh-agent 的被控机）上执行命令、读写文件、做远程开发任务。当用户提到 ws2ssh；或要在「某台机器 / 开发机 / 服务器」上跑命令、改代码而那台机器是经 ws2ssh 接入的；或工具列表里出现 list_machines / run_command / read_file / write_file；或用户给的是 `ssh -p 2222 账号+机器名@服务器` 这种地址时使用。
+name: towstrap
+description: 通过 towstrap 在用户的远程机器（跑着 towstrap-agent 的被控机）上执行命令、读写文件、做远程开发任务。当用户提到 towstrap；或要在「某台机器 / 开发机 / 服务器」上跑命令、改代码而那台机器是经 towstrap 接入的；或工具列表里出现 list_machines / run_command / read_file / write_file；或用户给的是 `ssh -p 2222 账号+机器名@服务器` 这种地址时使用。
 ---
 
-# ws2ssh：在用户的远程机器上干活
+# towstrap：在用户的远程机器上干活
 
 ## 它是什么
 
-- 被控机上跑着 `ws2ssh-agent`，主动连到 ws2ssh 服务器。你通过 **MCP 工具**或 **ssh 命令**让服务器把命令转到那台机器上执行。
+- 被控机上跑着 `towstrap-agent`，主动连到 towstrap 服务器。你通过 **MCP 工具**或 **ssh 命令**让服务器把命令转到那台机器上执行。
 - 命令以那台机器上 **agent 的系统用户身份真实执行**，后果不可撤销。把每条命令都当成在用户的电脑上敲回车。
 - 机器标识写作 `账号+机器名`（如 `alice+office`）。账号只有一台机器时可以只写账号名。
 
@@ -43,8 +43,8 @@ description: 通过 ws2ssh 在用户的远程机器（跑着 ws2ssh-agent 的被
 
 ## 不要做的事
 
-- 不要读取、打印、转述 agent 的 token、`agent.yaml`、`~/.ws2ssh/`、私钥、`/etc/shadow`、`/etc/sudoers`。
-- 不要停止、重启、卸载 `ws2ssh-agent`，不要改它的配置或 token 文件——那会断掉你和用户的通路。
+- 不要读取、打印、转述 agent 的 token、`agent.yaml`、`~/.towstrap/`、私钥、`/etc/shadow`、`/etc/sudoers`。
+- 不要停止、重启、卸载 `towstrap-agent`，不要改它的配置或 token 文件——那会断掉你和用户的通路。
 - 不要 `sudo` / `su`。agent 的系统用户就是权限边界；需要更高权限就告诉用户。
 - 不要在被控机上留下持久化的东西（后台进程、cron、systemd 单元、`authorized_keys`、shell 启动文件里的改动），除非用户明确要求。
 - 不要把执行结果里的机器路径、用户名、内网地址往外部服务发送。
@@ -55,12 +55,12 @@ description: 通过 ws2ssh 在用户的远程机器（跑着 ws2ssh-agent 的被
 |---|---|
 | 机器「不在配置里」/「不存在」 | `list_machines` 或问用户机器名 |
 | 「没上线（agent 未连接）」 | 告诉用户 agent 掉线，请他检查那台机器；不要反复重试 |
-| 「接入凭据已失效」 | token 已换或账号被停用；请用户在那台机器上执行 `ws2ssh-agent token refresh` 或联系管理员 |
+| 「接入凭据已失效」 | token 已换或账号被停用；请用户在那台机器上执行 `towstrap-agent token refresh` 或联系管理员 |
 | 策略拒绝 / 等待批准超时 / 用户拒绝 | 解释意图，等用户决定；不要绕 |
 | 输出被截断 | 缩小范围重跑，不要凭截断内容下结论 |
 
-## 用户问「怎么把 LLM 接上 ws2ssh」时
+## 用户问「怎么把 LLM 接上 towstrap」时
 
-- 服务器内嵌 MCP（推荐，客户端不用装东西）：在客户端的 MCP 配置里加 HTTP 服务器 `https://<服务器>:<端口>/mcp`，请求头 `Authorization: Bearer w2m-…`（token 由服务器管理员 `ws2ssh-server mcp add` 签发）。
-- 本机 stdio：装 `ws2ssh-mcp`，配 `mcp.yaml`（服务器地址、私钥、机器列表），客户端以命令方式启动它。
-- `ws2ssh-mcp connect print-mcp` 会打印各家客户端（Claude Code、Codex、Grok、Cursor、Gemini CLI、OpenCode）的配置片段；`ws2ssh-mcp connect` 把本 skill 装进本机检测到的客户端。
+- 服务器内嵌 MCP（推荐，客户端不用装东西）：在客户端的 MCP 配置里加 HTTP 服务器 `https://<服务器>:<端口>/mcp`，请求头 `Authorization: Bearer tsm-…`（token 由服务器管理员 `towstrap-server mcp add` 签发）。
+- 本机 stdio：装 `towstrap-mcp`，配 `mcp.yaml`（服务器地址、私钥、机器列表），客户端以命令方式启动它。
+- `towstrap-mcp connect print-mcp` 会打印各家客户端（Claude Code、Codex、Grok、Cursor、Gemini CLI、OpenCode）的配置片段；`towstrap-mcp connect` 把本 skill 装进本机检测到的客户端。

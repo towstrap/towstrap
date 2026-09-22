@@ -82,11 +82,11 @@ func TestVerifyBadInput(t *testing.T) {
 }
 
 func TestGenerateShape(t *testing.T) {
-	secret, uri := Generate("ws2ssh", "office")
+	secret, uri := Generate("towstrap", "office")
 	if len(secret) != 20 {
 		t.Fatalf("秘钥长度 = %d", len(secret))
 	}
-	if !strings.HasPrefix(uri, "otpauth://totp/ws2ssh:office?") {
+	if !strings.HasPrefix(uri, "otpauth://totp/towstrap:office?") {
 		t.Fatalf("uri = %q", uri)
 	}
 	if !strings.Contains(uri, "secret="+SecretString(secret)) {

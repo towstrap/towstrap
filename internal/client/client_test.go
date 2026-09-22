@@ -12,7 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"ws2ssh/internal/proto"
+	"towstrap/internal/proto"
 )
 
 func TestAgentHello(t *testing.T) {
@@ -80,10 +80,10 @@ func TestDefaultID(t *testing.T) {
 
 // TestChildEnvDropsToken 远程会话的 shell 环境里不能有 agent token。
 func TestChildEnvDropsToken(t *testing.T) {
-	t.Setenv("WS2SSH_AGENT_TOKEN", "w2s-secret")
+	t.Setenv("TOWSTRAP_AGENT_TOKEN", "tsa-secret")
 	hasTerm := false
 	for _, kv := range childEnv() {
-		if strings.HasPrefix(kv, "WS2SSH_AGENT_TOKEN=") {
+		if strings.HasPrefix(kv, "TOWSTRAP_AGENT_TOKEN=") {
 			t.Fatal("子进程环境不应带 agent token")
 		}
 		if kv == "TERM=xterm-256color" {
@@ -116,17 +116,17 @@ func TestBackoff(t *testing.T) {
 func TestWriteTokenFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
-	if err := os.WriteFile(path, []byte("w2s-old\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("tsa-old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTokenFile(path, "w2s-new-abc"); err != nil {
+	if err := writeTokenFile(path, "tsa-new-abc"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != "w2s-new-abc\n" {
+	if string(raw) != "tsa-new-abc\n" {
 		t.Fatalf("内容不对: %q", raw)
 	}
 	st, err := os.Stat(path)
@@ -147,7 +147,7 @@ func TestWriteTokenFile(t *testing.T) {
 func TestTokenStateReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
-	ts := &tokenState{cur: "w2s-cur"}
+	ts := &tokenState{cur: "tsa-cur"}
 
 	if ts.reloadFrom(filepath.Join(dir, "nope")) {
 		t.Fatal("文件不存在不该换")
@@ -158,19 +158,19 @@ func TestTokenStateReload(t *testing.T) {
 	if ts.reloadFrom(path) {
 		t.Fatal("空文件不该换")
 	}
-	if err := os.WriteFile(path, []byte("w2s-cur\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("tsa-cur\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if ts.reloadFrom(path) {
 		t.Fatal("内容没变不该算更新")
 	}
-	if err := os.WriteFile(path, []byte("  w2s-new \n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("  tsa-new \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if !ts.reloadFrom(path) {
 		t.Fatal("新内容应返回 true")
 	}
-	if ts.get() != "w2s-new" {
+	if ts.get() != "tsa-new" {
 		t.Fatalf("cur 应换成新 token: %q", ts.get())
 	}
 }

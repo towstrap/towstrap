@@ -1,14 +1,14 @@
 agent:
   server: wss://你的服务器:443    # 服务器没开 tls 就写 ws://
-  agent_token_file: /etc/ws2ssh/token  # 从 0600 文件读 token（推荐）——只有
+  agent_token_file: /etc/towstrap/token  # 从 0600 文件读 token（推荐）——只有
                                       # 这种写法服务器才能远程换 token：
-                                      # ws2ssh-agent token refresh 会把新
+                                      # towstrap-agent token refresh 会把新
                                       # token 原子写进这个文件，agent 不用重启
-  # agent_token: w2s-安装时生成的  # 直写 token（方便但不能远程换发，不推荐）
-  # 也可用环境变量 WS2SSH_AGENT_TOKEN（同样不能远程换发）
+  # agent_token: tsa-安装时生成的  # 直写 token（方便但不能远程换发，不推荐）
+  # 也可用环境变量 TOWSTRAP_AGENT_TOKEN（同样不能远程换发）
   # shell: /bin/bash  # 不写用 $SHELL
   # insecure: true    # 服务器用自签证书时才打开
   # 被控端感知（默认开）：会话开始/结束弹桌面通知并 wall 广播给登录着的终端，
   # 每个会话都写审计日志。
   # quiet: true                          # 只关通知（审计日志仍写）
-  # audit_log: /var/log/ws2ssh-audit.log # 审计日志路径（默认 /var/lib/ws2ssh/audit.log 或 ~/.ws2ssh/audit.log）
+  # audit_log: /var/log/towstrap-audit.log # 审计日志路径（默认 /var/lib/towstrap/audit.log 或 ~/.towstrap/audit.log）

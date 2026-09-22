@@ -13,7 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"ws2ssh/internal/notify"
+	"towstrap/internal/notify"
 )
 
 // ApprovalRequest 是一次等待批准的请求。Detail 是命令本身或文件路径。
@@ -97,7 +97,7 @@ func elicitResult(req *mcp.CallToolRequest) *mcp.ElicitResult {
 // 注意：不能在新协议下直接调 ServerSession.Elicit——SDK 会报
 // "cannot be sent while serving a request"，必须用 InputRequests。
 func elicitRequest(req ApprovalRequest) *mcp.CallToolResult {
-	msg := fmt.Sprintf("ws2ssh：在 %s 上执行\n\n%s\n\ncwd: %s", req.Machine, req.Detail, orDash(req.Cwd))
+	msg := fmt.Sprintf("towstrap：在 %s 上执行\n\n%s\n\ncwd: %s", req.Machine, req.Detail, orDash(req.Cwd))
 	return &mcp.CallToolResult{
 		InputRequests: mcp.InputRequestMap{
 			elicitKey: &mcp.ElicitParams{
@@ -196,7 +196,7 @@ func (s *Server) waitLocal(ctx context.Context, req ApprovalRequest) (Outcome, e
 		if len(detail) > 80 {
 			detail = detail[:80] + "…"
 		}
-		notify.Desktop("ws2ssh 需要批准",
+		notify.Desktop("towstrap 需要批准",
 			fmt.Sprintf("%s: %s；运行 %s %s", req.Machine, detail, s.cfg.ApproveCmd, id))
 	}
 
@@ -242,7 +242,7 @@ func orDash(s string) string {
 	return s
 }
 
-// ---- 下面的函数给 ws2ssh-mcp 的 pending/approve/deny 子命令用 ----
+// ---- 下面的函数给 towstrap-mcp 的 pending/approve/deny 子命令用 ----
 
 // Pending 列出 approvals_dir 里等待批准的请求。
 func Pending(dir string) ([]PendingFile, error) {

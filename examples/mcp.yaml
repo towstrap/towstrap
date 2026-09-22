@@ -1,13 +1,13 @@
-# ws2ssh-mcp 配置，默认读 ~/.config/ws2ssh/mcp.yaml。
+# towstrap-mcp 配置，默认读 ~/.config/towstrap/mcp.yaml。
 # 这个文件让 LLM 应用通过 MCP 工具在被控机上跑命令、读写文件。
 
-# ws2ssh 服务器的 SSH 入口（server.yaml 里 ssh_addr 那个地址）。
+# towstrap 服务器的 SSH 入口（server.yaml 里 ssh_addr 那个地址）。
 server: ssh.example.com:2222
 
 # 登录用的私钥。必须无口令（MCP 没地方给你输 passphrase）。
-# 建议单独生成一把专用钥匙：ssh-keygen -t ed25519 -f ~/.ssh/ws2ssh_bot -N ""
-# 然后在服务器上登记：ws2ssh-server user set <账号> --ssh-key-file ~/.ssh/ws2ssh_bot.pub
-key: ~/.ssh/ws2ssh_bot
+# 建议单独生成一把专用钥匙：ssh-keygen -t ed25519 -f ~/.ssh/towstrap_bot -N ""
+# 然后在服务器上登记：towstrap-server user set <账号> --ssh-key-file ~/.ssh/towstrap_bot.pub
+key: ~/.ssh/towstrap_bot
 
 # 校验服务器主机密钥，二选一：
 #   known_hosts —— 标准 known_hosts 文件（第一次先 ssh-keyscan 进去）
@@ -44,5 +44,5 @@ limits:
   max_output: 65536    # stdout/stderr 各自返回上限（字节），超了保留头尾
   max_file: 1048576    # read_file/write_file 的文件大小上限
 
-# 客户端不支持弹确认框时，待批请求写到这里，用 ws2ssh-mcp pending/approve/deny 处理。
-approvals_dir: ~/.config/ws2ssh/approvals
+# 客户端不支持弹确认框时，待批请求写到这里，用 towstrap-mcp pending/approve/deny 处理。
+approvals_dir: ~/.config/towstrap/approvals

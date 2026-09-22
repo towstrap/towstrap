@@ -1,9 +1,9 @@
-/ws2ssh
+/towstrap
 dist/
 *.tar.gz
 ssh_host_key
-/ws2ssh-server
-/ws2ssh-agent
+/towstrap-server
+/towstrap-agent
 bin/
 *.pem
 *.db

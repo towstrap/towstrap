@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"ws2ssh/internal/mcpsrv"
+	"towstrap/internal/mcpsrv"
 )
 
 type Server struct {
@@ -18,7 +18,7 @@ type Server struct {
 	TLS        bool     `yaml:"tls"`
 	Cert       string   `yaml:"cert"`
 	Key        string   `yaml:"key"`
-	UsersDB    string   `yaml:"users_db"`  // 账号 SQLite 库（ws2ssh user 改的就是它）
+	UsersDB    string   `yaml:"users_db"`  // 账号 SQLite 库（towstrap user 改的就是它）
 	UsersKey   string   `yaml:"users_key"` // token 加密密钥；不写用 users.db 同名的 .key
 	AdminToken string   `yaml:"admin_token"`
 	PublicURL  string   `yaml:"public_url"` // 用于生成 agent 安装命令，例如 wss://ssh.example.com:443
@@ -41,7 +41,7 @@ type Server struct {
 }
 
 // MCP 是 server.yaml 里 mcp: 小节：服务器内嵌 MCP（Streamable HTTP）的
-// 开关和策略。开启后客户端凭 ws2ssh-server mcp 子命令签发的 Bearer token
+// 开关和策略。开启后客户端凭 towstrap-server mcp 子命令签发的 Bearer token
 // 访问，能碰哪些机器由凭据里的 machines 决定，不是这里。
 type MCP struct {
 	Enabled        bool                       `yaml:"enabled"`
@@ -173,7 +173,7 @@ func MergeServer(file Server, set map[string]string) Server {
 	out := Server{
 		HTTP:          ":8080",
 		SSH:           ":2222",
-		UsersDB:       "/etc/ws2ssh/users.db",
+		UsersDB:       "/etc/towstrap/users.db",
 		AdminToken:    file.AdminToken,
 		PublicURL:     file.PublicURL,
 		TLS:           file.TLS,
@@ -328,7 +328,7 @@ func AgentInstallHint(publicURL, token string) string {
 	if url == "" {
 		url = "wss://<服务器>:<端口>"
 	}
-	s := fmt.Sprintf("在那台机器上执行 agent 安装命令：\n  ws2ssh-agent --server %s --agent-token %s", url, token)
+	s := fmt.Sprintf("在那台机器上执行 agent 安装命令：\n  towstrap-agent --server %s --agent-token %s", url, token)
 	if publicURL == "" {
 		s += "\n（服务器没配 public_url，请把上面的地址换成实际地址）"
 	}

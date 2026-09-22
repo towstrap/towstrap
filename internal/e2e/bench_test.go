@@ -12,13 +12,13 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"ws2ssh/internal/client"
+	"towstrap/internal/client"
 )
 
 // TestCapacityBench 容量基准：N 台 agent 上线 + N 个并发 SSH 会话，量每个单元的
 // 内存/goroutine/fd 开销，用来外推服务器容量。默认跳过：
 //
-//	WS2SSH_BENCH=1 go test ./internal/e2e/ -run TestCapacityBench -v -timeout 20m
+//	TOWSTRAP_BENCH=1 go test ./internal/e2e/ -run TestCapacityBench -v -timeout 20m
 func TestCapacityBench(t *testing.T) {
 	const n = 300
 	runtime.GC()

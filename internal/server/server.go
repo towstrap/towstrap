@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"ws2ssh/internal/accounts"
-	"ws2ssh/internal/allow"
-	"ws2ssh/internal/auditlog"
-	"ws2ssh/internal/mcpsrv"
+	"towstrap/internal/accounts"
+	"towstrap/internal/allow"
+	"towstrap/internal/auditlog"
+	"towstrap/internal/mcpsrv"
 )
 
 type Config struct {
@@ -74,17 +74,17 @@ type Server struct {
 	mcpAuditAt map[string]time.Time // MCP-SESSION 审计去重窗口
 }
 
-// DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/ws2ssh，
-// 其他用户在 ~/.ws2ssh（和 agent 的约定一致）。
+// DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/towstrap，
+// 其他用户在 ~/.towstrap（和 agent 的约定一致）。
 func DefaultAuditPath() string {
 	if os.Geteuid() == 0 {
-		return "/var/lib/ws2ssh/server-audit.log"
+		return "/var/lib/towstrap/server-audit.log"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "ws2ssh-server-audit.log"
+		return "towstrap-server-audit.log"
 	}
-	return filepath.Join(home, ".ws2ssh", "server-audit.log")
+	return filepath.Join(home, ".towstrap", "server-audit.log")
 }
 
 func New(cfg Config) *Server {
