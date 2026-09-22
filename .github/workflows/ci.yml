@@ -19,8 +19,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vet (windows)
+        run: GOOS=windows go vet ./...
+
       - name: Test
         run: go test ./... -count=1
 
       - name: Build
         run: go build ./...
+
+      - name: Cross-compile check (windows)
+        run: GOOS=windows GOARCH=amd64 go build ./...

@@ -118,7 +118,7 @@ make build    # produces bin/towstrap-server, towstrap-agent, towstrap-mcp
 
 ### Binary releases
 
-`make release` cross-compiles darwin/linux/windows × amd64/arm64 (18 artifacts) and generates `SHA256SUMS` (set `MINISIGN_KEY_FILE` to also sign with minisign). See [Releases](https://github.com/towstrap/towstrap/releases). On Windows the agent only supports non-interactive command execution (no PTY) — see the user guide.
+`make release` cross-compiles darwin/linux/windows × amd64/arm64 (18 artifacts) and generates `SHA256SUMS` (set `MINISIGN_KEY_FILE` to also sign with minisign). See [Releases](https://github.com/towstrap/towstrap/releases). On Windows the agent's interactive sessions use ConPTY (Windows 10 1809+ required) — see the user guide.
 
 ## For LLMs
 

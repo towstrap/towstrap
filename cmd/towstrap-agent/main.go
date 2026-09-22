@@ -51,7 +51,7 @@ func usage() {
   --agent-token-file 路径      从文件读 token（推荐，文件权限设 0600）
                                （也可用环境变量 TOWSTRAP_AGENT_TOKEN；
                                 配置文件里写 agent_token / agent_token_file 也行）
-  --shell /bin/bash            不写用 $SHELL（Windows 用 %COMSPEC%，兜底 cmd.exe）
+  --shell /bin/bash            不写用 $SHELL（Windows 用 %%COMSPEC%%，兜底 cmd.exe）
   --insecure                   服务器用自签证书时跳过证书校验
   --audit-log 路径             会话审计日志（默认 root: /var/lib/towstrap/audit.log，
                                否则 ~/.towstrap/audit.log）

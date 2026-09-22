@@ -200,7 +200,7 @@ Rotate (two-phase):
 
 - **Machine selection**: a `+machine` suffix names the machine; without it, a single-machine account lands on it, a multi-machine account errors with the list (incl. online status), zero machines errors. Missing/offline/stale-credential cases each get a specific message + `SESSION-DENY` (reason=no-machine/ambiguous/offline/credential)
 - **`@` prefix** routes to `handleMgmt` instead of the agent: public-key sessions are refused (reason=pubkey), TOTP accounts must supply a fresh code (3 attempts, failures count against the limiter); only `@machine list/add/remove/token/help` exist
-- **PTY vs exec**: decided by `sess.Pty()`; PTY goes through a real pty (`pty.Start`, window size + `resize` relayed), exec runs `shell -c` with three pipes (stderr split via `s="e"`)
+- **PTY vs exec**: decided by `sess.Pty()`; PTY goes through a real pty (`creack/pty` on unix; on Windows a hand-rolled ConPTY wrapper over `x/sys/windows` — two pipes + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`; window size + `resize` relayed), exec runs `shell -c` with three pipes (stderr split via `s="e"`)
 - **stdin/EOF**: client stdin close → server sends `eof` → exec sessions forward it to the subprocess (`cat` finishes on EOF); PTY sessions ignore it (Ctrl-D is just a byte in the stream)
 - **Exit codes**: agent-side `exitCode()`: normal exit → ExitCode; signal kill → 128+signal; never-started → 255. Server-side `session.code` defaults to 255 and is only overwritten by the agent's `close.code` — a dropped agent never reads as 0. MCP `run_command` reports `timed_out=true` + `exit_code=-1` on SIGKILL timeout
 - **Command length**: `open.cmd` caps at 64KB; over → `SESSION-DENY reason=cmd-too-long`

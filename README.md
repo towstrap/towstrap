@@ -117,7 +117,7 @@ make build    # 产出 bin/towstrap-server、towstrap-agent、towstrap-mcp
 
 ### 二进制发布
 
-`make release` 交叉编译 darwin/linux/windows × amd64/arm64 共 18 个产物并生成 `SHA256SUMS`（设 `MINISIGN_KEY_FILE` 会顺带 minisign 签名）。打好的包见 [Releases](https://github.com/towstrap/towstrap/releases)。Windows 上 agent 只支持非交互命令执行（无 PTY），详见用户手册。
+`make release` 交叉编译 darwin/linux/windows × amd64/arm64 共 18 个产物并生成 `SHA256SUMS`（设 `MINISIGN_KEY_FILE` 会顺带 minisign 签名）。打好的包见 [Releases](https://github.com/towstrap/towstrap/releases)。Windows 上 agent 的交互会话走 ConPTY（需 Windows 10 1809+），详见用户手册。
 
 ## 给 LLM 用
 

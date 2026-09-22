@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
 	"github.com/towstrap/towstrap/internal/proto"
@@ -358,21 +357,6 @@ func writeTokenFile(path, tok string) error {
 	return os.Rename(tmp, path)
 }
 
-type ptyFile struct {
-	file *os.File
-	cmd  *exec.Cmd
-}
-
-func (p *ptyFile) Close() error {
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
-	if p.file != nil {
-		return p.file.Close()
-	}
-	return nil
-}
-
 // execProc 无 PTY 会话的句柄：Close 先关 stdin（让子进程读到 EOF）再杀进程
 // 兜底——服务器端 close 过来时两条都要做。
 type execProc struct {
@@ -417,22 +401,12 @@ func (a *agent) openShell(msg proto.Msg) {
 // openPty PTY 模式：交互终端，或客户端带命令的 PTY 会话（ssh -t host cmd）。
 // 输入输出走伪终端，退出码随 close 带回。
 func (a *agent) openPty(msg proto.Msg) {
-	var cmd *exec.Cmd
-	if msg.Cmd != "" {
-		cmd = shellCmd(a.cfg.Shell, msg.Cmd)
-	} else {
-		cmd = exec.Command(a.cfg.Shell)
-	}
-	cmd.Env = childEnv()
-	f, err := pty.Start(cmd)
+	p, err := startPty(a.cfg.Shell, msg.Cmd, uint32(msg.Cols), uint32(msg.Rows))
 	if err != nil {
 		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
 		return
 	}
-	if msg.Cols > 0 && msg.Rows > 0 {
-		_ = pty.Setsize(f, &pty.Winsize{Rows: uint16(msg.Rows), Cols: uint16(msg.Cols)})
-	}
-	a.setSession(msg.ID, &ptyFile{file: f, cmd: cmd})
+	a.setSession(msg.ID, p)
 	if a.presence != nil {
 		a.presence.sessionStart(msg.ID, msg.From, "pty", msg.Cmd)
 	}
@@ -444,7 +418,7 @@ func (a *agent) openPty(msg proto.Msg) {
 		}
 		buf := make([]byte, 32*1024)
 		for {
-			n, err := f.Read(buf)
+			n, err := p.Read(buf)
 			if n > 0 {
 				if werr := a.send(proto.EncodeData(msg.ID, buf[:n])); werr != nil {
 					break
@@ -458,7 +432,7 @@ func (a *agent) openPty(msg proto.Msg) {
 			_ = c.Close()
 		}
 		// 读循环结束说明 PTY 关了，Wait 回收子进程拿退出码
-		code := exitCode(cmd.Wait())
+		code := p.Wait()
 		_ = a.send(proto.Msg{T: proto.TypeClose, ID: msg.ID, Code: code})
 	}()
 }
@@ -554,7 +528,7 @@ func (a *agent) onData(msg proto.Msg) {
 	}
 	switch c := a.getSession(msg.ID).(type) {
 	case *ptyFile:
-		_, _ = c.file.Write(payload)
+		_, _ = c.Write(payload)
 	case *execProc:
 		// 客户端 → agent 只有 stdin 一条流，msg.S 用不上
 		_, _ = c.stdin.Write(payload)
@@ -572,8 +546,8 @@ func (a *agent) onEOF(msg proto.Msg) {
 func (a *agent) onResize(msg proto.Msg) {
 	c := a.getSession(msg.ID)
 	p, ok := c.(*ptyFile)
-	if !ok || p.file == nil || msg.Cols <= 0 || msg.Rows <= 0 {
+	if !ok || msg.Cols <= 0 || msg.Rows <= 0 {
 		return
 	}
-	_ = pty.Setsize(p.file, &pty.Winsize{Rows: uint16(msg.Rows), Cols: uint16(msg.Cols)})
+	_ = p.resize(uint32(msg.Cols), uint32(msg.Rows))
 }

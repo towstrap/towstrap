@@ -200,7 +200,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 
 - **选机器**：登录名带 `+机器名` 指名；不带时账号恰有一台机器落它，多台报错列出名单（含在线状态），零台报错。机器不存在/不在线/凭据失效都有明确报错 + `SESSION-DENY`（reason=no-machine/ambiguous/offline/credential）
 - **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速），目前只有 `@machine list/add/remove/token/help`
-- **PTY vs exec**：`sess.Pty()` 判定；PTY 走伪终端（`pty.Start`，窗口尺寸透传 + `resize`），exec 走 `shell -c` + 三根管道（stdout/stderr 分流用 `s="e"` 标记）
+- **PTY vs exec**：`sess.Pty()` 判定；PTY 走伪终端（unix 用 `creack/pty`，Windows 用 `x/sys/windows` 直写的 ConPTY——两条管道 + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`，窗口尺寸透传 + `resize`），exec 走 `shell -c` + 三根管道（stdout/stderr 分流用 `s="e"` 标记）
 - **stdin/EOF**：客户端关 stdin → 服务器发 `eof` → exec 会话把它传给子进程（`cat` 靠 EOF 收尾）；PTY 会话忽略（Ctrl-D 本来就是数据流里的字符）
 - **退出码**：agent 侧 `exitCode()`：正常退出取 ExitCode；信号杀取 128+信号；进程没起来等错误取 255。服务器侧 `session.code` 默认 255，收到 agent 的 `close.code` 才覆盖——agent 掉线不会被记成 0。MCP 侧 `run_command` 超时被 SIGKILL 时 `timed_out=true` 且 `exit_code=-1`
 - **命令长度**：`open.cmd` 上限 64KB，超长 `SESSION-DENY reason=cmd-too-long`

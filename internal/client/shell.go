@@ -22,20 +22,26 @@ func defaultShell() string {
 	return "/bin/bash"
 }
 
-// shellCmd 拼「shell 参数 命令」：unix shell 的 -c、cmd.exe 的 /c、
+// shellFlag 挑「执行一段命令」的旗标：unix shell 的 -c、cmd.exe 的 /c、
 // powershell/pwsh 的 -Command，按 shell 文件名判断（用户在 Windows 上
 // 配 git-bash 的 bash 时仍然走 -c）。
-func shellCmd(shell, command string) *exec.Cmd {
-	flag := "-c"
+func shellFlag(shell string) string {
 	base := shell
 	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
 		base = base[i+1:]
 	}
-	switch base = strings.ToLower(base); {
-	case base == "cmd" || base == "cmd.exe":
-		flag = "/c"
-	case strings.HasPrefix(base, "powershell") || strings.HasPrefix(base, "pwsh"):
-		flag = "-Command"
+	switch strings.ToLower(base) {
+	case "cmd", "cmd.exe":
+		return "/c"
+	default:
+		if strings.HasPrefix(base, "powershell") || strings.HasPrefix(base, "pwsh") {
+			return "-Command"
+		}
+		return "-c"
 	}
-	return exec.Command(shell, flag, command)
+}
+
+// shellCmd 拼「shell 参数 命令」的 exec.Cmd。
+func shellCmd(shell, command string) *exec.Cmd {
+	return exec.Command(shell, shellFlag(shell), command)
 }
