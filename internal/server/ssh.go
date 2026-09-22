@@ -213,7 +213,7 @@ func auditCmd(cmd string) string {
 // 现在仍然映射到这台机器（token 被 regen 换掉、机器被删、账号被删/停用
 // 都会让这里为 false）。
 func (s *Server) agentCredentialValid(name string, a *agentConn) bool {
-	m, ok := s.cfg.Users.MachineByToken(a.token)
+	m, ok := s.cfg.Users.MachineByToken(a.getToken())
 	return ok && m.ID() == name
 }
 

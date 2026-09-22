@@ -14,6 +14,10 @@ import (
 //     resize、close
 //   - agent → 服务器：ok、data（输出，s="e" 是 stderr）、close（code 是
 //     子进程退出码）、err
+//   - token 换发是服务器 → agent 的独立消息对：服务器发 token（ID 是请求
+//     号，D 是新 token 明文），agent 把新 token 写进自己的 token 文件后回
+//     ok（同 ID）；写不了回 err（同 ID，Err 是原因）。没回 ok 服务器就不
+//     换库里的 token。
 const (
 	TypeHello  = "hello"
 	TypeOpen   = "open"
@@ -23,6 +27,7 @@ const (
 	TypeClose  = "close"
 	TypeOK     = "ok"
 	TypeErr    = "err"
+	TypeToken  = "token"
 )
 
 // 连接保活与消息上限，服务器和 agent 两侧共用同一套值。

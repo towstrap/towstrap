@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -27,7 +28,11 @@ type Config struct {
 	ID         string
 	Server     string
 	AgentToken string
-	Shell      string
+	// TokenFile 是 token 的来源文件路径（--agent-token-file 或配置
+	// agent_token_file）；空 = token 不是从文件来的，服务器不能远程换发，
+	// 重连也不会重读文件。
+	TokenFile string
+	Shell     string
 	// Insecure 跳过 TLS 证书校验，只用于连自签证书的服务器。
 	Insecure bool
 	// Quiet 关掉会话开始/结束的桌面通知和 wall 广播（审计日志不受影响）。
@@ -68,6 +73,45 @@ func warnIfRoot() {
 	}
 }
 
+// tokenState 是 agent 当前用的 token：服务器换发成功后 onToken 就地更新，
+// 每次重连前还会重读 token 文件（手动改过文件的也认）。
+type tokenState struct {
+	mu  sync.Mutex
+	cur string
+}
+
+func (t *tokenState) get() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cur
+}
+
+func (t *tokenState) set(tok string) {
+	t.mu.Lock()
+	t.cur = tok
+	t.mu.Unlock()
+}
+
+// reloadFrom 重读 token 文件：内容变了（非空且和当前不同）就换上并返回
+// true；文件读不到/是空/内容没变都返回 false，当前 token 不动。
+func (t *tokenState) reloadFrom(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if tok == t.cur {
+		return false
+	}
+	t.cur = tok
+	return true
+}
+
 func ConnectOnce(cfg Config) error {
 	warnIfRoot()
 	cfg, err := prepare(cfg)
@@ -76,7 +120,7 @@ func ConnectOnce(cfg Config) error {
 	}
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
-	return dialOnce(cfg, p)
+	return dialOnce(cfg, p, &tokenState{cur: cfg.AgentToken})
 }
 
 func Run(cfg Config) error {
@@ -92,13 +136,19 @@ func Run(cfg Config) error {
 		"server", cfg.Server, "shell", cfg.Shell, "insecure", cfg.Insecure,
 		"audit_log", p.path, "notify", !cfg.Quiet)
 
+	tokens := &tokenState{cur: cfg.AgentToken}
 	// 连不上就指数退避（带随机抖动）：服务器重启时几千台 agent 不会在
 	// 同一毫秒全部冲回来把握手打爆。
 	const base = 2 * time.Second
 	delay := base
 	for {
+		// 每次重连前重读 token 文件：服务器换发会写文件，手动换过文件
+		// 也在这里生效。
+		if cfg.TokenFile != "" && tokens.reloadFrom(cfg.TokenFile) {
+			slog.Info("token 文件已更新，改用新 token", "path", cfg.TokenFile)
+		}
 		start := time.Now()
-		if err := dialOnce(cfg, p); err != nil {
+		if err := dialOnce(cfg, p, tokens); err != nil {
 			slog.Error("agent disconnected", "err", err)
 		}
 		if time.Since(start) >= time.Minute {
@@ -125,6 +175,7 @@ type agent struct {
 	sessMu   sync.Mutex
 	sess     map[string]io.Closer
 	presence *presence
+	tokens   *tokenState
 }
 
 func (a *agent) send(m proto.Msg) error {
@@ -176,7 +227,7 @@ func (a *agent) closeAll() {
 	a.sessMu.Unlock()
 }
 
-func dialOnce(cfg Config, p *presence) error {
+func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 	u, err := url.Parse(cfg.Server)
 	if err != nil {
 		return err
@@ -194,7 +245,7 @@ func dialOnce(cfg Config, p *presence) error {
 	u.RawQuery = ""
 
 	hdr := http.Header{}
-	hdr.Set("X-Agent-Token", cfg.AgentToken)
+	hdr.Set("X-Agent-Token", tokens.get())
 	dialer := &websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
 		HandshakeTimeout: 45 * time.Second,
@@ -202,13 +253,18 @@ func dialOnce(cfg Config, p *presence) error {
 	if cfg.Insecure {
 		dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-	conn, _, err := dialer.Dial(u.String(), hdr)
+	conn, resp, err := dialer.Dial(u.String(), hdr)
 	if err != nil {
+		// 401 = 服务器明确不认这个 token（换过/作废）：给一句能看懂的提示，
+		// 重连退避照常。
+		if errors.Is(err, websocket.ErrBadHandshake) && resp != nil && resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("服务器拒绝了 token（可能已被更换或作废），请检查 token 文件")
+		}
 		return err
 	}
 	defer conn.Close()
 
-	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]io.Closer), presence: p}
+	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]io.Closer), presence: p, tokens: tokens}
 	defer a.closeAll()
 
 	if err := a.send(proto.Msg{T: proto.TypeHello, Name: cfg.ID, Ver: version.String()}); err != nil {
@@ -251,8 +307,58 @@ func (a *agent) loop() error {
 			if c := a.takeSession(msg.ID); c != nil {
 				_ = c.Close()
 			}
+		case proto.TypeToken:
+			a.onToken(msg)
 		}
 	}
+}
+
+// onToken 处理服务器下推的新 token：原子写进 token 文件才算数——写成功
+// 回 ok 并就地换当前 token（这条连接不用断）；token 不是从文件读的或
+// 写失败回 err，服务器那边就不换库。
+func (a *agent) onToken(msg proto.Msg) {
+	if a.cfg.TokenFile == "" {
+		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: "token 不是从文件读的，无法远程更换"})
+		return
+	}
+	if err := writeTokenFile(a.cfg.TokenFile, msg.D); err != nil {
+		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+		return
+	}
+	if a.tokens != nil {
+		a.tokens.set(msg.D)
+	}
+	if a.presence != nil {
+		a.presence.audit.Log("TOKEN-ROTATED", "id", a.cfg.ID)
+	}
+	_ = a.send(proto.Msg{T: proto.TypeOK, ID: msg.ID})
+}
+
+// writeTokenFile 原子写 token 文件：同目录临时文件（0600）→ 写入 → Sync →
+// Rename 覆盖，任何一步失败都不动原文件、不留临时文件。
+func writeTokenFile(path, tok string) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".token-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }() // rename 成功后是空操作
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.WriteString(tok + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 type ptyFile struct {

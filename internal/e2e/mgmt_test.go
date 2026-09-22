@@ -215,8 +215,8 @@ func TestMgmtTOTPRecheck(t *testing.T) {
 	}
 }
 
-// TestMgmtTokenRegen @machine token --regen 换新后旧 token 的在线 agent
-// 立刻掉线，新 token 能连。
+// TestMgmtTokenRegen @machine token 只保留回显：--regen 已移到 agent 侧
+// 的 token refresh，SSH 里传 --regen 退出 2、token 不变、agent 不掉线。
 func TestMgmtTokenRegen(t *testing.T) {
 	srv, httpPort, sshPort, users := startServer(t)
 	if _, err := users.Add("alice", "alicepw123", nil, "", nil); err != nil {
@@ -230,23 +230,27 @@ func TestMgmtTokenRegen(t *testing.T) {
 	waitAgent(t, srv.Hub, "alice+build")
 
 	c := mgmtDial(t, sshPort, "alice", gossh.Password("alicepw123"))
-	out, se, code := runMgmt(t, c, "@machine token build --regen", "")
-	if code != 0 {
-		t.Fatalf("--regen 应成功: code=%d stderr=%q", code, se)
+
+	// 回显照旧
+	out, se, code := runMgmt(t, c, "@machine token build", "")
+	if code != 0 || !strings.Contains(out, build.Token) {
+		t.Fatalf("回显应有当前 token: code=%d out=%q stderr=%q", code, out, se)
 	}
-	newTok := tokenRe.FindString(out)
-	if newTok == "" || newTok == build.Token {
-		t.Fatalf("应换出新 token: %q", out)
+	// --regen 拒绝并指路 token refresh
+	_, se, code = runMgmt(t, c, "@machine token build --regen", "")
+	if code != 2 {
+		t.Fatalf("--regen 应退出 2: code=%d", code)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && srv.Hub.Has("alice+build") {
-		time.Sleep(50 * time.Millisecond)
+	if !strings.Contains(se, "token refresh") {
+		t.Fatalf("stderr 应指向 ws2ssh-agent token refresh: %q", se)
 	}
-	if srv.Hub.Has("alice+build") {
-		t.Fatal("换 token 后旧 agent 应立即掉线")
+	m, _ := users.GetMachine("alice", "build")
+	if m.Token != build.Token {
+		t.Fatal("token 不该变")
 	}
-	startAgent(t, httpPort, newTok, "build-host2")
-	waitAgent(t, srv.Hub, "alice+build")
+	if !srv.Hub.Has("alice+build") {
+		t.Fatal("agent 不该掉线")
+	}
 }
 
 // TestMgmtMachineRemove @machine remove 删机器后记录没了、在线 agent 掉线。

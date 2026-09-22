@@ -110,8 +110,9 @@ func usage() {
                               [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
                               [--disable|--enable]
   user remove 用户名                                               删号（名下机器 token 全作废）
-  user token 用户名 [--regen] [--admin]                            看/换 token（仅当账号只有一台机器；
-                                                                  多台用 machine token 指定；要本人确认）
+  user token 用户名 [--regen] [--admin]                            看 token（仅当账号只有一台机器；
+                                                                  多台用 machine token 指定；要本人确认；
+                                                                  --regen 是应急换法，必须 --admin）
   user totp  用户名 [--remove]                                     绑定/解绑 TOTP 二因素
 
 机器管理（一个账号可挂多台，每台独立 token；SSH 登录名 = 账号+机器名）:
@@ -120,9 +121,12 @@ func usage() {
   machine list   [账号]                                            列机器（不给账号列全部）
   machine set    账号 机器名 [--agent-allow-ip 地址]... [--clear-agent-allow]
   machine remove 账号 机器名                                       删机器（token 作废）
-  machine token  账号 机器名 [--regen]                             看/换这台机器的 token（要本人确认）
+  machine token  账号 机器名 [--regen]                             看这台机器的 token（要本人确认；
+                                                                  --regen 是应急换法，必须 --admin）
 账号本人确认：add 和 token 会先问账号密码（绑了 TOTP 再问验证码）；
---admin 跳过确认（打警告并写审计 MACHINE-*-ADMIN）；--audit-log 指定审计文件
+--admin 跳过确认（打警告并写审计 MACHINE-*-ADMIN）；--audit-log 指定审计文件。
+换 token 的正常通道是在 agent 机器上跑 ws2ssh-agent token refresh（新 token
+直接写进那台机器的 token 文件，不断连接），--regen --admin 只用于机器丢了
 
 白名单写法：IP、网段、IP:端口、主机名、*.domain、*。不写就全放行。
 --allow-ip 管的是「谁能 SSH 登录」；--agent-allow-ip 管的是「被控机器从哪连出」——
@@ -334,9 +338,10 @@ func usageUser() {
                            [--disable] [--enable] [通用选项]
   ws2ssh-server user remove 用户名 [通用选项]
   ws2ssh-server user token  用户名 [--regen] [--admin] [通用选项]
-                           看/换 token（仅当账号只有一台机器；多台用 machine
+                           看 token（仅当账号只有一台机器；多台用 machine
                            token 指定）。要账号本人确认：密码 + TOTP；--admin
-                           跳过（打警告并写审计 MACHINE-TOKEN-ADMIN）
+                           跳过（打警告并写审计 MACHINE-TOKEN-ADMIN）。
+                           --regen 是应急换法，必须 --admin
   ws2ssh-server user totp   用户名 [--remove] [通用选项]    绑定/解绑 TOTP 二因素验证器
 
 通用选项: --config server.yaml（读里面的 users_db/users_key/public_url/audit_log）、
@@ -787,7 +792,16 @@ func userToken(args []string) int {
 	if machines := env.store.Machines(name); len(machines) == 1 {
 		machine = machines[0].Name
 	}
-	if !ownerOrAdmin(env, name, machine, "MACHINE-TOKEN-ADMIN", *admin) {
+	// 换 token 只允许在 agent 机器上发起（token refresh）；--admin 是应急通道。
+	if *regen && !*admin {
+		slog.Error("换 token 请在 agent 机器上执行 ws2ssh-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
+		return 2
+	}
+	event := "MACHINE-TOKEN-ADMIN"
+	if *regen {
+		event = "MACHINE-TOKEN-REGEN-ADMIN"
+	}
+	if !ownerOrAdmin(env, name, machine, event, *admin) {
 		return 2
 	}
 	token := ""
@@ -889,7 +903,10 @@ func usageMachine() {
   ws2ssh-server machine remove 账号 机器名 [通用选项]           删机器（token 作废，
                                连着的 agent 会被巡检断开）
   ws2ssh-server machine token  账号 机器名 [--regen] [--admin] [通用选项]
-                               看/换这台机器的 token
+                               看这台机器的 token；--regen 是应急换法（机器
+                               离线/丢失时用），必须加 --admin，记
+                               MACHINE-TOKEN-REGEN-ADMIN。正常换法是在 agent
+                               机器上跑 ws2ssh-agent token refresh
 
 账号本人确认：add 和 token 会先问这个账号的 SSH 密码（绑了 TOTP 再问验证码），
 防「能碰服务器 DB 就能给任何账号发 token」。--admin 跳过确认：打一条警告，
@@ -1075,7 +1092,16 @@ func machineToken(args []string) int {
 		return 2
 	}
 	env.auditPath = cliAuditPath(*auditLog, *configPath)
-	if !ownerOrAdmin(env, user, name, "MACHINE-TOKEN-ADMIN", *admin) {
+	// 换 token 只允许在 agent 机器上发起（token refresh）；--admin 是应急通道。
+	if *regen && !*admin {
+		slog.Error("换 token 请在 agent 机器上执行 ws2ssh-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
+		return 2
+	}
+	event := "MACHINE-TOKEN-ADMIN"
+	if *regen {
+		event = "MACHINE-TOKEN-REGEN-ADMIN"
+	}
+	if !ownerOrAdmin(env, user, name, event, *admin) {
 		return 2
 	}
 	token := ""

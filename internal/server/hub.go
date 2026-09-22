@@ -60,14 +60,18 @@ func (s *session) errText() string {
 // 如 alice+office），由 token 决定。
 // token 记住接入时用的那个：开会话前和巡检时都要复核它是否仍然有效，
 // 这样 user token --regen / user remove / --disable 对已连接的 agent 也能
-// 立刻生效（不然撤权只挡新连接，攻击者已经连上的那条一直有效）。
+// 立刻生效（不然撤权只挡新连接，攻击者已经连上的那条一直有效）。token
+// 换发成功后 setToken 就地更新，连接不用断。
 type agentConn struct {
 	name     string
-	token    string
 	conn     *websocket.Conn
 	writeMu  sync.Mutex
 	sessMu   sync.Mutex
 	sessions map[string]*session
+	waiters  map[string]chan error // token 换发等在途请求：ID → 应答通道
+
+	tokMu sync.RWMutex
+	token string
 }
 
 func newAgent(name, token string, conn *websocket.Conn) *agentConn {
@@ -76,7 +80,22 @@ func newAgent(name, token string, conn *websocket.Conn) *agentConn {
 		token:    token,
 		conn:     conn,
 		sessions: make(map[string]*session),
+		waiters:  make(map[string]chan error),
 	}
+}
+
+func (a *agentConn) getToken() string {
+	a.tokMu.RLock()
+	defer a.tokMu.RUnlock()
+	return a.token
+}
+
+// setToken token 换发成功后更新记住的凭据，让 PruneInvalid/开会话复核
+// 拿新 token 对库——不然旧 token 已作废，下一次巡检会把这条连接断开。
+func (a *agentConn) setToken(t string) {
+	a.tokMu.Lock()
+	a.token = t
+	a.tokMu.Unlock()
 }
 
 func (a *agentConn) send(m proto.Msg) error {
@@ -161,6 +180,30 @@ func (a *agentConn) closeAll() {
 	}
 }
 
+// rotateToken 向 agent 下推一个新 token：agent 原子写进自己的 token 文件
+// 回 ok（返回 nil），写不了回 err（返回它的原因文本），超时返回 "timeout"。
+// 调用方收到 nil 才能把库里的 token 换掉——没 ack 就不换。
+func (a *agentConn) rotateToken(id, newTok string, timeout time.Duration) error {
+	ch := make(chan error, 1)
+	a.sessMu.Lock()
+	a.waiters[id] = ch
+	a.sessMu.Unlock()
+	defer func() {
+		a.sessMu.Lock()
+		delete(a.waiters, id)
+		a.sessMu.Unlock()
+	}()
+	if err := a.send(proto.Msg{T: proto.TypeToken, ID: id, D: newTok}); err != nil {
+		return err
+	}
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(timeout):
+		return errors.New("timeout")
+	}
+}
+
 func (a *agentConn) signalReady(id string, err error) {
 	s := a.getSession(id)
 	if s == nil {
@@ -197,6 +240,20 @@ func (a *agentConn) readLoop() {
 		}
 		msg, err := proto.Decode(raw)
 		if err != nil {
+			continue
+		}
+		// token 换发等在途请求的应答（ok/err 带同一 ID）先在这里接住，
+		// 不落到会话分发——它们的 ID 不是会话号。
+		a.sessMu.Lock()
+		w, isWaiter := a.waiters[msg.ID]
+		a.sessMu.Unlock()
+		if isWaiter {
+			switch msg.T {
+			case proto.TypeOK:
+				w <- nil
+			case proto.TypeErr:
+				w <- errors.New(msg.Err)
+			}
 			continue
 		}
 		s := a.getSession(msg.ID)
@@ -267,7 +324,7 @@ func (h *Hub) PruneInvalid(check func(name, token string) bool) []string {
 	var all []entry
 	h.mu.Lock()
 	for name, a := range h.agents {
-		all = append(all, entry{name: name, token: a.token, a: a})
+		all = append(all, entry{name: name, token: a.getToken(), a: a})
 	}
 	h.mu.Unlock()
 
@@ -345,6 +402,16 @@ func (h *Hub) nextID() string {
 	defer h.mu.Unlock()
 	h.seq++
 	return fmt.Sprintf("s%d", h.seq)
+}
+
+// RotateToken 通过 agent 现有连接下推新 token 并等 ack（前缀 "t" 的请求号
+// 和会话号 "s*" 不会撞）。成功返回 nil；agent 拒/超时返回错误。
+func (h *Hub) RotateToken(a *agentConn, newTok string, timeout time.Duration) error {
+	h.mu.Lock()
+	h.seq++
+	id := fmt.Sprintf("t%d", h.seq)
+	h.mu.Unlock()
+	return a.rotateToken(id, newTok, timeout)
 }
 
 // OpenReq 一次开壳请求：终端尺寸、要不要 PTY（SSH 客户端申请了才 true）、

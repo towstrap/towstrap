@@ -18,7 +18,8 @@ const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执�
   @machine list                                     列出账号下的机器（不含 token）
   @machine add <名字> [--agent-allow-ip 地址]...    加一台机器并打印 agent token
   @machine remove <名字>                            删一台机器，在线 agent 立刻断开
-  @machine token <名字> [--regen]                   看这台机器的 token；--regen 换新
+  @machine token <名字>                             看这台机器的 token
+                                                    （换 token 在 agent 机器上跑 ws2ssh-agent token refresh）
   @machine help                                     本说明
 `
 
@@ -185,9 +186,14 @@ func (s *Server) mgmtMachine(sess glssh.Session, account string, args []string, 
 	case "token":
 		fs := flag.NewFlagSet("@machine token", flag.ContinueOnError)
 		fs.SetOutput(sess.Stderr())
-		regen := fs.Bool("regen", false, "换掉这台机器的 token，旧 token 立刻失效")
+		regen := fs.Bool("regen", false, "（已停用）换 token 请在那台机器上执行 ws2ssh-agent token refresh")
 		pos, err := mgmtArgs(fs, args[1:])
 		if err != nil {
+			_ = sess.Exit(2)
+			return
+		}
+		if *regen {
+			_, _ = fmt.Fprintln(sess.Stderr(), "换 token 请在那台机器上执行 ws2ssh-agent token refresh（新 token 会直接写进它的 token 文件，不换断连接）")
 			_ = sess.Exit(2)
 			return
 		}
@@ -196,24 +202,13 @@ func (s *Server) mgmtMachine(sess glssh.Session, account string, args []string, 
 			return
 		}
 		id := account + "+" + pos[0]
-		if *regen {
-			tok, err := s.cfg.Users.RegenMachineToken(account, pos[0])
-			if err != nil {
-				fail(err)
-				return
-			}
-			s.audit.Log("MACHINE-TOKEN-REGEN", "user", sess.User(), "machine", id, "from", from)
-			s.revokeStaleAgents() // 旧 token 的在线 agent 马上断开
-			_, _ = fmt.Fprintf(sess, "机器 %s 的 token 已更换\nagent token: %s\n%s\n", id, tok, config.AgentInstallHint(s.cfg.PublicURL, tok))
-		} else {
-			m, ok := s.cfg.Users.GetMachine(account, pos[0])
-			if !ok {
-				fail(fmt.Errorf("机器 %s 不存在（@machine list 看现有的）", id))
-				return
-			}
-			s.audit.Log("MACHINE-TOKEN", "user", sess.User(), "machine", id, "from", from)
-			_, _ = fmt.Fprintf(sess, "agent token: %s\n", m.Token)
+		m, ok := s.cfg.Users.GetMachine(account, pos[0])
+		if !ok {
+			fail(fmt.Errorf("机器 %s 不存在（@machine list 看现有的）", id))
+			return
 		}
+		s.audit.Log("MACHINE-TOKEN", "user", sess.User(), "machine", id, "from", from)
+		_, _ = fmt.Fprintf(sess, "agent token: %s\n", m.Token)
 		_ = sess.Exit(0)
 	default:
 		usage(2)

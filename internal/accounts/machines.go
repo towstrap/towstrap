@@ -227,6 +227,22 @@ func (s *Store) RegenMachineToken(username, name string) (string, error) {
 	return tok, nil
 }
 
+// SetMachineToken 把一台机器的 token 换成指定值（换发流程里 agent 已确认
+// 写进文件后落库）。token 撞了 UNIQUE 约束照常报错——那台 agent 的文件
+// 已经改了，调用方要按「需人工处理」告警。
+func (s *Store) SetMachineToken(username, name, token string) error {
+	enc, err := s.encToken(token)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE machines SET token_enc = ? WHERE username = ? AND name = ?`,
+		enc, username, name)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res, username+"+"+name)
+}
+
 // SetMachineAgentAllow 设置一台机器的 agent 来源白名单；传空表示不限。
 func (s *Store) SetMachineAgentAllow(username, name string, ips []string) error {
 	if err := validateAllowIPs(ips); err != nil {

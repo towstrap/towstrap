@@ -294,6 +294,10 @@ func hashPassword(pw string) (string, error) {
 	return string(h), err
 }
 
+// NewAgentToken 生成一个新 agent token（w2s-...）。服务器换发 token 时用：
+// 先下推给 agent 写进文件，收到 ack 才调 SetMachineToken 落库。
+func NewAgentToken() string { return randomToken() }
+
 func randomToken() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)

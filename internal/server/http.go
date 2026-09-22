@@ -46,6 +46,7 @@ func (s *Server) routes() http.Handler {
 	})
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/agent", s.handleAgent)
+	mux.HandleFunc("/token/refresh", s.handleTokenRefresh)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})

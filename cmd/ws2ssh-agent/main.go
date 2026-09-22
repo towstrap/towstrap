@@ -24,6 +24,12 @@ func main() {
 	switch os.Args[1] {
 	case "agent": // 容忍旧的子命令写法
 		os.Exit(runAgent(os.Args[2:]))
+	case "token":
+		if len(os.Args) < 3 || os.Args[2] != "refresh" {
+			usageToken()
+			os.Exit(2)
+		}
+		os.Exit(runTokenRefresh(os.Args[3:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -54,6 +60,24 @@ func usage() {
 
 服务器地址、shell、审计路径这些长久配置建议写进 agent.yaml（见 examples/agent.yaml），
 命令行旗标只做临时覆盖。
+
+换 token 用 ws2ssh-agent token refresh（见 ws2ssh-agent token 不带参数的说明）。
+`)
+}
+
+func usageToken() {
+	fmt.Fprintf(os.Stderr, `用法:
+  ws2ssh-agent token refresh [--machine 机器名]... [--all] [选项]
+
+在一台已登记的 agent 机器上换发 token：本机 token + 账号密码 + TOTP 鉴权，
+新 token 由服务器经各机器的 WebSocket 连接直接下推写进各自的 token 文件，
+agent 不用重启、连接不断。目标是 token 从文件读的机器（--agent-token-file
+或配置 agent_token_file）；命令行/环境变量给的 token 不能远程换。
+
+  --machine 机器名   同账号下要换的机器（不带账号前缀，可重复；不给只换本机）
+  --all              换账号下全部机器
+  --allow-plain      服务器地址是明文 ws:// 且不在本机回环时必须加（密码不能裸奔）
+  其余 --config/--server/--agent-token/--agent-token-file/--insecure 同主命令
 `)
 }
 
@@ -87,7 +111,7 @@ func runAgent(args []string) int {
 	cfg := config.MergeAgent(file, visited(fs))
 	// token 优先级：--agent-token > --agent-token-file > 环境变量 > 配置文件。
 	// 命令行直写 token 会进 ps，尽量用后几种。
-	tok, tokenSource, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("WS2SSH_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
+	tok, tokenSource, tokFile, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("WS2SSH_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
 	if err != nil {
 		slog.Error(err.Error())
 		return 2
@@ -100,6 +124,7 @@ func runAgent(args []string) int {
 	if err := client.Run(client.Config{
 		Server:     cfg.Server,
 		AgentToken: tok,
+		TokenFile:  tokFile,
 		Shell:      cfg.Shell,
 		Insecure:   cfg.Insecure,
 		Quiet:      cfg.Quiet,
@@ -113,32 +138,33 @@ func runAgent(args []string) int {
 
 // resolveAgentToken 按优先级取 token：显式旗标 > token 文件旗标 > 环境变量 >
 // 配置文件 agent_token > 配置文件 agent_token_file。第二个返回值是来源
-// （启动日志用）。文件内容整体去空白（echo > file 会带换行）。
-func resolveAgentToken(flagToken, flagFile, envToken, yamlToken, yamlFile string) (string, string, error) {
+// （启动日志用），第三个是 token 文件路径——只有「从文件读」的来源才填，
+// 服务器远程换发和重连重读都靠它。文件内容整体去空白（echo > file 会带换行）。
+func resolveAgentToken(flagToken, flagFile, envToken, yamlToken, yamlFile string) (string, string, string, error) {
 	if flagToken != "" {
-		return flagToken, "旗标 --agent-token", nil
+		return flagToken, "旗标 --agent-token", "", nil
 	}
 	if flagFile != "" {
 		tok, err := readTokenFile(flagFile)
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		return tok, "旗标 --agent-token-file " + flagFile, nil
+		return tok, "旗标 --agent-token-file " + flagFile, flagFile, nil
 	}
 	if envToken != "" {
-		return strings.TrimSpace(envToken), "环境变量 WS2SSH_AGENT_TOKEN", nil
+		return strings.TrimSpace(envToken), "环境变量 WS2SSH_AGENT_TOKEN", "", nil
 	}
 	if yamlToken != "" {
-		return yamlToken, "配置 agent_token", nil
+		return yamlToken, "配置 agent_token", "", nil
 	}
 	if yamlFile != "" {
 		tok, err := readTokenFile(yamlFile)
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		return tok, "配置 agent_token_file " + yamlFile, nil
+		return tok, "配置 agent_token_file " + yamlFile, yamlFile, nil
 	}
-	return "", "", fmt.Errorf("必须提供 agent token：--agent-token、--agent-token-file 文件、环境变量 WS2SSH_AGENT_TOKEN 或配置文件 agent_token/agent_token_file")
+	return "", "", "", fmt.Errorf("必须提供 agent token：--agent-token、--agent-token-file 文件、环境变量 WS2SSH_AGENT_TOKEN 或配置文件 agent_token/agent_token_file")
 }
 
 func readTokenFile(path string) (string, error) {

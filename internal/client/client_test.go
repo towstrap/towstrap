@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +108,69 @@ func TestBackoff(t *testing.T) {
 		if got := backoff(c.cur); got != c.want {
 			t.Errorf("backoff(%v) = %v, want %v", c.cur, got, c.want)
 		}
+	}
+}
+
+// writeTokenFile 原子写 token 文件：内容带换行、权限 0600、覆盖旧文件、
+// 不留临时文件。
+func TestWriteTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte("w2s-old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTokenFile(path, "w2s-new-abc"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "w2s-new-abc\n" {
+		t.Fatalf("内容不对: %q", raw)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("权限应为 0600: %o", st.Mode().Perm())
+	}
+	left, err := filepath.Glob(filepath.Join(dir, ".token-*"))
+	if err != nil || len(left) != 0 {
+		t.Fatalf("临时文件应清干净: %v", left)
+	}
+}
+
+// tokenState.reloadFrom：文件变了返回 true 且 cur 更新；空文件/读不到/
+// 内容没变都不动。
+func TestTokenStateReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	ts := &tokenState{cur: "w2s-cur"}
+
+	if ts.reloadFrom(filepath.Join(dir, "nope")) {
+		t.Fatal("文件不存在不该换")
+	}
+	if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ts.reloadFrom(path) {
+		t.Fatal("空文件不该换")
+	}
+	if err := os.WriteFile(path, []byte("w2s-cur\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ts.reloadFrom(path) {
+		t.Fatal("内容没变不该算更新")
+	}
+	if err := os.WriteFile(path, []byte("  w2s-new \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !ts.reloadFrom(path) {
+		t.Fatal("新内容应返回 true")
+	}
+	if ts.get() != "w2s-new" {
+		t.Fatalf("cur 应换成新 token: %q", ts.get())
 	}
 }
