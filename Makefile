@@ -20,16 +20,16 @@ release: clean
 	@set -e; for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; \
 		echo "== $$os/$$arch"; \
-		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
 			-o dist/towstrap-server-$$os-$$arch ./cmd/towstrap-server; \
-		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
 			-o dist/towstrap-agent-$$os-$$arch ./cmd/towstrap-agent; \
-		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
 			-o dist/towstrap-mcp-$$os-$$arch ./cmd/towstrap-mcp; \
 	done
 	cd dist && shasum -a 256 * > SHA256SUMS
 	@if [ -n "$$MINISIGN_KEY_FILE" ]; then \
-		cd dist && minisign -H -Sm towstrap-server-* towstrap-agent-* towstrap-mcp-* SHA256SUMS; \
+		cd dist && minisign -H -Sm -s "$$MINISIGN_KEY_FILE" towstrap-server-* towstrap-agent-* towstrap-mcp-* SHA256SUMS; \
 		echo "已用 minisign 签名"; \
 	else \
 		echo "提示：设 MINISIGN_KEY_FILE 可在发布时签名"; \

@@ -1,0 +1,58 @@
+name: Release
+
+# 打 v* 标签触发：先跑完整测试，再交叉编译四个平台、算校验和，
+# （可选）用 minisign 签名，最后建 GitHub Release 并把 dist/ 全部挂上。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./... -count=1
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile
+        run: make release VERSION="${GITHUB_REF_NAME#v}"
+
+      # 可选：在仓库 Secrets 里放 MINISIGN_KEY（未加密的 minisign
+      # 私钥文件做 base64 后的内容）即自动签名；没配就跳过。
+      - name: Sign with minisign (optional)
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then
+            echo "MINISIGN_KEY secret not set; skipping signing"
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y minisign
+          printf '%s' "$MINISIGN_KEY" | base64 -d > "$RUNNER_TEMP/minisign.key"
+          chmod 600 "$RUNNER_TEMP/minisign.key"
+          cd dist
+          minisign -H -Sm -s "$RUNNER_TEMP/minisign.key" towstrap-* SHA256SUMS
+          rm -f "$RUNNER_TEMP/minisign.key"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag

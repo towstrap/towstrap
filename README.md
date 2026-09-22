@@ -5,6 +5,7 @@
 # TowStrap
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
+[![CI](https://github.com/towstrap/towstrap/actions/workflows/ci.yml/badge.svg)](https://github.com/towstrap/towstrap/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%C2%B7%20macOS-lightgrey.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-ready-green.svg)]()

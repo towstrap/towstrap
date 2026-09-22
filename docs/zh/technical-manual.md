@@ -473,3 +473,4 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 - **版本注入**：`-ldflags "-X github.com/towstrap/towstrap/internal/version.Version=$(cat VERSION)"`；`version` 命令和 `hello` 消息的 `ver` 都用它
 - **测试结构**：各 `internal/*` 包单测 + `internal/e2e` 端到端——e2e 起**真实的服务器进程内实例 + 真实 agent 连接**，覆盖 SSH 密码/TOTP/公钥登录、爆破锁定、exec、多机、token 换发、MCP HTTP/stdio、@machine、撤权等
 - **依赖**：全部静态 Go（modernc sqlite 无 CGO），三个二进制零依赖
+- **CI/发布**：`.github/workflows/ci.yml` 在 main 推送和 PR 上跑 `vet + test + build`；`.github/workflows/release.yml` 在 `v*` 标签触发，先跑测试再 `make release`（版本号取标签去掉 `v`），仓库 Secrets 里放了 `MINISIGN_KEY`（未加密私钥的 base64）就自动签名，最后 `gh release create` 把 `dist/` 全部挂到 Release
