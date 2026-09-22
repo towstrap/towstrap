@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="TowStrap logo">
+  <defs>
+    <linearGradient id="strap" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#F97316"/>
+    </linearGradient>
+  </defs>
+  <!-- background disc -->
+  <circle cx="128" cy="128" r="120" fill="#0F172A"/>
+  <!-- left hook (the machine behind NAT) -->
+  <path d="M46 128 a22 22 0 1 1 22 22" fill="none" stroke="#CBD5E1" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="46" cy="128" r="8" fill="#CBD5E1"/>
+  <!-- flat strap: wide, flat, with stitched edges -->
+  <rect x="64" y="112" width="128" height="32" rx="4" fill="url(#strap)"/>
+  <line x1="72" y1="120" x2="184" y2="120" stroke="#0F172A" stroke-width="2" stroke-dasharray="6 5" opacity="0.55"/>
+  <line x1="72" y1="136" x2="184" y2="136" stroke="#0F172A" stroke-width="2" stroke-dasharray="6 5" opacity="0.55"/>
+  <!-- right hook (you / your LLM) -->
+  <path d="M210 128 a22 22 0 1 0 -22 -22" fill="none" stroke="#CBD5E1" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="210" cy="128" r="8" fill="#CBD5E1"/>
+  <!-- tension marks -->
+  <path d="M124 92 l4 -10 M132 92 l4 -10" stroke="#F59E0B" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
+  <path d="M124 164 l4 10 M132 164 l4 10" stroke="#F59E0B" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
+</svg>
