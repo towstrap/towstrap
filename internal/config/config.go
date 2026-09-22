@@ -320,3 +320,17 @@ func MergeAgent(file Agent, set map[string]string) Agent {
 	}
 	return out
 }
+
+// AgentInstallHint 生成把 agent 装到目标机上的提示文案。publicURL 为空时
+// 用占位符并提醒把地址换成实际的。CLI 和 SSH 自助管理命令共用。
+func AgentInstallHint(publicURL, token string) string {
+	url := publicURL
+	if url == "" {
+		url = "wss://<服务器>:<端口>"
+	}
+	s := fmt.Sprintf("在那台机器上执行 agent 安装命令：\n  ws2ssh-agent --server %s --agent-token %s", url, token)
+	if publicURL == "" {
+		s += "\n（服务器没配 public_url，请把上面的地址换成实际地址）"
+	}
+	return s
+}

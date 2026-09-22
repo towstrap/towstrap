@@ -52,6 +52,9 @@ type Config struct {
 	// MinAgentVersion 非空时，hello 自报版本低于它的 agent 拒绝接入
 	//（机群版本淘汰用；版本是自报的，不是安全控制）。空 = 不限。
 	MinAgentVersion string
+	// PublicURL 是服务器对外的 wss:// 地址，用于给新加的机器生成 agent
+	// 安装命令（SSH @machine add 等自助命令用到）。空 = 提示里放占位符。
+	PublicURL string
 
 	// MCP 非 nil 时在 HTTP 口挂 Streamable HTTP 的 MCP 服务（路径 MCPPath，
 	// 默认 /mcp）。MCP.Machines 在这里只当元数据用（说明、roots）；实际

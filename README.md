@@ -56,7 +56,7 @@ ssh office@你的服务器IP -p 2222
 机器没上线会提示 agent 未连接。**同一个账号下可以再挂机器**（每台机器独立 token）：
 
 ```bash
-./ws2ssh-server machine add office build   # 再拿一个 w2s-... token，装到第二台机器上
+./ws2ssh-server machine add office build   # 再拿一个 w2s-... token（会问 office 的密码做本人确认）
 ```
 
 一个账号有多台机器后，`ssh office@...` 会报错并列出机器名单和在线状态，要指名：`ssh office+default@...` 或 `ssh office+build@...`。同一台机器（同名）的 agent 再连会顶掉旧连接，不同机器名互不干扰。
@@ -86,15 +86,35 @@ agent 同理支持 `--config agent.yaml`（见 `examples/agent.yaml`，包括从
 | `ws2ssh-server user list` | 列出账号、名下机器、白名单、TOTP 状态、公钥数、联系方式 |
 | `ws2ssh-server user set 名字 [--password 密码] [--name 新名] [--contact 联系方式] [--allow-ip 地址]... [--agent-allow-ip 地址]... [--ssh-key 公钥]... [--ssh-key-file 文件] [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys] [--clear-allow] [--disable\|--enable]` | 改密码 / 改名 / 改备注 / 改白名单 / 增删公钥 / 停启用（`--agent-allow-ip` 只作用于唯一那台机器，多台时用 `machine set`） |
 | `ws2ssh-server user remove 名字` | 删号，名下机器的 token 全部作废 |
-| `ws2ssh-server user token 名字 [--regen]` | 查看或更换 token（仅当账号只有一台机器；多台时用 `machine token`） |
-| `ws2ssh-server machine add 账号 机器名 [--agent-allow-ip 地址]...` | 在账号下加一台机器，打印它的独立 token 和安装命令 |
+| `ws2ssh-server user token 名字 [--regen] [--admin]` | 查看或更换 token（仅当账号只有一台机器；多台时用 `machine token`）。要本人确认 |
+| `ws2ssh-server machine add 账号 机器名 [--agent-allow-ip 地址]... [--admin]` | 在账号下加一台机器，打印它的独立 token 和安装命令。要本人确认 |
 | `ws2ssh-server machine list [账号]` | 列机器（账号、机器名、登录名、agent 白名单、token） |
 | `ws2ssh-server machine set 账号 机器名 [--agent-allow-ip 地址]... [--clear-agent-allow]` | 改这一台机器的 agent 来源白名单 |
 | `ws2ssh-server machine remove 账号 机器名` | 删一台机器，token 立刻作废 |
-| `ws2ssh-server machine token 账号 机器名 [--regen]` | 查看或更换这一台机器的 token |
+| `ws2ssh-server machine token 账号 机器名 [--regen] [--admin]` | 查看或更换这一台机器的 token。要本人确认 |
 | `ws2ssh-server user totp 名字 [--remove]` | 绑定 / 解绑 TOTP 二因素 |
 
 不写 `--password` 会生成 16 位强随机密码，**只显示一次**（库里只有 bcrypt 哈希，丢了只能重设）。密码至少 10 位。改名后 agent 不用动（它靠 token 认，不靠名字）。服务器每次校验都直连账号库，改完立即生效，不用重启。
+
+### 账号本人确认（CLI）和 SSH 自助管理
+
+会签发或暴露机器 token 的 CLI 命令——`machine add`、`machine token`（含不带 `--regen` 的查看）、`user token`——默认要**账号本人确认**：先问这个账号的 SSH 密码，绑了 TOTP 再问验证码；确认失败直接退出。这样「能碰服务器上的命令行」不等于「能给任何账号发 token」。管理员要绕过加 `--admin`：会打一条警告，并往服务器审计日志写 `MACHINE-ADD-ADMIN` / `MACHINE-TOKEN-ADMIN`（审计文件按 `--audit-log` 旗标 > yaml `audit_log` > 默认位置找）。
+
+账号本人也可以**直接用 SSH 自助管理**名下机器——`@` 开头的命令保留给服务器自己执行，不会发给 agent：
+
+```bash
+ssh office@服务器 -p 2222 '@machine list'                  # 列名下机器：ID、在线/离线、agent白名单（不显示 token）
+ssh office@服务器 -p 2222 '@machine add build'             # 加机器，直接打印新 token 和安装命令
+ssh office@服务器 -p 2222 '@machine add build --agent-allow-ip 10.0.0.5'
+ssh office@服务器 -p 2222 '@machine remove build'          # 删机器，在线 agent 立刻断开
+ssh office@服务器 -p 2222 '@machine token build'           # 看这台的 token
+ssh office@服务器 -p 2222 '@machine token build --regen'   # 换 token，旧 agent 立刻断开
+ssh office@服务器 -p 2222 '@machine help'                  # 用法说明
+```
+
+- **只能密码登录跑**：公钥登录是给自动化用的，跑 `@` 命令会被拒（记 `MGMT-DENY reason=pubkey`）。
+- **绑了 TOTP 的账号要再输一个新的验证码**——登录时用过的那个不能重放；连错 3 次断开，错一次记一条 `MGMT-DENY reason=totp` 并计入登录限速。没绑 TOTP 的账号密码登录就是本人，不再多问。
+- 登录名带后缀也行：`ssh office+default@... '@machine list'` 按账号部分处理。
 
 账号存在 **SQLite 数据库**里（默认 `/etc/ws2ssh/users.db`，纯 Go 驱动，不需要装任何东西）：
 
@@ -139,7 +159,7 @@ ws2ssh-server machine set office build --clear-agent-allow          # 清空 = �
 两端各有自己的审计日志，格式都是 `<时间> <事件> k=v`，16MB 自动轮转成 `.1`（旧档被覆盖），文件权限 0600，值里的控制字符写入时清掉：
 
 - **agent 侧**（默认 root: `/var/lib/ws2ssh/audit.log`，普通用户 `~/.ws2ssh/audit.log`，`--audit-log` 可改）：`AGENT-START`（每次进程启动：版本、连哪台服务器、shell、insecure/quiet 等参数）、`START`/`END`（每个远程会话，含来源 `登录账号@IP`）。机器主人能查「这台机器被谁连过、agent 被配成了什么样」。
-- **服务器侧**（默认 root: `/var/lib/ws2ssh/server-audit.log`，`--audit-log` / `audit_log` 可改，写 `/dev/null` 可关）：`AUTH-OK` / `AUTH-FAIL`（含 user、来源 IP、method、失败原因 locked/password/disabled/totp）、`AGENT-CONNECT` / `AGENT-REPLACE` / `AGENT-DISCONNECT` / `AGENT-REVOKE`、`SESSION-START` / `SESSION-END` / `SESSION-DENY`。出了安全事件，服务器上就能回溯「谁在什么时候试了什么密码、哪些机器上下线过」。
+- **服务器侧**（默认 root: `/var/lib/ws2ssh/server-audit.log`，`--audit-log` / `audit_log` 可改，写 `/dev/null` 可关）：`AUTH-OK` / `AUTH-FAIL`（含 user、来源 IP、method、失败原因 locked/password/disabled/totp）、`AGENT-CONNECT` / `AGENT-REPLACE` / `AGENT-DISCONNECT` / `AGENT-REVOKE`、`SESSION-START` / `SESSION-END` / `SESSION-DENY`；机器管理：`MGMT-DENY`（@ 命令被拒，reason=pubkey/locked/totp）、`MACHINE-ADD` / `MACHINE-REMOVE` / `MACHINE-TOKEN` / `MACHINE-TOKEN-REGEN`（SSH 自助管理）、`MACHINE-ADD-ADMIN` / `MACHINE-TOKEN-ADMIN`（CLI `--admin` 跳过本人确认）。出了安全事件，服务器上就能回溯「谁在什么时候试了什么密码、哪些机器上下线过、谁加删了机器」。
 
 云防火墙（安全组）和白名单是两层：包先过安全组，再进 ws2ssh。
 

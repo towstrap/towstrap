@@ -252,8 +252,15 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		return
 	}
 
-	// 选机器：登录名带 +机器名 就指名；不带时按账号名下机器数决定。
+	// @ 开头的命令是服务器自己的管理命令（@machine 等），不发给 agent；
+	// 登录名带 +机器名 时忽略后缀，管的是账号下的机器。
 	account, machineName := splitUser(username)
+	if strings.HasPrefix(strings.TrimSpace(cmd), "@") {
+		s.handleMgmt(sess, account, cmd)
+		return
+	}
+
+	// 选机器：登录名带 +机器名 就指名；不带时按账号名下机器数决定。
 	machineID := username
 	if machineName == "" {
 		machines := s.cfg.Users.Machines(account)
