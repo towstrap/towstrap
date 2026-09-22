@@ -57,10 +57,7 @@ func prepare(cfg Config) (Config, error) {
 		return cfg, fmt.Errorf("agent 名字不合法，只能用字母、数字、点、下划线和短横线")
 	}
 	if cfg.Shell == "" {
-		cfg.Shell = os.Getenv("SHELL")
-	}
-	if cfg.Shell == "" {
-		cfg.Shell = "/bin/bash"
+		cfg.Shell = defaultShell()
 	}
 	return cfg, nil
 }
@@ -422,7 +419,7 @@ func (a *agent) openShell(msg proto.Msg) {
 func (a *agent) openPty(msg proto.Msg) {
 	var cmd *exec.Cmd
 	if msg.Cmd != "" {
-		cmd = exec.Command(a.cfg.Shell, "-c", msg.Cmd)
+		cmd = shellCmd(a.cfg.Shell, msg.Cmd)
 	} else {
 		cmd = exec.Command(a.cfg.Shell)
 	}
@@ -496,7 +493,7 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 func (a *agent) openExec(msg proto.Msg) {
 	var cmd *exec.Cmd
 	if msg.Cmd != "" {
-		cmd = exec.Command(a.cfg.Shell, "-c", msg.Cmd)
+		cmd = shellCmd(a.cfg.Shell, msg.Cmd)
 	} else {
 		cmd = exec.Command(a.cfg.Shell)
 	}

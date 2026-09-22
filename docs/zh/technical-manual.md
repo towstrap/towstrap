@@ -469,7 +469,7 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 
 ## 15. 构建、测试与发布
 
-- **Make 目标**：`build`（三个二进制到 `bin/`）、`test`（`go vet` + `go test ./...`）、`release`（交叉编译 darwin/linux × amd64/arm64 → `dist/` + `SHA256SUMS`，设 `MINISIGN_KEY_FILE` 顺带 minisign 签名）、`clean`
+- **Make 目标**：`build`（三个二进制到 `bin/`）、`test`（`go vet` + `go test ./...`）、`release`（交叉编译 darwin/linux/windows × amd64/arm64 → `dist/` + `SHA256SUMS`，设 `MINISIGN_KEY_FILE` 顺带 minisign 签名）、`clean`
 - **版本注入**：`-ldflags "-X github.com/towstrap/towstrap/internal/version.Version=$(cat VERSION)"`；`version` 命令和 `hello` 消息的 `ver` 都用它
 - **测试结构**：各 `internal/*` 包单测 + `internal/e2e` 端到端——e2e 起**真实的服务器进程内实例 + 真实 agent 连接**，覆盖 SSH 密码/TOTP/公钥登录、爆破锁定、exec、多机、token 换发、MCP HTTP/stdio、@machine、撤权等
 - **依赖**：全部静态 Go（modernc sqlite 无 CGO），三个二进制零依赖

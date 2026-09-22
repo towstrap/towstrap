@@ -59,7 +59,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 minisign -Vm towstrap-agent-linux-amd64   # when a signature file exists
 ```
 
-Linux and macOS are supported (amd64/arm64). The agent needs a PTY and Unix syscalls — no Windows.
+Linux, macOS and Windows are supported (amd64/arm64). On Windows the agent runs commands through `cmd.exe` (set `shell` to `powershell`/`pwsh`/git-bash `bash` — the flag is picked from the shell name: `/c` or `-Command`), but **there is no PTY** — `ssh host cmd` and MCP `run_command` work, interactive `ssh -t` returns unsupported. The server compiles for Windows too but that's a niche setup; its default paths (`/etc/towstrap` etc.) are Unix-style, so set them explicitly via flags or config.
 
 ---
 

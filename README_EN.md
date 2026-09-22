@@ -7,7 +7,7 @@
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
 [![CI](https://github.com/towstrap/towstrap/actions/workflows/ci.yml/badge.svg)](https://github.com/towstrap/towstrap/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%C2%B7%20macOS-lightgrey.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-lightgrey.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-ready-green.svg)]()
 [![Release](https://img.shields.io/github/v/release/towstrap/towstrap)](https://github.com/towstrap/towstrap/releases)
 
@@ -118,7 +118,7 @@ make build    # produces bin/towstrap-server, towstrap-agent, towstrap-mcp
 
 ### Binary releases
 
-`make release` cross-compiles darwin/linux × amd64/arm64 (8 artifacts) and generates `SHA256SUMS` (set `MINISIGN_KEY_FILE` to also sign with minisign). See [Releases](https://github.com/towstrap/towstrap/releases).
+`make release` cross-compiles darwin/linux/windows × amd64/arm64 (18 artifacts) and generates `SHA256SUMS` (set `MINISIGN_KEY_FILE` to also sign with minisign). See [Releases](https://github.com/towstrap/towstrap/releases). On Windows the agent only supports non-interactive command execution (no PTY) — see the user guide.
 
 ## For LLMs
 

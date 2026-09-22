@@ -1,7 +1,7 @@
 # towstrap 构建/发布。发布产物是三个二进制：服务器端（含账号管理）、被控端、MCP 入口。
 VERSION := $(shell cat VERSION 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/towstrap/towstrap/internal/version.Version=$(VERSION)
-PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
+PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
 .PHONY: build test release clean
 
@@ -19,13 +19,12 @@ release: clean
 	@mkdir -p dist
 	@set -e; for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; \
+		ext=""; [ "$$os" = windows ] && ext=".exe"; \
 		echo "== $$os/$$arch"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/towstrap-server-$$os-$$arch ./cmd/towstrap-server; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/towstrap-agent-$$os-$$arch ./cmd/towstrap-agent; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/towstrap-mcp-$$os-$$arch ./cmd/towstrap-mcp; \
+		for b in server agent mcp; do \
+			CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+				-o dist/towstrap-$$b-$$os-$$arch$$ext ./cmd/towstrap-$$b; \
+		done; \
 	done
 	cd dist && shasum -a 256 * > SHA256SUMS
 	@if [ -n "$$MINISIGN_KEY_FILE" ]; then \

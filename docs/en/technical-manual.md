@@ -469,7 +469,7 @@ Format: `<RFC3339 time> <event> k=v`; `cmd` truncated past 512 bytes; control ch
 
 ## 15. Build, test, release
 
-- **Make targets**: `build` (three binaries into `bin/`), `test` (`go vet` + `go test ./...`), `release` (cross-compile darwin/linux × amd64/arm64 → `dist/` + `SHA256SUMS`, minisign signing when `MINISIGN_KEY_FILE` is set), `clean`
+- **Make targets**: `build` (three binaries into `bin/`), `test` (`go vet` + `go test ./...`), `release` (cross-compile darwin/linux/windows × amd64/arm64 → `dist/` + `SHA256SUMS`, minisign signing when `MINISIGN_KEY_FILE` is set), `clean`
 - **Version injection**: `-ldflags "-X github.com/towstrap/towstrap/internal/version.Version=$(cat VERSION)"`; the `version` command and the `hello` message's `ver` both use it
 - **Test layout**: per-package unit tests under `internal/*` plus `internal/e2e` end-to-end — e2e spins up a **real in-process server and real agent connections**, covering SSH password/TOTP/public-key login, brute-force lockout, exec, multi-machine, token rotation, MCP over HTTP and stdio, `@machine`, revocation, and more
 - **Dependencies**: all-static Go (modernc sqlite, no CGO) — three binaries, zero runtime deps

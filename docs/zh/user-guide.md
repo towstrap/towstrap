@@ -59,7 +59,7 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 minisign -Vm towstrap-agent-linux-amd64   # 有签名文件时
 ```
 
-支持 Linux 和 macOS（amd64/arm64）。agent 依赖 PTY 和 Unix 系统调用，不支持 Windows。
+支持 Linux、macOS 和 Windows（amd64/arm64）。Windows 上 agent 用 `cmd.exe` 跑命令（配 `shell` 可换 `powershell`/`pwsh`/git-bash 的 `bash`，按 shell 名自动选 `/c` 或 `-Command`），但**没有 PTY**——`ssh host cmd` 和 MCP `run_command` 正常，交互式 `ssh -t` 会报 unsupported。服务器端在 Windows 上能跑但属小众用法，默认路径（`/etc/towstrap` 等）是 Unix 风格，请用命令行旗标或配置文件显式指定。
 
 ---
 
