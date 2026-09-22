@@ -472,7 +472,9 @@ Format: `<RFC3339 time> <event> k=v`; `cmd` truncated past 512 bytes; control ch
 ## 15. Build, test, release
 
 - **Make targets**: `build` (three binaries into `bin/`), `test` (`go vet` + `go test ./...`), `release` (cross-compile darwin/linux/windows × amd64/arm64 → `dist/` + `SHA256SUMS`, minisign signing when `MINISIGN_KEY_FILE` is set), `clean`
-- **Version injection**: `-ldflags "-X github.com/towstrap/towstrap/internal/version.Version=$(cat VERSION)"`; the `version` command and the `hello` message's `ver` both use it
+- **Version injection**: `-ldflags "-X .../version.Version=$(cat VERSION) -X .../version.Commit=$(git rev-parse --short HEAD)"`; the `version` command and the `hello` message's `ver` both use it
 - **Test layout**: per-package unit tests under `internal/*` plus `internal/e2e` end-to-end — e2e spins up a **real in-process server and real agent connections**, covering SSH password/TOTP/public-key login, brute-force lockout, exec, multi-machine, token rotation, MCP over HTTP and stdio, `@machine`, revocation, and more
 - **Dependencies**: all-static Go (modernc sqlite, no CGO) — three binaries, zero runtime deps
 - **CI/release**: `.github/workflows/ci.yml` runs `vet + test + build` on pushes to main and on PRs; `.github/workflows/release.yml` triggers on `v*` tags — runs the tests, then `make release` (version = tag without the `v`), signs automatically when the `MINISIGN_KEY` repo secret (base64 of an unencrypted minisign secret key) is set, and attaches all of `dist/` via `gh release create`
+- **Versioning rule** (0.x phase): bump minor for agent↔server protocol breaks, patch for backward-compatible features/fixes; standard semver from 1.0. Protocol-breaking releases should state a recommended `min_agent_version` in the notes. Tags containing `-` (`v0.3.0-rc.1`) are marked prerelease automatically; `version.LessThan` compares prereleases by their base version
+- **tag ↔ VERSION consistency**: the release workflow fails unless `tag == v$(cat VERSION)` — update the VERSION file before tagging; `--version` also injects `version.Commit` (short git hash)

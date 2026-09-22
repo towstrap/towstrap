@@ -32,6 +32,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # 标签是唯一版本来源；VERSION 文件必须和标签一致，不一致直接失败，
+      # 防止「打了个 v0.3.0 但仓库里还写 0.2.0」两边漂移。
+      - name: Check tag matches VERSION
+        run: |
+          want="v$(cat VERSION)"
+          [ "$GITHUB_REF_NAME" = "$want" ] || {
+            echo "::error::tag $GITHUB_REF_NAME 和 VERSION 文件 $want 不一致"
+            exit 1
+          }
+
       - name: Cross-compile
         run: make release VERSION="${GITHUB_REF_NAME#v}"
 
@@ -52,7 +62,11 @@ jobs:
           minisign -H -Sm -s "$RUNNER_TEMP/minisign.key" towstrap-* SHA256SUMS
           rm -f "$RUNNER_TEMP/minisign.key"
 
+      # 带 - 的标签（v0.3.0-rc.1 这类）自动标成预发布。
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag
+        run: |
+          extra=""
+          case "$GITHUB_REF_NAME" in *-*) extra="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag $extra

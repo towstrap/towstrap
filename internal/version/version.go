@@ -23,6 +23,9 @@ func triple(s string) int {
 	if i := indexByte(s, ' '); i >= 0 {
 		s = s[:i] // 去掉 "(commit)" 尾巴
 	}
+	if i := indexByte(s, '-'); i >= 0 {
+		s = s[:i] // 去掉 "-rc.1" 这类预发布尾巴，按基础版本比较
+	}
 	parts := [3]int{}
 	var idx int
 	num := -1
