@@ -6,7 +6,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
 [![CI](https://github.com/towstrap/towstrap/actions/workflows/ci.yml/badge.svg)](https://github.com/towstrap/towstrap/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-lightgrey.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-ready-green.svg)]()
 [![Release](https://img.shields.io/github/v/release/towstrap/towstrap)](https://github.com/towstrap/towstrap/releases)
@@ -24,7 +24,7 @@
 - **Tokens are credentials**: `tsa-` (agent) and `tsm-` (MCP client) tokens are keys to the door. Keep token files at `0600`; never put tokens in shell history, logs, repos, or chat.
 - **TLS is required in production**: over plaintext `ws://`/`http://`, tokens and passwords travel in the clear; `/mcp` refuses to start on plaintext HTTP bound to a non-loopback address.
 - **Do not put TowStrap behind a reverse proxy**: Nginx or a cloud load balancer rewrites the source IP to the proxy's own address, which silently disables IP allowlists, rate limiting, and `AGENT-IPCHANGE` alerts — unless you know exactly what you are doing.
-- **Disclaimer**: this project is provided under the MIT license; the authors accept no liability for losses caused by its use.
+- **Disclaimer**: this project is provided under the AGPL-3.0 license; the authors accept no liability for losses caused by its use.
 
 ## Overview
 
@@ -186,4 +186,4 @@ Authorization is layered: the agent's OS user is the real boundary, MCP policy (
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0](LICENSE)

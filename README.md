@@ -6,7 +6,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://go.dev/)
 [![CI](https://github.com/towstrap/towstrap/actions/workflows/ci.yml/badge.svg)](https://github.com/towstrap/towstrap/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-lightgrey.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-ready-green.svg)]()
 [![Release](https://img.shields.io/github/v/release/towstrap/towstrap)](https://github.com/towstrap/towstrap/releases)
@@ -24,7 +24,7 @@
 - **token 是凭据**：`tsa-`（agent）和 `tsm-`（MCP 客户端）泄漏等于开门。token 文件用 0600 权限，别写进 shell 历史、日志、仓库或聊天窗口。
 - **生产环境必须开 TLS**：明文 `ws://`/`http://` 下 token 和密码会裸传；`/mcp` 在明文 HTTP + 非回环监听时直接拒绝启动。
 - **不要放在反向代理后面**：Nginx、云负载均衡会把来源 IP 变成代理自己的地址，IP 白名单、限速锁定、`AGENT-IPCHANGE` 换 IP 告警全部失效——除非你清楚后果并做了对应处理。
-- **免责**：本项目按 MIT 协议提供，作者不承担因使用本项目造成的任何损失。
+- **免责**：本项目按 AGPL-3.0 协议提供，作者不承担因使用本项目造成的任何损失。
 
 ## 概述
 
@@ -185,4 +185,4 @@ TowStrap 给 LLM 提供 MCP 工具 `list_machines / run_command / read_file / wr
 
 ## 许可证
 
-[MIT](LICENSE)
+[AGPL-3.0](LICENSE)
