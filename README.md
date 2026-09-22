@@ -1,24 +1,62 @@
 # TowStrap
 
-TowStrap — 连接你（或你的 LLM）和 NAT 后面机器的那根拖车带：机器主动连出，你把活拉进来。同一套系统既给人（SSH + 密码/TOTP）也给 LLM（MCP + 策略 + 人工批准）。（名字来自拖车带：扁、结实、两车之间拖拽用。）
+**连接你（或你的 LLM）和 NAT 后面机器的那根拖车带。** 机器主动连出，你把活拉进来。
 
-机器上的 agent 主动用 WebSocket 连出到服务器，外人 SSH 连服务器，进到 agent 那台机器的命令行。被访问的机器**不用开 sshd**、不用有公网 IP。
+- 被控机上跑一个 agent，主动 WebSocket 连到服务器；**不开 sshd、不要公网 IP、不改路由器**。
+- 人：用普通 `ssh` 客户端登录服务器，落到那台机器的 shell。密码 + TOTP、IP 白名单、限速锁定、审计日志。
+- LLM：服务器内嵌 MCP（或本机 stdio），四个工具 `list_machines / run_command / read_file / write_file`；每条命令过 **deny / allow / 需批准** 三档策略，需批准的弹窗让人点头。
+- 一个账号多台机器，每台独立 token；换 token 只能在那台机器上发起（token + 密码 + TOTP），服务器下推、确认后才作废旧的。
+- 单个 Go 二进制 × 3（server / agent / mcp），SQLite，无 Docker、无网页。
+
+（名字来自拖车带 tow strap：扁、结实、两车之间拖拽用。）
+
+```
+        人                          LLM 客户端（Claude Code / Cursor / Codex…）
+  ssh alice+office@S -p 2222        MCP https://S:8080/mcp  Bearer tsm-…
+        │  密码 + TOTP               │  策略 → 弹窗批准 → 执行
+        ▼                            ▼
+   ┌───────────────── towstrap-server（S）──────────────────┐
+   │  SSH :2222    HTTP :8080  /agent  /mcp  /token/refresh │
+   │  账号库 SQLite · 审计日志 · 限速锁定 · 策略与批准      │
+   └───────────────┬────────────────────────────────┬───────┘
+                   │ WebSocket 连出，token tsa-…    │
+        ┌──────────▼──────────┐          ┌──────────▼──────────┐
+        │ towstrap-agent      │          │ towstrap-agent      │
+        │ alice+office        │          │ alice+build         │
+        │ 本机 shell（低权限）│          │ 本机 shell          │
+        └─────────────────────┘          └─────────────────────┘
+```
 
 当前版本 **0.2.0**。全部配置都在命令行完成，不需要网页。
 
-```
-外人 ssh 用户名@服务器
-        │ 密码是建号时自己设的
-        ▼
-   服务器（按账号验密码）
-        │  WebSocket /agent（token 也是按账号发的）
-        ▼
-   机器（本机 shell）
-```
-
-账号（人）和机器（agent）是分开的两层：**一个账号可以挂多台机器**，每台机器有自己独立的 **agent token**（`tsa-...`，建号时自动生成第一台）。外人用账号的 **SSH 用户名/密码**登录，登录名写 `账号+机器名` 指定落到哪台（如 `alice+office`）；账号只有一台机器时写账号名就行。
-
 ## 快速开始
+
+### 30 秒上手
+
+```bash
+# 服务器 S 上（账号库默认 /etc/towstrap/users.db，要 root；
+# 普通用户给每条 towstrap-server 命令都加 --users-db ~/.towstrap/users.db）
+go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
+towstrap-server user add alice    # 建号；打印随机密码和第一台机器的 agent token
+towstrap-server &                 # SSH :2222，HTTP :8080
+
+# 被控机上
+go install github.com/towstrap/towstrap/cmd/towstrap-agent@latest
+echo 'tsa-…' > ~/.towstrap-token && chmod 600 ~/.towstrap-token
+towstrap-agent --server ws://S:8080 --agent-token-file ~/.towstrap-token
+
+# 你的电脑上
+ssh -p 2222 alice@S                            # 进那台机器的 shell
+ssh -p 2222 alice@S 'uname -a'                 # 或直接执行命令
+
+# 给 LLM 用（可选）：server.yaml 里 mcp.enabled: true 后重启（见「MCP」节），
+# 再签发 MCP token，把打印出来的配置贴进 Claude Code / Cursor
+towstrap-server mcp add laptop --machine alice
+```
+
+生产上请开 TLS（`--tls` 或 server.yaml 里 `tls: true`），见下文「wss / HTTPS」。
+
+### 从源码构建
 
 ```bash
 make build   # 或：go build -o bin/towstrap-server ./cmd/towstrap-server && go build -o bin/towstrap-agent ./cmd/towstrap-agent
