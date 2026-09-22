@@ -53,7 +53,15 @@ type Msg struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 	Ver  string `json:"ver,omitempty"`  // hello 时 agent 自报的二进制版本（运维可见性；可伪造，别当安全依据）
-	From string `json:"from,omitempty"` // open 时服务器带上「登录账号@来源 IP」，agent 拿它告知被控机用户
+	// 下面三个只在 hello 里用：agent 上报自己机器上的禁碰文件（token
+	// 文件、配置文件——已清洗成绝对路径）和它的家目录、工作目录。服务器
+	// 把这些加进 MCP read_file/write_file 的拒名单；Home/Dir 用来把
+	// LLM 给的 ~/ 和相对路径解析成绝对形式再精确比对。只能收紧访问，
+	// 不会放宽——agent 自报错了最坏是自己文件保护不住。
+	Protect []string `json:"protect,omitempty"`
+	Home    string   `json:"home,omitempty"`
+	Dir     string   `json:"dir,omitempty"`
+	From    string   `json:"from,omitempty"` // open 时服务器带上「登录账号@来源 IP」，agent 拿它告知被控机用户
 	D    string `json:"d,omitempty"`
 	Cols int    `json:"cols,omitempty"`
 	Rows int    `json:"rows,omitempty"`

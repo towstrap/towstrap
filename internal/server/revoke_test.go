@@ -168,7 +168,7 @@ func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token string) 
 		if err != nil {
 			return
 		}
-		h.Attach(r.URL.Query().Get("name"), r.URL.Query().Get("token"), conn)
+		h.Attach(r.URL.Query().Get("name"), r.URL.Query().Get("token"), conn, AgentHello{})
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return

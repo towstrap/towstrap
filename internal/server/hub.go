@@ -70,17 +70,35 @@ type agentConn struct {
 	sessions map[string]*session
 	waiters  map[string]chan error // token 换发等在途请求：ID → 应答通道
 
+	// protect/home/dir 是 agent 在 hello 里自报的禁碰文件（token、
+	// 配置文件）和它的家目录、工作目录；MCP 文件工具拿来做拒名单。
+	protect []string
+	home    string
+	dir     string
+
 	tokMu sync.RWMutex
 	token string
 }
 
-func newAgent(name, token string, conn *websocket.Conn) *agentConn {
+// AgentHello 是 agent 握手时自报的环境信息（proto.Msg 里 hello 捎带的
+// 那部分），Attach 时一并交给 hub 存着。
+type AgentHello struct {
+	Ver     string
+	Protect []string
+	Home    string
+	Dir     string
+}
+
+func newAgent(name, token string, conn *websocket.Conn, hi AgentHello) *agentConn {
 	return &agentConn{
 		name:     name,
 		token:    token,
 		conn:     conn,
 		sessions: make(map[string]*session),
 		waiters:  make(map[string]chan error),
+		protect:  hi.Protect,
+		home:     hi.Home,
+		dir:      hi.Dir,
 	}
 }
 
@@ -296,20 +314,31 @@ func NewHub(maxSessions int) *Hub {
 }
 
 // Attach 注册一台机器。同名（= 同账号同机器名）再连会顶掉旧连接；
-// 同账号的不同机器名互不干扰。
-func (h *Hub) Attach(name, token string, conn *websocket.Conn) *agentConn {
+// 同账号的不同机器名互不干扰。hi 是 agent hello 里自报的环境信息。
+func (h *Hub) Attach(name, token string, conn *websocket.Conn, hi AgentHello) *agentConn {
 	h.mu.Lock()
 	if old, ok := h.agents[name]; ok {
 		_ = old.conn.Close()
 		old.closeAll()
 		slog.Info("agent replaced", "id", name)
 	}
-	a := newAgent(name, token, conn)
+	a := newAgent(name, token, conn, hi)
 	h.agents[name] = a
 	h.mu.Unlock()
 
 	slog.Info("agent connected", "id", name)
 	return a
+}
+
+// ProtectInfo 取一台在线机器自报的禁碰清单和路径解析上下文（家目录、
+// 工作目录）。机器不在线返回 nil。
+func (h *Hub) ProtectInfo(name string) (protect []string, home, dir string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if a, ok := h.agents[name]; ok {
+		return a.protect, a.home, a.dir
+	}
+	return nil, "", ""
 }
 
 // PruneInvalid 复核所有已连接的 agent：check 返回 false 的（token 被换掉、

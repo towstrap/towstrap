@@ -522,7 +522,7 @@ Every `run_command` passes through the policy (`policy` section):
 - `allow` matches are read-only/low-risk commands that **run automatically** (`ls`, `cat`, `git status`, …); commands are split on `&&`, `||`, `;`, `|`, newlines, and **every segment** must match an allow rule; a segment containing backticks, `$(`, `>`, `<`, or `&` is never auto-allowed
 - everything else falls to `policy.default` (default `ask` = human approval)
 
-`read_file` needs no approval but is bounded by `deny_paths` (private keys, credentials, the agent's own token/config are denied by default). `write_file` inside a machine's `roots` is auto-allowed, outside needs approval; `deny_paths` still applies first.
+`read_file` needs no approval but is bounded by `deny_paths` (private keys and credentials are denied by default); on connect, the agent also reports the paths of its own token file and config file, which stay unreadable/unwritable whatever their names or locations. `write_file` inside a machine's `roots` is auto-allowed, outside needs approval; `deny_paths` and the agent-reported list still apply first.
 
 The built-in lists live in `internal/mcpsrv/policy.go` (`DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`); setting a key in yaml **replaces the whole list**, it doesn't append.
 

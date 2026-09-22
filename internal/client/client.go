@@ -38,6 +38,10 @@ type Config struct {
 	Quiet bool
 	// AuditLog 审计日志路径；空 = DefaultAuditPath()。
 	AuditLog string
+	// ProtectPaths 是 agent 要服务器帮忙挡住的文件（token 文件、agent
+	// 配置文件），hello 时上报；服务器把它们加进 MCP read_file/
+	// write_file 的拒名单。只写文件路径，目录不支持。
+	ProtectPaths []string
 }
 
 func DefaultID() string {
@@ -263,7 +267,12 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]io.Closer), presence: p, tokens: tokens}
 	defer a.closeAll()
 
-	if err := a.send(proto.Msg{T: proto.TypeHello, Name: cfg.ID, Ver: version.String()}); err != nil {
+	// Home/Dir 随 hello 上报：服务器拿它们把 MCP 文件工具收到的 ~/
+	// 和相对路径解析成绝对路径，才能和 ProtectPaths 精确对上。
+	home, _ := os.UserHomeDir()
+	wd, _ := os.Getwd()
+	if err := a.send(proto.Msg{T: proto.TypeHello, Name: cfg.ID, Ver: version.String(),
+		Protect: cfg.ProtectPaths, Home: home, Dir: wd}); err != nil {
 		return err
 	}
 	slog.Info("connected", "id", cfg.ID, "server", u.String())

@@ -101,3 +101,53 @@ func TestPolicyBadRegex(t *testing.T) {
 		t.Error("坏正则应报错")
 	}
 }
+
+// TestMachineProtected agent 自报的禁碰清单：绝对路径、~/、相对路径三种
+// 写法都要挡住，换 ../ 写法也一样；不在清单里的文件照常放行。
+func TestMachineProtected(t *testing.T) {
+	m := &Machine{
+		Protect: []string{"/home/u/.towstrap/agent.token", "/home/u/.config/towstrap/agent.yaml"},
+		Home:    "/home/u",
+		Dir:     "/srv/app",
+	}
+	blocked := []string{
+		"/home/u/.towstrap/agent.token",
+		"/home/u/.towstrap/../.towstrap/agent.token", // .. 洗完是同一个文件
+		"~/.towstrap/agent.token",                    // ~/ 按 Home 展开
+		"./../../home/u/.towstrap/agent.token",       // 相对 + .. 组合拳
+	}
+	for _, p := range blocked {
+		if !m.Protected(p) {
+			t.Errorf("Protected(%q) = false, 应拦截", p)
+		}
+	}
+	free := []string{
+		"/home/u/.towstrap/other.token", // 同目录不同文件
+		"/home/u/work/agent.token",      // 同名不同路径
+		"/srv/app/main.go",
+		"main.go", // 相对路径解析成 /srv/app/main.go
+	}
+	for _, p := range free {
+		if m.Protected(p) {
+			t.Errorf("Protected(%q) = true, 不应拦截", p)
+		}
+	}
+	// 相对路径命中：cwd 下的 token 文件
+	m2 := &Machine{Protect: []string{"/srv/app/agent.token"}, Dir: "/srv/app"}
+	if !m2.Protected("agent.token") || !m2.Protected("./agent.token") {
+		t.Error("cwd 下的相对路径写法应命中")
+	}
+	// 没 Home：~/ 写法解析不了，不命中（也绝不能误伤同名文件）
+	m3 := &Machine{Protect: []string{"/x/tok"}}
+	if m3.Protected("~/x/tok") {
+		t.Error("没 Home 时 ~/ 不该展开")
+	}
+	if m3.Protected("~/tok") {
+		t.Error("没 Home 时 ~/ 不该展开命中")
+	}
+	// 空清单 / nil 机器不拦
+	var nilM *Machine
+	if nilM.Protected("/x") || (&Machine{}).Protected("/x") {
+		t.Error("空清单不应拦截")
+	}
+}

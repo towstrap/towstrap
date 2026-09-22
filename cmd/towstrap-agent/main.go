@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/towstrap/towstrap/internal/client"
@@ -121,10 +122,21 @@ func runAgent(args []string) int {
 		slog.Error("必须设置 server（配置文件或命令行）")
 		return 2
 	}
+	// 上报给服务器的禁碰清单：token 文件（文件来源时）和配置文件（可能
+	// 内嵌 agent_token）。清洗成绝对路径；配置文件只要用了 --config 就
+	// 一律上报，不管 token 到底放没放里面。
+	var protect []string
+	if tokFile != "" {
+		protect = append(protect, absPath(tokFile))
+	}
+	if *configPath != "" {
+		protect = append(protect, absPath(*configPath))
+	}
 	if err := client.Run(client.Config{
-		Server:     cfg.Server,
-		AgentToken: tok,
-		TokenFile:  tokFile,
+		Server:       cfg.Server,
+		AgentToken:   tok,
+		TokenFile:    tokFile,
+		ProtectPaths: protect,
 		Shell:      cfg.Shell,
 		Insecure:   cfg.Insecure,
 		Quiet:      cfg.Quiet,
@@ -165,6 +177,15 @@ func resolveAgentToken(flagToken, flagFile, envToken, yamlToken, yamlFile string
 		return tok, "配置 agent_token_file " + yamlFile, yamlFile, nil
 	}
 	return "", "", "", fmt.Errorf("必须提供 agent token：--agent-token、--agent-token-file 文件、环境变量 TOWSTRAP_AGENT_TOKEN 或配置文件 agent_token/agent_token_file")
+}
+
+// absPath 把用户给的路径清洗成绝对路径（相对路径按当前工作目录解析），
+// 供 hello 上报禁碰清单——服务器侧只做清洗后的精确比对。
+func absPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 func readTokenFile(path string) (string, error) {

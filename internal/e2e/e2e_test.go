@@ -85,16 +85,22 @@ func startServerOpt(t *testing.T, opt server.Config) (srv *server.Server, httpPo
 // startAgent 起一个 agent 并返回它的审计日志路径。测试环境一律 --quiet，
 // 审计写进临时目录——别在跑测试的机器上弹通知。
 func startAgent(t *testing.T, httpPort int, token, helloName string) string {
+	return startAgentProtect(t, httpPort, token, helloName, nil)
+}
+
+// startAgentProtect 同 startAgent，额外带 hello 要上报的禁碰文件清单。
+func startAgentProtect(t *testing.T, httpPort int, token, helloName string, protect []string) string {
 	t.Helper()
 	audit := filepath.Join(t.TempDir(), "audit.log")
 	go func() {
 		_ = client.ConnectOnce(client.Config{
-			ID:         helloName,
-			Server:     fmt.Sprintf("ws://127.0.0.1:%d", httpPort),
-			AgentToken: token,
-			Shell:      "/bin/bash",
-			Quiet:      true,
-			AuditLog:   audit,
+			ID:           helloName,
+			Server:       fmt.Sprintf("ws://127.0.0.1:%d", httpPort),
+			AgentToken:   token,
+			Shell:        "/bin/bash",
+			Quiet:        true,
+			AuditLog:     audit,
+			ProtectPaths: protect,
 		})
 	}()
 	return audit

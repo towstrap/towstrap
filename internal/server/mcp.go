@@ -170,6 +170,11 @@ func (s *Server) mcpMachineMeta(id string) *mcpsrv.Machine {
 			m.Description = "（无说明）"
 		}
 	}
+	// agent 在线时把它自报的禁碰文件（token、配置）和家目录/工作目录
+	// 挂上去——任意命名的 token 文件也进拒名单，不靠猜路径。
+	if protect, home, dir := s.Hub.ProtectInfo(id); len(protect) > 0 {
+		m.Protect, m.Home, m.Dir = protect, home, dir
+	}
 	return m
 }
 

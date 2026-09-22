@@ -51,7 +51,7 @@ agent ↔ server 走一条 WebSocket（`/agent`），消息是单行 JSON 文本
 
 | `t` | 方向 | 字段 | 语义 |
 | --- | --- | --- | --- |
-| `hello` | agent→server | `name`(agent ID)、`ver`(自报版本) | 连接后第一条；不是 hello 就回 `err` 断开 |
+| `hello` | agent→server | `name`(agent ID)、`ver`(自报版本)、`protect`(禁碰文件清单)、`home`、`dir` | 连接后第一条；不是 hello 就回 `err` 断开。`protect` 是 agent 自己的 token 文件和配置文件的绝对路径，`home`/`dir` 是 agent 侧家目录、工作目录——服务器拿来做 MCP 文件工具的拒名单和路径解析 |
 | `open` | server→agent | `id`、`cols`、`rows`、`pty`、`cmd`、`from` | 开会话；`cmd` 空 = 交互 shell，`pty` 决定走 PTY 还是 exec |
 | `data` | 双向 | `id`、`d`(base64)、`s` | 数据分片；`s` 空 = stdout/PTY 流，`"e"` = stderr（仅 agent→server 用） |
 | `eof` | server→agent | `id` | 客户端关了 stdin；exec 会话传给子进程，PTY 忽略 |
@@ -221,8 +221,8 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 | --- | --- | --- | --- |
 | `list_machines` | — | `machines[]`：name/description/roots/connected | 无 |
 | `run_command` | `machine`、`command`、`cwd?`、`stdin?`、`timeout_seconds?` | `exit_code`、`stdout`、`stderr`、`timed_out`、`*_truncated`、`duration_ms`、`approval` | deny→拒；全段 allow→放行；否则批准 |
-| `read_file` | `machine`、`path` | `content`、`bytes` | deny_paths 拦；≤max_file；含 NUL 拒（二进制） |
-| `write_file` | `machine`、`path`、`content` | `bytes_written` | deny_paths 拦；≤max_file；在 roots 内放行否则批准 |
+| `read_file` | `machine`、`path` | `content`、`bytes` | deny_paths + agent 自报禁碰清单拦；≤max_file；含 NUL 拒（二进制） |
+| `write_file` | `machine`、`path`、`content` | `bytes_written` | deny_paths + agent 自报禁碰清单拦；≤max_file；在 roots 内放行否则批准 |
 
 实现细节：`run_command` 带 `cwd` 时包成 `cd -- 'cwd' && (命令)`（shellQuote 单引号包裹）；`read_file` 实际是 `head -c max+1`；`write_file` 是 `cat > 'path'` + stdin；输出超限保留头尾各半加省略标记（`CapWriter`）；`timeout_seconds` 超 `max_timeout` 会被夹到上限并注明。工具错误走 `IsError` + 文字（不变成协议级错误，LLM 能看到原因）。
 
@@ -244,6 +244,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 ### 路径策略
 
 - `deny_paths`：正则对**原始路径和 `path.Clean` 后的路径**各匹配一遍
+- **agent 自报禁碰清单**（`Machine.Protected`，服务器内嵌模式）：agent 在 `hello` 里上报 token 文件、`--config` 配置文件的绝对路径和它的家目录/工作目录；read_file/write_file 的入参先解析（`~/` 按上报家目录展开、相对路径按上报工作目录解析、`path.Clean` 清洗）再和清单**精确比对**，命中即拒（不走批准）。任意命名、任意位置的 token 文件都受保护；机器离线或旧版 agent（不上报）时退回只靠 `deny_paths`。stdio 模式拿不到 agent 上报信息，此层不生效
 - `roots`（write_file 放行目录）：**文本前缀匹配**，只接受绝对路径或 `~/` 开头（相对路径一律算不在——远端家目录无从知晓）；`~` 不展开
 - **已知限制**：不解析远端符号链接——roots 里的 `link -> /etc` 会让 `link/x` 逃过前缀匹配。roots 目录内别放指向外面的符号链接
 

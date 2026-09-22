@@ -201,3 +201,29 @@ func (m *Machine) InRoots(p string) bool {
 func cleanRemotePath(p string) string {
 	return path.Clean(p)
 }
+
+// Protected 判断路径是否命中这台机器 agent 自报的禁碰清单（token 文件、
+// 配置文件）。~/ 用上报的 Home 展开、相对路径按上报的 Dir 解析，清洗后
+// 和清单逐项精确比对——LLM 换写法（./x、a/../x）洗完后是同一个路径。
+// 清单是文件级精确匹配，不含目录前缀关系；机器没上报（离线/旧版本/
+// stdio 模式）返回 false。
+func (m *Machine) Protected(p string) bool {
+	if m == nil || len(m.Protect) == 0 {
+		return false
+	}
+	cp := cleanRemotePath(p)
+	switch {
+	case strings.HasPrefix(p, "~/") && m.Home != "":
+		cp = cleanRemotePath(m.Home + "/" + p[2:])
+	case p == "~" && m.Home != "":
+		cp = cleanRemotePath(m.Home)
+	case !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~/") && m.Dir != "":
+		cp = cleanRemotePath(m.Dir + "/" + p)
+	}
+	for _, q := range m.Protect {
+		if cleanRemotePath(q) == cp {
+			return true
+		}
+	}
+	return false
+}

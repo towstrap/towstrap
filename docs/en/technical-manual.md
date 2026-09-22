@@ -51,7 +51,7 @@ Agent ↔ server share one WebSocket (`/agent`); messages are single-line JSON t
 
 | `t` | Direction | Fields | Meaning |
 | --- | --- | --- | --- |
-| `hello` | agent→server | `name` (agent ID), `ver` (self-reported version) | first message after connect; anything else gets an `err` and a disconnect |
+| `hello` | agent→server | `name` (agent ID), `ver` (self-reported version), `protect` (off-limits files), `home`, `dir` | first message after connect; anything else gets an `err` and a disconnect. `protect` lists the agent's token file and config file as absolute paths; `home`/`dir` are the agent-side home and working directories — the server uses them for MCP file-tool deny checks and path resolution |
 | `open` | server→agent | `id`, `cols`, `rows`, `pty`, `cmd`, `from` | open a session; empty `cmd` = interactive shell, `pty` selects PTY vs exec |
 | `data` | both | `id`, `d` (base64), `s` | payload chunk; `s` empty = stdout/PTY, `"e"` = stderr (agent→server only) |
 | `eof` | server→agent | `id` | client closed stdin; forwarded to the subprocess on exec sessions, ignored on PTY |
@@ -221,8 +221,8 @@ Rotate (two-phase):
 | --- | --- | --- | --- |
 | `list_machines` | — | `machines[]`: name/description/roots/connected | none |
 | `run_command` | `machine`, `command`, `cwd?`, `stdin?`, `timeout_seconds?` | `exit_code`, `stdout`, `stderr`, `timed_out`, `*_truncated`, `duration_ms`, `approval` | deny→reject; all-segments allow→run; else approval |
-| `read_file` | `machine`, `path` | `content`, `bytes` | deny_paths; ≤max_file; NUL bytes rejected (binary) |
-| `write_file` | `machine`, `path`, `content` | `bytes_written` | deny_paths; ≤max_file; inside roots → auto-allowed, else approval |
+| `read_file` | `machine`, `path` | `content`, `bytes` | deny_paths + agent-reported off-limits list; ≤max_file; NUL bytes rejected (binary) |
+| `write_file` | `machine`, `path`, `content` | `bytes_written` | deny_paths + agent-reported off-limits list; ≤max_file; inside roots → auto-allowed, else approval |
 
 Implementation details: `run_command` with `cwd` wraps as `cd -- 'cwd' && (command)` (single-quote shellQuote); `read_file` is really `head -c max+1`; `write_file` is `cat > 'path'` on stdin; oversized output keeps head and tail halves with an elision marker (`CapWriter`); `timeout_seconds` above `max_timeout` is clamped and noted. Tool errors return `IsError` + text (not protocol errors — the LLM sees the reason).
 
@@ -244,6 +244,7 @@ Implementation details: `run_command` with `cwd` wraps as `cd -- 'cwd' && (comma
 ### Path policy
 
 - `deny_paths`: each regex matches against both the raw path and its `path.Clean`ed form
+- **agent-reported off-limits list** (`Machine.Protected`, embedded mode): the agent reports absolute paths of its token file and `--config` file plus its home/working directories in `hello`; read_file/write_file resolve the input (`~/` expands against the reported home, relative paths against the reported working dir, `path.Clean` applied) and compare exactly — a hit is denied outright (no approval path). Token files at any name/location are protected; when the machine is offline or runs an older agent (no report), only `deny_paths` applies. stdio mode never receives this information, so the layer is inactive there
 - `roots` (write_file auto-allow dirs): **textual prefix match**; only absolute or `~/`-prefixed paths qualify (relative paths never match — the remote home is unknowable); `~` is not expanded
 - **Known limit**: remote symlinks aren't resolved — a `link -> /etc` inside roots lets `link/x` escape the prefix check. Keep no outward-pointing symlinks inside roots
 

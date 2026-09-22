@@ -34,6 +34,12 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 // startMCPHTTP 起一台开了 /mcp 的服务器 + 一个叫 bot 的账号和它的 agent。
 // 回环地址上的明文 HTTP 是允许的（mcpPlainHTTPAllowed 放行 loopback）。
 func startMCPHTTP(t *testing.T) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
+	return startMCPHTTPProtect(t, nil)
+}
+
+// startMCPHTTPProtect 同 startMCPHTTP，agent 的 hello 额外带 protect
+// 禁碰清单（模拟真实 agent 上报 token/配置文件路径）。
+func startMCPHTTPProtect(t *testing.T, protect []string) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	audit = filepath.Join(dir, "server-audit.log")
@@ -61,7 +67,7 @@ func startMCPHTTP(t *testing.T) (srv *server.Server, httpPort int, users *accoun
 	if err != nil {
 		t.Fatal(err)
 	}
-	startAgent(t, httpPort, acct.Machines[0].Token, "h-mcp-http")
+	startAgentProtect(t, httpPort, acct.Machines[0].Token, "h-mcp-http", protect)
 	waitAgent(t, srv.Hub, "bot+default")
 	return srv, httpPort, users, audit, approvalsDir, rootsDir
 }
@@ -367,4 +373,49 @@ func runHTTP(t *testing.T, cs *mcp.ClientSession, cmd string, extra map[string]a
 		decodeStructured(t, res, &out)
 	}
 	return res, out
+}
+
+// TestMCPHTTPAgentProtect agent 在 hello 里上报的禁碰文件（任意命名的
+// token/配置文件，不在默认 deny_paths 里）也进拒名单：read_file、
+// write_file 直接拒，不走批准环节；普通文件不受影响。
+func TestMCPHTTPAgentProtect(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "whatever.token") // 名字位置都不在默认拒名单
+	if err := os.WriteFile(secret, []byte("tsa-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, httpPort, users, audit, _, rootsDir := startMCPHTTPProtect(t, []string{secret})
+	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcpHTTPConnect(t, httpPort, tok, nil)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cs.Close()
+
+	res := callTool(t, cs, "read_file", map[string]any{"machine": "bot+default", "path": secret})
+	if !res.IsError || !strings.Contains(resultText(res), "禁碰") {
+		t.Fatalf("自报禁碰文件应直接拒: %v %s", res.IsError, resultText(res))
+	}
+	res = callTool(t, cs, "write_file", map[string]any{
+		"machine": "bot+default", "path": secret, "content": "x",
+	})
+	if !res.IsError {
+		t.Fatalf("禁碰文件写入应直接拒: %s", resultText(res))
+	}
+	// 文件没被碰，普通文件照常读
+	if raw, _ := os.ReadFile(secret); string(raw) != "tsa-secret" {
+		t.Fatal("禁碰文件被改了")
+	}
+	normal := filepath.Join(rootsDir, "ok.txt")
+	if err := os.WriteFile(normal, []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res = callTool(t, cs, "read_file", map[string]any{"machine": "bot+default", "path": normal})
+	if res.IsError {
+		t.Fatalf("普通文件应能读: %s", resultText(res))
+	}
+	waitAudit(t, audit, "agent-protect")
 }

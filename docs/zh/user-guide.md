@@ -522,7 +522,7 @@ towstrap-server mcp add ops --machine alice --machine bob # 多个账号
 - `allow` 名单里的只读/低风险命令**自动放行**（`ls`、`cat`、`git status` 这类）；命令按 `&&`、`||`、`;`、`|`、换行切段，**每段**都得命中 allow 才算；段里出现反引号、`$(`、`>`、`<`、`&` 就不敢自动放行
 - 其余落到 `policy.default`（默认 `ask` = 要人批准）
 
-`read_file` 不需要批准但受 `deny_paths` 限制（私钥、凭证、agent 自己的 token/配置默认都在名单里）。`write_file` 落在机器的 `roots` 里自动放行，之外要批准；`deny_paths` 照样先拦。
+`read_file` 不需要批准但受 `deny_paths` 限制（私钥、凭证默认都在名单里）；agent 上线时还会把自己的 token 文件和配置文件路径报给服务器，这两个文件无论叫什么名字、放在哪都读写不到。`write_file` 落在机器的 `roots` 里自动放行，之外要批准；`deny_paths` 和 agent 自报清单照样先拦。
 
 内置名单全文在 `internal/mcpsrv/policy.go` 的 `DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`；yaml 里写了对应项就**整份替换**，不是在默认上追加。
 

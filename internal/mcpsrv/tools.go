@@ -318,13 +318,19 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 }
 
 func (s *Server) readFile(ctx context.Context, _ *mcp.CallToolRequest, in readIn) (*mcp.CallToolResult, readOut, error) {
-	if _, ok := s.cfg.Machines[in.Machine]; !ok {
+	m, ok := s.cfg.Machines[in.Machine]
+	if !ok {
 		r, e := errResult("机器 %q 不在配置里", in.Machine)
 		return r, readOut{}, e
 	}
 	if !s.pol.Path(in.Path) {
 		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "read_file", "detail", in.Path, "reason", "deny_paths")
 		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths（私钥、凭证、agent 配置这类文件不开放）。如确有必要，请向用户说明并由用户调整策略。", in.Path)
+		return r, readOut{}, e
+	}
+	if m.Protected(in.Path) {
+		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "read_file", "detail", in.Path, "reason", "agent-protect")
+		r, e := errResult("策略拒绝：%q 是这台机器 agent 自报的禁碰文件（token/配置文件），任何路径写法都不开放。", in.Path)
 		return r, readOut{}, e
 	}
 	// 多读一个字节用来判断超限；head -c 对不存在的文件也会走 stderr 报错。
@@ -358,6 +364,11 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 	if !s.pol.Path(in.Path) {
 		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "write_file", "detail", in.Path, "reason", "deny_paths")
 		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths。如确有必要，请向用户说明并由用户调整策略。", in.Path)
+		return r, writeOut{}, e
+	}
+	if m.Protected(in.Path) {
+		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "write_file", "detail", in.Path, "reason", "agent-protect")
+		r, e := errResult("策略拒绝：%q 是这台机器 agent 自报的禁碰文件（token/配置文件），任何路径写法都不开放。", in.Path)
 		return r, writeOut{}, e
 	}
 	if len(in.Content) > s.cfg.Limits.MaxFile {

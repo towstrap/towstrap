@@ -54,7 +54,7 @@ func TestPipeDrainsOutputOnClose(t *testing.T) {
 // TestSessionDefaultExitCodeIs255 没拿到 agent 的 close 消息时退出码是 255
 // （中断 ≠ 成功，不能让自动化把掉线当 0）；正常 close 覆盖成真实码。
 func TestSessionDefaultExitCodeIs255(t *testing.T) {
-	a := newAgent("x", "t", nil)
+	a := newAgent("x", "t", nil, AgentHello{})
 	s, err := a.addSession("s1", 0)
 	if err != nil {
 		t.Fatal(err)

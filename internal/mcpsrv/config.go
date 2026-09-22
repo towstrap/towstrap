@@ -41,6 +41,13 @@ type Config struct {
 type Machine struct {
 	Description string   `yaml:"description"`
 	Roots       []string `yaml:"roots"`
+	// Protect 是 agent 握手时自报的禁碰文件（token 文件、agent 配置——
+	// 绝对路径）；Home/Dir 是 agent 侧家目录和工作目录，用来把输入的
+	// ~/ 和相对路径解析成绝对形式。由服务器内嵌模式在 agent 在线时填，
+	// 不走 yaml；stdio 模式拿不到这些信息，留空即不生效。
+	Protect []string `yaml:"-"`
+	Home    string   `yaml:"-"`
+	Dir     string   `yaml:"-"`
 }
 
 // PolicyCfg 策略配置；名单不写就用 policy.go 里的内置默认。

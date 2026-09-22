@@ -155,7 +155,9 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	if s.Hub.Has(machineID) {
 		s.audit.Log("AGENT-REPLACE", "id", machineID, "ip", ip)
 	}
-	a := s.Hub.Attach(machineID, token, conn)
+	a := s.Hub.Attach(machineID, token, conn, AgentHello{
+		Ver: hello.Ver, Protect: hello.Protect, Home: hello.Home, Dir: hello.Dir,
+	})
 	s.audit.Log("AGENT-CONNECT", "id", machineID, "ip", ip, "version", hello.Ver)
 	a.readLoop()
 	s.Hub.Detach(conn)
