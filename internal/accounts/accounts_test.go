@@ -15,7 +15,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 func openTest(t *testing.T) *Store {

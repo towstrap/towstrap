@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"towstrap/internal/client"
-	"towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/server"
 )
 
 // TLS 模式：自签证书自动生成，agent 用 wss:// --insecure 连上，SSH 照常。

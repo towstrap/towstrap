@@ -14,8 +14,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/mcpsrv"
-	"towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/server"
 )
 
 // sshExec 无 PTY 执行一条命令并拿回 stdout（机器路由是否走对就看它）。

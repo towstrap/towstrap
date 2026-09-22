@@ -19,8 +19,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/server"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 var tokenRe = regexp.MustCompile(`tsa-[0-9A-Za-z_-]+`)

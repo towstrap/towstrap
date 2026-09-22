@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 // mcpEndpointURL 的 public_url 是 ws/wss scheme，打印给 MCP 客户端前

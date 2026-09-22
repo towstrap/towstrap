@@ -12,7 +12,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/client"
 )
 
 // TestCapacityBench 容量基准：N 台 agent 上线 + N 个并发 SSH 会话，量每个单元的

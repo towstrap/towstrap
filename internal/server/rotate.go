@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
 )
 
 type refreshReq struct {

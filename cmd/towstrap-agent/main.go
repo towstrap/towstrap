@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"towstrap/internal/client"
-	"towstrap/internal/config"
-	"towstrap/internal/version"
+	"github.com/towstrap/towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 // towstrap-agent 只含客户端：装在被控机器上，主动连出到 towstrap-server。

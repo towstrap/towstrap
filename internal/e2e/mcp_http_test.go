@@ -16,9 +16,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/mcpsrv"
-	"towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/server"
 )
 
 // bearerRT 给每个请求挂上 Authorization: Bearer。

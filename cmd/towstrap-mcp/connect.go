@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"towstrap/internal/harness"
+	"github.com/towstrap/towstrap/internal/harness"
 )
 
 const connectUsage = `towstrap-mcp connect —— 把随项目发布的 towstrap skill 装进本机各家 AI 编码助手

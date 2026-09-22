@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"towstrap/internal/auditlog"
+	"github.com/towstrap/towstrap/internal/auditlog"
 )
 
 // presence 让被控机的用户能感知到远程会话——towstrap 本质是远程控制，

@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
-	"towstrap/internal/auditlog"
-	"towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/auditlog"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
 )
 
 type Config struct {

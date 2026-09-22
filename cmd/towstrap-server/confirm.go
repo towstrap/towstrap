@@ -15,10 +15,10 @@ import (
 
 	"golang.org/x/term"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/auditlog"
-	"towstrap/internal/config"
-	"towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/auditlog"
+	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/server"
 )
 
 // confirmOwner 让账号本人确认：输入账号密码（绑了 TOTP 再输验证码）。

@@ -1,6 +1,6 @@
 # towstrap 构建/发布。发布产物是三个二进制：服务器端（含账号管理）、被控端、MCP 入口。
 VERSION := $(shell cat VERSION 2>/dev/null || echo dev)
-LDFLAGS := -X towstrap/internal/version.Version=$(VERSION)
+LDFLAGS := -X github.com/towstrap/towstrap/internal/version.Version=$(VERSION)
 PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
 
 .PHONY: build test release clean

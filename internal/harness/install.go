@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"towstrap/internal/version"
-	"towstrap/skills"
+	"github.com/towstrap/towstrap/internal/version"
+	"github.com/towstrap/towstrap/skills"
 )
 
 // ManifestName 是跟着 SKILL.md 一起写进目标目录的清单文件名，

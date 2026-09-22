@@ -10,9 +10,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
-	"towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 // TestAgentMessageLimit 超过单条消息上限的 agent 输入应被服务端断开，

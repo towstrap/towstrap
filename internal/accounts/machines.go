@@ -14,8 +14,8 @@ import (
 	"sort"
 	"time"
 
-	"towstrap/internal/allow"
-	"towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 // DefaultMachine 是账号默认机器的名字：user add 自动建一台，老库迁移

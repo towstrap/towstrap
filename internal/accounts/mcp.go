@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 // MCPClient 一个 MCP 客户端凭据。Machines 是它能看到的 towstrap 账号名

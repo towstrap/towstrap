@@ -13,13 +13,13 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
-	"towstrap/internal/config"
-	"towstrap/internal/mcpsrv"
-	"towstrap/internal/server"
-	"towstrap/internal/totp"
-	"towstrap/internal/version"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 func main() {

@@ -11,7 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 // chunk 是转发给 SSH 客户端的一片输出；stderr 为 true 时走 SSH 的扩展数据

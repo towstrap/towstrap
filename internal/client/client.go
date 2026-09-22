@@ -20,8 +20,8 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
-	"towstrap/internal/proto"
-	"towstrap/internal/version"
+	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 type Config struct {

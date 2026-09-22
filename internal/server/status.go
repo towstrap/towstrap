@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"towstrap/internal/auth"
+	"github.com/towstrap/towstrap/internal/auth"
 )
 
 type UserStatus struct {

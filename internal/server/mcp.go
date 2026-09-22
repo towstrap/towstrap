@@ -17,10 +17,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
-	"towstrap/internal/mcpsrv"
-	"towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 // mcpPlainHTTPAllowed 决定 /mcp 能不能挂在明文 HTTP 上：Bearer token

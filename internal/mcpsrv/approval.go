@@ -13,7 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"towstrap/internal/notify"
+	"github.com/towstrap/towstrap/internal/notify"
 )
 
 // ApprovalRequest 是一次等待批准的请求。Detail 是命令本身或文件路径。

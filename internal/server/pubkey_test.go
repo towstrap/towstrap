@@ -10,9 +10,9 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 // testSigner 生成一把测试用 ed25519 钥匙。

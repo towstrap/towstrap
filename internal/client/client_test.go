@@ -12,7 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 func TestAgentHello(t *testing.T) {

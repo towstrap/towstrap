@@ -8,7 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
 )
 
 type Server struct {

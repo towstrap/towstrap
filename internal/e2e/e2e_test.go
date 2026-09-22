@@ -19,10 +19,10 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/client"
-	"towstrap/internal/server"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 func freePort(t *testing.T) int {

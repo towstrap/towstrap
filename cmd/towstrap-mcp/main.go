@@ -22,8 +22,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"towstrap/internal/mcpsrv"
-	"towstrap/internal/version"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 func main() {

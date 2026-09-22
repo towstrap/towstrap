@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"towstrap/internal/accounts"
-	"towstrap/skills"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/skills"
 )
 
 // TestSkillEndpoint /skill 公开返回随项目发布的 LLM skill 原文，

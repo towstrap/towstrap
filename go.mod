@@ -1,4 +1,4 @@
-module towstrap
+module github.com/towstrap/towstrap
 
 go 1.25.0
 

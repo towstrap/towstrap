@@ -19,9 +19,9 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	_ "modernc.org/sqlite"
 
-	"towstrap/internal/allow"
-	"towstrap/internal/proto"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 var (

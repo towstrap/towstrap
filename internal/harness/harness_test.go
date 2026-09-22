@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"towstrap/internal/version"
-	"towstrap/skills"
+	"github.com/towstrap/towstrap/internal/version"
+	"github.com/towstrap/towstrap/skills"
 )
 
 func mkdir(t *testing.T, p string) {

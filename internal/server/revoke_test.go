@@ -12,9 +12,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"towstrap/internal/accounts"
-	"towstrap/internal/allow"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 // TestTOTPAccountPasswordAttemptKeepsGuard 回归高危 1：TOTP 账号走纯密码通道

@@ -24,6 +24,14 @@ TowStrap — 连接你（或你的 LLM）和 NAT 后面机器的那根拖车带�
 make build   # 或：go build -o bin/towstrap-server ./cmd/towstrap-server && go build -o bin/towstrap-agent ./cmd/towstrap-agent
 ```
 
+不克隆仓库也可以直接 `go install`：
+
+```bash
+go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
+go install github.com/towstrap/towstrap/cmd/towstrap-agent@latest
+go install github.com/towstrap/towstrap/cmd/towstrap-mcp@latest
+```
+
 **1. 服务器上建号**（自定义用户名、密码，可设这台机器的 IP 白名单）：
 
 ```bash

@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"towstrap/internal/client"
-	"towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/config"
 )
 
 type stringList []string

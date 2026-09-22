@@ -11,7 +11,7 @@ import (
 
 	glssh "github.com/gliderlabs/ssh"
 
-	"towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/config"
 )
 
 const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执行，不发给 agent）：

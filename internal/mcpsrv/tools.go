@@ -11,7 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"towstrap/internal/version"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 // Server 把一份配置变成一个 MCP server：四个工具、策略过滤、人工批准。

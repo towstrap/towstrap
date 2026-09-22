@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"towstrap/internal/proto"
-	"towstrap/internal/version"
-	"towstrap/skills"
+	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/version"
+	"github.com/towstrap/towstrap/skills"
 )
 
 var upgrader = websocket.Upgrader{

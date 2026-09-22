@@ -20,8 +20,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/mcpsrv"
-	"towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/server"
 )
 
 // mcpEnv 是一套跑起来的 towstrap + MCP server。

@@ -16,9 +16,9 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"towstrap/internal/client"
-	"towstrap/internal/server"
-	"towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/server"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 func gosshPassword() gossh.AuthMethod { return gossh.Password("alicepw123") }
