@@ -129,7 +129,9 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	remote := ctx.RemoteAddr()
 	ip := hostOnly(remote.String())
 
-	answers, err := challenger("towstrap 登录", "", []string{"密码: "}, []bool{false})
+	// 提示符用英文：SSH 软件的密码自动填靠匹配 /password/i 这类模式，
+	// 中文提示符匹配不上自动填就失灵（Tabby/Termius 等同理）。
+	answers, err := challenger("towstrap login", "", []string{"Password: "}, []bool{false})
 	if err != nil || len(answers) == 0 {
 		return false
 	}
@@ -142,7 +144,7 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
 		return true // 没绑 TOTP：密码对了就行
 	}
-	answers, err = challenger("towstrap 登录", "该账号绑定了 TOTP 验证器", []string{"TOTP 验证码: "}, []bool{false})
+	answers, err = challenger("towstrap login", "This account has TOTP enabled", []string{"TOTP code: "}, []bool{false})
 	if err != nil || len(answers) == 0 {
 		return false
 	}
