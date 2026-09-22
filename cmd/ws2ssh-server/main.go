@@ -1217,18 +1217,34 @@ func mcpEndpointURL(serverURL, configPath string) string {
 			path = s.MCP.Path
 		}
 	}
+	return mcpBaseURL(serverURL) + path
+}
+
+// mcpBaseURL 推导对外的 HTTP 基址：public_url 是 ws/wss scheme，
+// 给 MCP 客户端的得是 http/https；没配就留占位。
+func mcpBaseURL(serverURL string) string {
 	base := serverURL
 	if base == "" {
 		base = "https://<服务器>:<HTTP端口>"
 	}
-	// public_url 是 ws/wss scheme，给 MCP 客户端的得是 http/https。
 	switch {
 	case strings.HasPrefix(base, "wss://"):
 		base = "https://" + base[len("wss://"):]
 	case strings.HasPrefix(base, "ws://"):
 		base = "http://" + base[len("ws://"):]
 	}
-	return strings.TrimSuffix(base, "/") + path
+	return strings.TrimSuffix(base, "/")
+}
+
+// skillInstallHint 给 mcp add 输出末尾用：不装 ws2ssh-mcp 的用户
+// 也能直接从服务器的 /skill 路径把 skill 拉下来。
+func skillInstallHint(base string) string {
+	return fmt.Sprintf(`给编码助手装 ws2ssh skill（任选其一）：
+  Claude Code:  mkdir -p ~/.claude/skills/ws2ssh && curl -fsSL %s/skill -o ~/.claude/skills/ws2ssh/SKILL.md
+  Cursor:       mkdir -p ~/.cursor/skills/ws2ssh && curl -fsSL %s/skill -o ~/.cursor/skills/ws2ssh/SKILL.md
+  Codex/Grok:   mkdir -p ~/.agents/skills/ws2ssh && curl -fsSL %s/skill -o ~/.agents/skills/ws2ssh/SKILL.md
+  或下载 ws2ssh-mcp 后执行 ws2ssh-mcp connect（一次装全部）
+  （服务器是自签证书的话 curl 要加 -k）`, base, base, base)
 }
 
 func mcpCommonFlags(fs *flag.FlagSet) (configPath, usersDB, usersKey, serverURL *string) {
@@ -1278,8 +1294,9 @@ func mcpAdd(args []string) int {
 	fmt.Printf("token: %s\n（只显示这一次；忘了就 mcp token %s --regen 换一个，旧的立刻作废）\n\n", token, c.Name)
 	fmt.Printf("支持 MCP 的客户端（如 Claude Code）这样配：\n")
 	fmt.Printf("  \"mcpServers\": {\"ws2ssh\": {\"type\": \"http\", \"url\": %q,\n"+
-		"      \"headers\": {\"Authorization\": \"Bearer %s\"}}}\n",
+		"      \"headers\": {\"Authorization\": \"Bearer %s\"}}}\n\n",
 		mcpEndpointURL(env.serverURL, *configPath), token)
+	fmt.Println(skillInstallHint(mcpBaseURL(env.serverURL)))
 	return 0
 }
 

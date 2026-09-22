@@ -29,6 +29,23 @@ func TestMCPEndpointURL(t *testing.T) {
 	}
 }
 
+func TestSkillInstallHint(t *testing.T) {
+	base := "https://ssh.example.com:8080"
+	hint := skillInstallHint(base)
+	for _, want := range []string{
+		"~/.claude/skills/ws2ssh/SKILL.md",
+		"~/.cursor/skills/ws2ssh/SKILL.md",
+		"~/.agents/skills/ws2ssh/SKILL.md",
+		"ws2ssh-mcp connect",
+		base + "/skill",
+		"-k",
+	} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("skillInstallHint 缺 %q:\n%s", want, hint)
+		}
+	}
+}
+
 // TestConfirmOwner 账号本人确认：密码必过；绑了 TOTP 还要验证码；
 // --admin 不读输入直接放行。
 func TestConfirmOwner(t *testing.T) {

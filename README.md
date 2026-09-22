@@ -321,7 +321,19 @@ ws2ssh-server mcp set laptop --disable                # 临时停用
 
 ## 给 LLM 编码助手装 skill
 
-仓库自带一份教编码助手「怎么安全地用 ws2ssh」的 skill（源文件在 `skills/ws2ssh/SKILL.md`）：什么时候用 MCP 工具、什么时候走 ssh、策略拒绝时不要去绕、哪些是禁区。`ws2ssh-mcp connect` 把它装进本机检测到的各家助手：
+仓库自带一份教编码助手「怎么安全地用 ws2ssh」的 skill（源文件在 `skills/ws2ssh/SKILL.md`）：什么时候用 MCP 工具、什么时候走 ssh、策略拒绝时不要去绕、哪些是禁区。装法有三条，任选：
+
+**服务器直接提供**（不装 ws2ssh-mcp 也行，skill 原文挂在网页口的 `GET /skill`，无需口令）：
+
+```bash
+mkdir -p ~/.claude/skills/ws2ssh && curl -fsSL https://服务器:8080/skill -o ~/.claude/skills/ws2ssh/SKILL.md
+# 其他助手换目录：Cursor ~/.cursor/skills/，Codex/Grok 共用 ~/.agents/skills/
+# 服务器是自签证书的话 curl 要加 -k
+```
+
+`ws2ssh-server mcp add` 创建客户端凭据时，输出末尾也会带上这几行命令。
+
+**ws2ssh-mcp 一键装**：
 
 ```bash
 ws2ssh-mcp connect                    # 装到本机检测到的所有 harness
@@ -330,7 +342,9 @@ ws2ssh-mcp connect --path .claude/skills    # 只装到指定目录（比如项�
 ws2ssh-mcp connect uninstall          # 卸载（用户改过的内容默认不删，--force 才删）
 ```
 
-支持：Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI（检测各自的家目录；Codex 和 Grok 共用 `~/.agents/skills`，只写一份）。安装是写入 `<skills目录>/ws2ssh/SKILL.md` 加一份 `.ws2ssh-managed.json` 清单；你自己放的同名 skill 不会被误盖（要 `--force`）。所有写操作都能先 `--dry-run` 演练。不想用命令也行——把 `skills/ws2ssh/` 整个目录拷进任何一家认识的 skills 目录效果一样。
+支持：Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI（检测各自的家目录；Codex 和 Grok 共用 `~/.agents/skills`，只写一份）。安装是写入 `<skills目录>/ws2ssh/SKILL.md` 加一份 `.ws2ssh-managed.json` 清单；你自己放的同名 skill 不会被误盖（要 `--force`）。所有写操作都能先 `--dry-run` 演练。
+
+**手工拷贝**：把 `skills/ws2ssh/` 整个目录拷进任何一家认识的 skills 目录，效果一样。
 
 配套的还有 `connect print-mcp`：打印各家客户端接 ws2ssh MCP 要写的配置片段（不写文件）：
 

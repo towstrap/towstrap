@@ -15,6 +15,7 @@ import (
 
 	"ws2ssh/internal/proto"
 	"ws2ssh/internal/version"
+	"ws2ssh/skills"
 )
 
 var upgrader = websocket.Upgrader{
@@ -43,6 +44,19 @@ func (s *Server) routes() http.Handler {
 	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, "ok\n")
+	})
+	// /skill 公开提供随项目发布的 LLM skill 原文（公开文档，无秘密，
+	// 不需要口令）：不装 ws2ssh-mcp 的用户也能 curl 下来手工放进
+	// 编码助手的 skills 目录。
+	mux.HandleFunc("/skill", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Write(skills.SkillMD())
 	})
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/agent", s.handleAgent)
