@@ -383,11 +383,13 @@ func (p *execProc) Close() error {
 }
 
 // childEnv 给远程会话起 shell 用的环境：剥掉 TOWSTRAP_AGENT_TOKEN——远程用户
-// 拿到的是本机 shell，没必要再把 agent 自己的凭据白送给他。
+// 拿到的是本机 shell，没必要再把 agent 自己的凭据白送给他。TERM 统一换成
+// xterm-256color：直接追加会和继承的旧 TERM 并存（execve 里重复的变量
+// 生效的是第一个），彩色能力取决于 agent 启动环境，必须滤掉再设。
 func childEnv() []string {
 	env := make([]string, 0, 32)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "TOWSTRAP_AGENT_TOKEN=") {
+		if strings.HasPrefix(kv, "TOWSTRAP_AGENT_TOKEN=") || strings.HasPrefix(kv, "TERM=") {
 			continue
 		}
 		env = append(env, kv)

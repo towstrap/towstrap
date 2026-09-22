@@ -5,6 +5,7 @@ package client
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/creack/pty"
 )
@@ -16,12 +17,16 @@ type ptyFile struct {
 }
 
 // startPty 起 PTY 会话：command 非空走「shell -c 命令」，空是交互 shell。
+// 交互 shell 用 argv[0] 加「-」前缀变登录 shell（sshd 同款做法，比 -l 旗标
+// 更通用——dash/sh 没有 -l）：用户的 .zprofile/.bash_profile 才加载，
+// CLICOLOR、LS 配色、PATH 这些才不会缺。
 func startPty(shell, command string, cols, rows uint32) (*ptyFile, error) {
 	var cmd *exec.Cmd
 	if command != "" {
 		cmd = shellCmd(shell, command)
 	} else {
 		cmd = exec.Command(shell)
+		cmd.Args[0] = "-" + filepath.Base(shell)
 	}
 	cmd.Env = childEnv()
 	f, err := pty.Start(cmd)
