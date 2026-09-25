@@ -51,12 +51,21 @@ func main() {
 	case "pending":
 		pending(cfgPath)
 	case "approve", "deny":
-		all := len(args) > 1 && args[1] == "--all"
-		id := ""
-		if len(args) > 1 && !all {
-			id = args[1]
+		var id string
+		var all, rem bool
+		for _, a := range args[1:] {
+			switch a {
+			case "--all":
+				all = true
+			case "--remember":
+				rem = true
+			default:
+				if id == "" {
+					id = a
+				}
+			}
 		}
-		settle(cfgPath, sub, id, all)
+		settle(cfgPath, sub, id, all, rem)
 	case "connect":
 		connect(cfgPath, args[1:])
 	case "version":
@@ -66,7 +75,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, `用法：
   towstrap-mcp [--config 路径] [serve]    起 stdio MCP server（默认）
   towstrap-mcp [--config 路径] pending    列出等待批准的请求
-  towstrap-mcp [--config 路径] approve <id>|--all   批准
+  towstrap-mcp [--config 路径] approve [--remember] <id>|--all   批准（--remember：本会话内相同命令不再问）
   towstrap-mcp [--config 路径] deny <id>|--all      拒绝
   towstrap-mcp connect ...                把 towstrap skill 装进本机 AI 编码助手
                                         （connect help 看细项）
@@ -132,15 +141,15 @@ func pending(cfgPath string) {
 			p.ID, p.Machine, p.Kind, p.Detail,
 			time.Since(p.Created).Round(time.Second))
 	}
-	fmt.Println("\n批准：towstrap-mcp approve <id>|--all；拒绝：towstrap-mcp deny <id>|--all")
+	fmt.Println("\n批准：towstrap-mcp approve [--remember] <id>|--all；拒绝：towstrap-mcp deny <id>|--all")
 }
 
-func settle(cfgPath, verb, id string, all bool) {
+func settle(cfgPath, verb, id string, all, rem bool) {
 	cfg := loadForCLI(cfgPath)
 	var n int
 	var err error
 	if verb == "approve" {
-		n, err = mcpsrv.ApprovePending(cfg.ApprovalsDir, id, all)
+		n, err = mcpsrv.ApprovePending(cfg.ApprovalsDir, id, all, rem)
 	} else {
 		n, err = mcpsrv.DenyPending(cfg.ApprovalsDir, id, all)
 	}

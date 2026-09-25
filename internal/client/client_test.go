@@ -95,6 +95,18 @@ func TestChildEnvDropsToken(t *testing.T) {
 	}
 }
 
+// TestChildEnvDropsMirror 继承来的 TOWSTRAP_MIRROR 不能漏给子进程——镜像
+// 标记只应由 mirror 创建路径（startPtyEnv）显式打上，否则 rc 钩子会误判
+// 「已在镜像里」而跳过本不该跳的接入。
+func TestChildEnvDropsMirror(t *testing.T) {
+	t.Setenv("TOWSTRAP_MIRROR", "stale")
+	for _, kv := range childEnv() {
+		if strings.HasPrefix(kv, "TOWSTRAP_MIRROR=") {
+			t.Fatal("子进程环境不应继承 TOWSTRAP_MIRROR")
+		}
+	}
+}
+
 func TestBackoff(t *testing.T) {
 	cases := []struct {
 		cur, want time.Duration

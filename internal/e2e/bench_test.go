@@ -20,6 +20,9 @@ import (
 //
 //	TOWSTRAP_BENCH=1 go test ./internal/e2e/ -run TestCapacityBench -v -timeout 20m
 func TestCapacityBench(t *testing.T) {
+	if os.Getenv("TOWSTRAP_BENCH") != "1" {
+		t.Skip("容量基准默认不跑；TOWSTRAP_BENCH=1 开启")
+	}
 	const n = 300
 	runtime.GC()
 	var base runtime.MemStats

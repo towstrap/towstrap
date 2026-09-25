@@ -126,12 +126,19 @@ func (s *Server) mcpHandler() http.Handler {
 
 		cfg := *s.cfg.MCP // 浅拷贝：Machines 整个换掉，Policy/Limits 照用
 		cfg.Machines = machines
-		cfg.ApproveCmd = "towstrap-server mcp approve（在服务器上执行）"
-		cfg.LocalNotify = false // 服务器一般没桌面，不弹系统通知
+		// ApproveCmd 带 --approvals-dir：提示里显示的命令直接可粘到
+		// 服务器终端跑——裸 approve 只会找默认目录，自定义位置下根本
+		// 找不到待批文件。
+		cfg.ApproveCmd = "towstrap-server mcp approve --approvals-dir " + cfg.ApprovalsDir
+		// cfg.LocalNotify 来自 mcp.local_notify：默认开（审批就该让人看见），
+		// yaml 里显式 false 才关；headless 机器上各通道自动静默退化。
 		ip := hostOnly(r.RemoteAddr)
 		cfg.Audit = func(ev string, kv ...string) {
 			s.audit.Log(ev, append([]string{"client", c.Name, "ip", ip}, kv...)...)
 		}
+		// 待批提示写进同账号的活跃 SSH 终端——人正登在服务器上时立刻
+		// 看得见哪个请求在等批准、怎么批。
+		cfg.OnPending = s.broadcastSSH
 
 		runner := &mcpRunner{s: s, client: c.Name, ip: ip}
 		srv, err := mcpsrv.New(&cfg, runner)
@@ -177,6 +184,12 @@ func (s *Server) mcpMachineMeta(id string) *mcpsrv.Machine {
 	if protect, home, dir := s.Hub.ProtectInfo(id); len(protect) > 0 {
 		m.Protect, m.Home, m.Dir = protect, home, dir
 	}
+	// 批准姿态：机器 yaml 里显式写了 machines.<id>.policy 就照它
+	//（运维对没上报能力的老 agent 也能定）；没写看 agent 自报——
+	// 机器是部署者的，宽严部署者定。
+	if m.Policy == "" {
+		m.Policy = s.Hub.MCPPolicyOf(id)
+	}
 	return m
 }
 
@@ -205,10 +218,34 @@ type mcpRunner struct {
 
 func (r *mcpRunner) Connected(machine string) bool { return r.s.Hub.Has(machine) }
 
+// MachineAllowed 按当前数据库复核这个 MCP 客户端还能不能碰 machine。
+// mcpsrv 的机器清单是会话建立时的快照；撤权/停用客户端后，后续每个工具
+// 调用都要重新过这里，不能只信快照。
+func (r *mcpRunner) MachineAllowed(machine string) bool {
+	c, ok := r.s.cfg.Users.MCPGet(r.client)
+	if !ok || c.Disabled || !c.Grants(machine) {
+		return false
+	}
+	username, name := accounts.SplitMachineID(machine)
+	if name == "" {
+		return false
+	}
+	acc, ok := r.s.cfg.Users.Get(username)
+	if !ok || acc.Disabled {
+		return false
+	}
+	_, ok = r.s.cfg.Users.GetMachine(username, name)
+	return ok
+}
+
 // Run 在指定机器上跑命令。machine 是完整机器 ID（账号+机器名）；
 // 名字本身必须在客户端授权列表里（cfg.Machines 已在 mcpsrv 侧检查过，
 // 这里再防一手不带 + 的裸账号名打进来）。
 func (r *mcpRunner) Run(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int) (mcpsrv.Result, error) {
+	return r.RunAt(ctx, machine, cmd, stdin, timeout, maxOut, "")
+}
+
+func (r *mcpRunner) RunAt(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int, cwd string) (mcpsrv.Result, error) {
 	res := mcpsrv.Result{ExitCode: -1}
 	if len(cmd) > proto.MaxCommandBytes {
 		return res, fmt.Errorf("命令太长（%d 字节 > 上限 %d）", len(cmd), proto.MaxCommandBytes)
@@ -224,7 +261,7 @@ func (r *mcpRunner) Run(ctx context.Context, machine, cmd string, stdin []byte, 
 	}
 
 	from := "mcp:" + r.client + "@" + r.ip
-	sess, err := r.s.Hub.OpenShell(a, OpenReq{Pty: false, Cmd: cmd, From: from})
+	sess, err := r.s.Hub.OpenShell(a, OpenReq{Pty: false, Cmd: cmd, Cwd: cwd, From: from})
 	if err != nil {
 		return res, err
 	}
@@ -365,7 +402,7 @@ func (h *hubShell) writeChunk(c chunk) bool {
 }
 
 func (h *hubShell) Write(p []byte) (int, error) {
-	if err := h.a.send(proto.EncodeData(h.s.id, p)); err != nil {
+	if err := h.a.sendData(h.s.id, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil
@@ -380,4 +417,135 @@ func (h *hubShell) Close() error {
 		h.a.removeSession(h.s.id)
 	})
 	return nil
+}
+
+// OpenTerminal 在这台机器上开一条 PTY 会话：OpenReq.Pty=true 后 agent
+// 走 startPty，终端输入/输出/resize 都由同一条 Hub 会话转发。
+func (r *mcpRunner) OpenTerminal(ctx context.Context, machine string, opts mcpsrv.TerminalOptions) (mcpsrv.Terminal, error) {
+	if len(opts.Command) > proto.MaxCommandBytes {
+		return nil, fmt.Errorf("命令太长（%d 字节 > 上限 %d）", len(opts.Command), proto.MaxCommandBytes)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	a, err := r.s.Hub.Agent(machine)
+	if err != nil {
+		return nil, fmt.Errorf("这台机器没上线（agent 未连接）")
+	}
+	if !r.s.agentCredentialValid(machine, a) {
+		return nil, fmt.Errorf("这台机器的接入凭据已失效（token 已更换或账号已删/停用），等它重连")
+	}
+	from := "mcp:" + r.client + "@" + r.ip
+	sess, err := r.s.Hub.OpenShell(a, OpenReq{
+		Pty: true, Cmd: opts.Command, Cwd: opts.Cwd,
+		Cols: opts.Cols, Rows: opts.Rows, From: from,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := waitReady(sess, 15*time.Second); err != nil {
+		_ = a.send(proto.Msg{T: proto.TypeClose, ID: sess.id})
+		a.removeSession(sess.id)
+		return nil, fmt.Errorf("起 PTY 终端失败: %v", err)
+	}
+	r.s.audit.Log("SESSION-START", "user", machine, "from", from,
+		"id", sess.id, "mode", "mcp-pty", "cmd", auditCmd(opts.Command))
+	return &hubTerminal{a: a, s: sess, localDone: make(chan struct{}),
+		onEnd: func() { r.s.audit.Log("SESSION-END", "id", sess.id) }}, nil
+}
+
+// hubTerminal 把一个 hub PTY 会话包成 mcpsrv.Terminal：PTY 只有一条
+// 输出流，Read 按到达顺序给终端缓冲；localDone 让本地 Close 立刻唤醒
+// 读端，不等远端 close 帧回来。
+type hubTerminal struct {
+	a         *agentConn
+	s         *session
+	localDone chan struct{}
+	onEnd     func()
+
+	mu      sync.Mutex
+	pending []byte
+	once    sync.Once
+	endOnce sync.Once
+}
+
+func (h *hubTerminal) Read(p []byte) (int, error) {
+	for {
+		if n := h.pop(p); n > 0 {
+			return n, nil
+		}
+		select {
+		case <-h.localDone:
+			return 0, io.EOF
+		case <-h.s.closed:
+			for {
+				select {
+				case c := <-h.s.ch:
+					h.mu.Lock()
+					h.pending = append(h.pending, c.b...)
+					h.mu.Unlock()
+				default:
+					if n := h.pop(p); n > 0 {
+						return n, nil
+					}
+					return 0, io.EOF
+				}
+			}
+		case c := <-h.s.ch:
+			h.mu.Lock()
+			h.pending = append(h.pending, c.b...)
+			h.mu.Unlock()
+		}
+	}
+}
+
+func (h *hubTerminal) pop(p []byte) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.pending) == 0 {
+		return 0
+	}
+	n := copy(p, h.pending)
+	h.pending = append([]byte(nil), h.pending[n:]...)
+	return n
+}
+
+func (h *hubTerminal) Write(p []byte) (int, error) {
+	if err := h.a.sendData(h.s.id, p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (h *hubTerminal) Resize(cols, rows int) error {
+	return h.a.send(proto.Msg{T: proto.TypeResize, ID: h.s.id, Cols: cols, Rows: rows})
+}
+
+func (h *hubTerminal) Close() error {
+	h.once.Do(func() {
+		_ = h.a.send(proto.Msg{T: proto.TypeClose, ID: h.s.id})
+		h.a.removeSession(h.s.id)
+		close(h.localDone)
+		h.finish()
+	})
+	return nil
+}
+
+func (h *hubTerminal) Wait() int {
+	select {
+	case <-h.s.closed:
+	case <-h.localDone:
+	}
+	h.finish()
+	return h.s.exitCode()
+}
+
+func (h *hubTerminal) finish() {
+	h.endOnce.Do(func() {
+		if h.onEnd != nil {
+			h.onEnd()
+		}
+	})
 }

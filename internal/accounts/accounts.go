@@ -43,6 +43,7 @@ type Account struct {
 	AllowIPs    []string  `json:"allow_ips,omitempty"`    // 谁能 SSH 登录这个账号；空 = 不限
 	SSHKeys     []string  `json:"ssh_keys,omitempty"`     // SSH 公钥登录用的钥匙（authorized_keys 格式），给自动化用
 	Disabled    bool      `json:"disabled,omitempty"`
+	OAuthOnly   bool      `json:"oauth_only,omitempty"` // SSH 只收 OAuth 换来的凭据（密码/公钥一律拒）
 	Machines    []Machine `json:"machines,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS users (
 	allow_ips       TEXT    NOT NULL DEFAULT '',
 	ssh_pubkeys     TEXT    NOT NULL DEFAULT '',
 	disabled        INTEGER NOT NULL DEFAULT 0,
+	oauth_only      INTEGER NOT NULL DEFAULT 0, -- 1 = SSH 只收 OAuth 换来的凭据
 	created_at      TEXT    NOT NULL
 );
 
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS machines (
 	token_enc       BLOB    NOT NULL UNIQUE,
 	agent_allow_ips TEXT    NOT NULL DEFAULT '',
 	agent_last_ip   TEXT    NOT NULL DEFAULT '',
+	oauth_only      INTEGER NOT NULL DEFAULT 0, -- 1 = 这台机器 SSH 只收 OAuth 凭据
 	created_at      TEXT    NOT NULL,
 	UNIQUE(username, name)
 );
@@ -96,6 +99,32 @@ CREATE TABLE IF NOT EXISTS mcp_clients (
 	created_at TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
+
+-- oauth_identities 是管理员预先绑定的外部身份：(issuer, sub) 唯一指向
+-- 一个本地账号。OAuth 回调验完 IdP 身份后按它找「这人是谁」。
+CREATE TABLE IF NOT EXISTS oauth_identities (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	username   TEXT    NOT NULL,
+	issuer     TEXT    NOT NULL,
+	sub        TEXT    NOT NULL,
+	email      TEXT    NOT NULL DEFAULT '',
+	created_at TEXT    NOT NULL,
+	UNIQUE(issuer, sub)
+);
+
+-- ssh_grants 是 OAuth 授权通过后下发的短时效 SSH 凭据。明文 secret 不落库，
+-- 只存 bcrypt；pub_id 是 secret 里的一段公开前缀，校验时按它精确取行，
+-- 不用对全部候选跑 bcrypt。uses_left 用尽或到 expires_at 即作废。
+CREATE TABLE IF NOT EXISTS ssh_grants (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	pub_id      TEXT    NOT NULL UNIQUE,
+	machine     TEXT    NOT NULL, -- 完整机器名 账号+机器名
+	secret_hash TEXT    NOT NULL,
+	expires_at  TEXT    NOT NULL,
+	uses_left   INTEGER NOT NULL DEFAULT 0,
+	created_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grants_pub ON ssh_grants(pub_id);
 `
 
 // DefaultKeyPath 由数据库路径推出密钥文件路径：users.db -> users.key。
@@ -140,6 +169,16 @@ func Open(dbPath, keyPath string) (*Store, error) {
 	if err := migrateMachines(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("迁移 machines 表: %w", err)
+	}
+	// oauth_only 是后加的列（migrateMachines 重建 users 时也不会带上）。
+	for _, col := range []struct{ table, name, ddl string }{
+		{"users", "oauth_only", `ALTER TABLE users ADD COLUMN oauth_only INTEGER NOT NULL DEFAULT 0`},
+		{"machines", "oauth_only", `ALTER TABLE machines ADD COLUMN oauth_only INTEGER NOT NULL DEFAULT 0`},
+	} {
+		if err := ensureColumn(db, col.table, col.name, col.ddl); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("升级账号库 %s.%s: %w", col.table, col.name, err)
+		}
 	}
 	tightenPerms(dbPath)
 	return &Store{db: db, key: key, dbPath: dbPath}, nil
@@ -590,7 +629,7 @@ func (s *Store) RegenToken(username string) (string, error) {
 // Get 返回账号副本（含机器列表）。
 func (s *Store) Get(username string) (Account, bool) {
 	row := s.db.QueryRow(
-		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, created_at
+		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, oauth_only, created_at
 		 FROM users WHERE username = ?`, username)
 	a, err := scanAccount(row, s)
 	if err != nil {
@@ -630,7 +669,7 @@ func (s *Store) ListBasic() []Brief {
 // List 返回全部账号（含机器列表），按用户名排序。
 func (s *Store) List() []Account {
 	rows, err := s.db.Query(
-		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, created_at FROM users`)
+		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, oauth_only, created_at FROM users`)
 	if err != nil {
 		return nil
 	}
@@ -663,9 +702,10 @@ func scanAccount(r rowScanner, s *Store) (Account, error) {
 		ipsBlob     string
 		keysBlob    string
 		disabled    int
+		oauthOnly   int
 		createdAt   string
 	)
-	if err := r.Scan(&username, &hash, &contact, &totpEnc, &totpLastStp, &ipsBlob, &keysBlob, &disabled, &createdAt); err != nil {
+	if err := r.Scan(&username, &hash, &contact, &totpEnc, &totpLastStp, &ipsBlob, &keysBlob, &disabled, &oauthOnly, &createdAt); err != nil {
 		return Account{}, err
 	}
 	var ips []string
@@ -681,6 +721,7 @@ func scanAccount(r rowScanner, s *Store) (Account, error) {
 		AllowIPs:    ips,
 		SSHKeys:     sshKeys,
 		Disabled:    disabled != 0,
+		OAuthOnly:   oauthOnly != 0,
 		CreatedAt:   created,
 	}, nil
 }

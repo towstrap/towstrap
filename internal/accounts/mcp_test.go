@@ -109,6 +109,36 @@ func TestMCPClientStar(t *testing.T) {
 	}
 }
 
+// TestMCPGrantsSlashAlias 机器授权按拆分后的两段比：demo+local 的规则
+// 同样命中 demo/local、demo/* 别名写法。
+func TestMCPGrantsSlashAlias(t *testing.T) {
+	s := openTest(t)
+	c, _, err := s.MCPAdd("one", []string{"demo+local"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Grants("demo/local") {
+		t.Fatal("demo+local 授权应命中 demo/local")
+	}
+	if c.Grants("demo/other") {
+		t.Fatal("demo+local 授权不该命中 demo/other")
+	}
+	if c.Grants("demo") {
+		t.Fatal("单台机器授权不该扩到整个账号")
+	}
+
+	c2, _, err := s.MCPAdd("wild", []string{"demo/*"}, nil)
+	if err != nil {
+		t.Fatalf("demo/* 写法应合法: %v", err)
+	}
+	if !c2.Grants("demo+local") || !c2.Grants("demo/any") {
+		t.Fatal("demo/* 通配应覆盖账号下机器")
+	}
+	if c2.Grants("other+local") {
+		t.Fatal("demo/* 不该跨账号")
+	}
+}
+
 func TestMCPClientAllowIPsAndList(t *testing.T) {
 	s := openTest(t)
 	if _, _, err := s.MCPAdd("x", []string{"bot"}, []string{"10.0.0.0/33"}); err == nil {

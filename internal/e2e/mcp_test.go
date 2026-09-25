@@ -48,6 +48,21 @@ func startMCPProto(t *testing.T, handler func(context.Context, *mcp.ElicitReques
 
 // startMCPProtoShell 同上，可指定 agent 的 shell（zsh 的 NoExpand 测试用）。
 func startMCPProtoShell(t *testing.T, handler func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error), protoVersion, shell string) *mcpEnv {
+	return startMCPRoots(t, handler, protoVersion, shell, "")
+}
+
+// startMCPLocal 走本地待批文件通道（ask_via: local）——approve/deny/timeout
+// 这类文件流程测试用：客户端不支持弹窗时 auto 会走 llm 会话内确认，
+// 不落待批文件。
+func startMCPLocal(t *testing.T) *mcpEnv {
+	return startMCPAskVia(t, nil, "", "/bin/bash", "", "local")
+}
+
+func startMCPRoots(t *testing.T, handler func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error), protoVersion, shell, roots string) *mcpEnv {
+	return startMCPAskVia(t, handler, protoVersion, shell, roots, "")
+}
+
+func startMCPAskVia(t *testing.T, handler func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error), protoVersion, shell, roots, askVia string) *mcpEnv {
 	t.Helper()
 	dir := t.TempDir()
 	hostKeyPath := filepath.Join(dir, "host_key")
@@ -92,7 +107,17 @@ func startMCPProtoShell(t *testing.T, handler func(context.Context, *mcp.ElicitR
 	fp := gossh.FingerprintSHA256(hkSigner.PublicKey())
 
 	rootsDir := t.TempDir()
+	rootsYaml := rootsDir
+	if roots != "" {
+		rootsYaml = roots
+	}
 	approvalsDir := filepath.Join(dir, "approvals")
+	// ask_via 显式给才写——它压过客户端弹窗能力：留空走 auto
+	//（能弹窗就弹窗），写 local 就全走待批文件。
+	askViaLine := ""
+	if askVia != "" {
+		askViaLine = "\n  ask_via: " + askVia
+	}
 	yaml := fmt.Sprintf(`server: 127.0.0.1:%d
 key: %s
 host_key: %s
@@ -102,9 +127,9 @@ machines:
     roots: [%s]
 policy:
   default: ask
-  ask_timeout: 5s
+  ask_timeout: 5s%s
 approvals_dir: %s
-`, sshPort, keyPath, fp, rootsDir, approvalsDir)
+`, sshPort, keyPath, fp, rootsYaml, askViaLine, approvalsDir)
 	cfgPath := filepath.Join(dir, "mcp.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
 		t.Fatal(err)
@@ -202,6 +227,41 @@ func runCmd(t *testing.T, env *mcpEnv, cmd string, extra map[string]any) (*mcp.C
 	return res, out
 }
 
+type terminalOpenResult struct {
+	TerminalID string `json:"terminal_id"`
+	Approval   string `json:"approval"`
+}
+
+type terminalReadResult struct {
+	Output   string `json:"output"`
+	Closed   bool   `json:"closed"`
+	ExitCode int    `json:"exit_code"`
+	HasMore  bool   `json:"has_more"`
+}
+
+func readTerminalContains(t *testing.T, cs *mcp.ClientSession, id, want string) terminalReadResult {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var all strings.Builder
+	var last terminalReadResult
+	for time.Now().Before(deadline) {
+		res := callTool(t, cs, "terminal_read", map[string]any{
+			"terminal_id": id, "timeout_seconds": 1, "max_bytes": 65536,
+		})
+		if res.IsError {
+			t.Fatalf("terminal_read: %s", resultText(res))
+		}
+		decodeStructured(t, res, &last)
+		all.WriteString(last.Output)
+		if strings.Contains(all.String(), want) || last.Closed {
+			last.Output = all.String()
+			return last
+		}
+	}
+	t.Fatalf("终端输出没等到 %q；已收到 %q", want, all.String())
+	return last
+}
+
 // acceptAll 是「总是允许」的 elicitation handler。
 func acceptAll(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 	return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
@@ -260,9 +320,9 @@ func TestMCPElicitLegacyProtocol(t *testing.T) {
 
 func TestMCPDenyNoElicit(t *testing.T) {
 	env := startMCP(t, acceptAll)
-	res, _ := runCmd(t, env, "sudo ls", nil)
+	res, _ := runCmd(t, env, "rm -rf /", nil)
 	if !res.IsError {
-		t.Fatal("sudo ls 应被策略拒绝")
+		t.Fatal("rm -rf / 应被策略拒绝")
 	}
 	if !strings.Contains(resultText(res), "拒绝") {
 		t.Errorf("错误文本应含「拒绝」: %s", resultText(res))
@@ -384,14 +444,14 @@ func waitPending(t *testing.T, dir string) string {
 }
 
 func TestMCPApproveViaCLI(t *testing.T) {
-	env := startMCP(t, nil) // 无 handler：客户端不支持弹窗
+	env := startMCPLocal(t)
 	done := make(chan *mcp.CallToolResult, 1)
 	go func() {
 		done <- callTool(t, env.client, "run_command",
 			map[string]any{"machine": "bot", "command": "touch /tmp/mcp-cli-ok"})
 	}()
 	id := waitPending(t, env.approvalsDir)
-	if _, err := mcpsrv.ApprovePending(env.approvalsDir, id, false); err != nil {
+	if _, err := mcpsrv.ApprovePending(env.approvalsDir, id, false, false); err != nil {
 		t.Fatal(err)
 	}
 	res := <-done
@@ -404,7 +464,7 @@ func TestMCPApproveViaCLI(t *testing.T) {
 }
 
 func TestMCPDenyViaCLI(t *testing.T) {
-	env := startMCP(t, nil)
+	env := startMCPLocal(t)
 	done := make(chan *mcp.CallToolResult, 1)
 	go func() {
 		done <- callTool(t, env.client, "run_command",
@@ -424,7 +484,7 @@ func TestMCPDenyViaCLI(t *testing.T) {
 }
 
 func TestMCPApprovalTimeout(t *testing.T) {
-	env := startMCP(t, nil)
+	env := startMCPLocal(t)
 	done := make(chan *mcp.CallToolResult, 1)
 	go func() {
 		done <- callTool(t, env.client, "run_command",
@@ -500,5 +560,124 @@ func TestMCPSessionZshStdio(t *testing.T) {
 	res, out = runCmd(t, env, "echo alive-$Z", map[string]any{"session": "z"})
 	if res.IsError || !strings.Contains(out.Stdout, "alive-1") {
 		t.Fatalf("zsh 会话应活着且状态保留: %s %+v", resultText(res), out)
+	}
+}
+
+func TestMCPTildeRootsStdio(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "work", "含 空格"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := startMCPRoots(t, acceptAll, "", "/bin/bash", `"~/work"`)
+
+	p := "~/work/含 空格/单'引号.txt"
+	res := callTool(t, env.client, "write_file", map[string]any{
+		"machine": "bot", "path": p, "content": "tilde-内容\n"})
+	if res.IsError {
+		t.Fatalf("~/ roots 内 write_file 应放行: %s", resultText(res))
+	}
+	if n := env.elicitCalls.Load(); n != 0 {
+		t.Fatalf("~/ roots 内写入不该弹窗，弹了 %d 次", n)
+	}
+	real := filepath.Join(home, "work", "含 空格", "单'引号.txt")
+	if b, err := os.ReadFile(real); err != nil || string(b) != "tilde-内容\n" {
+		t.Fatalf("应写到 $HOME 下的真实文件: %q %v", b, err)
+	}
+
+	res = callTool(t, env.client, "read_file", map[string]any{"machine": "bot", "path": p})
+	if res.IsError {
+		t.Fatalf("read_file: %s", resultText(res))
+	}
+	var ro struct {
+		Content string `json:"content"`
+	}
+	decodeStructured(t, res, &ro)
+	if ro.Content != "tilde-内容\n" {
+		t.Fatalf("回读不一致: %q", ro.Content)
+	}
+
+	res = callTool(t, env.client, "read_file", map[string]any{"machine": "bot", "path": "~/.ssh/config"})
+	if !res.IsError || !strings.Contains(resultText(res), "拒绝") {
+		t.Fatalf("读 ~/.ssh/config 应被拒: %v %s", res.IsError, resultText(res))
+	}
+	res = callTool(t, env.client, "write_file", map[string]any{
+		"machine": "bot", "path": "~/work/../.ssh/x", "content": "x"})
+	if !res.IsError || !strings.Contains(resultText(res), "拒绝") {
+		t.Fatalf("~/work/../.ssh/x 应被拒: %v %s", res.IsError, resultText(res))
+	}
+
+	res = callTool(t, env.client, "write_file", map[string]any{
+		"machine": "bot", "path": `~/work\escape`, "content": "literal\n"})
+	if res.IsError {
+		t.Fatalf("批准后的写入应成功: %s", resultText(res))
+	}
+	if n := env.elicitCalls.Load(); n != 1 {
+		t.Fatalf("~/work\\escape 在 POSIX 不在 ~/work/ roots 里，应弹窗一次，实际 %d", n)
+	}
+	lit := filepath.Join(home, `work\escape`)
+	if b, err := os.ReadFile(lit); err != nil || string(b) != "literal\n" {
+		t.Fatalf("应写到 HOME 下字面名 work\\escape: %q %v", b, err)
+	}
+	res = callTool(t, env.client, "read_file", map[string]any{"machine": "bot", "path": `~/work\escape`})
+	if res.IsError {
+		t.Fatalf("read_file: %s", resultText(res))
+	}
+	ro = struct {
+		Content string `json:"content"`
+	}{}
+	decodeStructured(t, res, &ro)
+	if ro.Content != "literal\n" {
+		t.Fatalf("回读字面名文件不一致: %q", ro.Content)
+	}
+}
+
+// TestMCPTerminalPTY stdio MCP → SSH pty-req → server → agent 的完整 PTY
+// 链路：tty 必须拿到 /dev/...，随后向 cat 写一行能读回来。
+func TestMCPTerminalPTY(t *testing.T) {
+	env := startMCP(t, acceptAll)
+	res := callTool(t, env.client, "terminal_open", map[string]any{
+		"machine": "bot", "command": "/bin/sh -c 'tty; exec cat'",
+		"cols": 100, "rows": 30,
+	})
+	if res.IsError {
+		t.Fatalf("terminal_open: %s", resultText(res))
+	}
+	var opened terminalOpenResult
+	decodeStructured(t, res, &opened)
+	if opened.TerminalID == "" || opened.Approval != "approved" {
+		t.Fatalf("打开结果不对: %+v", opened)
+	}
+	initial := readTerminalContains(t, env.client, opened.TerminalID, "/dev/")
+	if initial.Closed {
+		t.Fatalf("终端不应提前结束: %+v", initial)
+	}
+
+	res = callTool(t, env.client, "terminal_write", map[string]any{
+		"terminal_id": opened.TerminalID, "input": "pty-stdio-ok\n",
+	})
+	if res.IsError {
+		t.Fatalf("terminal_write: %s", resultText(res))
+	}
+	echo := readTerminalContains(t, env.client, opened.TerminalID, "pty-stdio-ok")
+	if echo.Closed {
+		t.Fatalf("cat 还在跑时不应结束: %+v", echo)
+	}
+
+	res = callTool(t, env.client, "terminal_resize", map[string]any{
+		"terminal_id": opened.TerminalID, "cols": 120, "rows": 40,
+	})
+	if res.IsError {
+		t.Fatalf("terminal_resize: %s", resultText(res))
+	}
+	res = callTool(t, env.client, "terminal_close", map[string]any{"terminal_id": opened.TerminalID})
+	if res.IsError {
+		t.Fatalf("terminal_close: %s", resultText(res))
+	}
+	res = callTool(t, env.client, "terminal_read", map[string]any{
+		"terminal_id": opened.TerminalID, "timeout_seconds": 0,
+	})
+	if !res.IsError || !strings.Contains(resultText(res), "不存在") {
+		t.Fatalf("关闭后 terminal_read 应找不到终端: %v %s", res.IsError, resultText(res))
 	}
 }

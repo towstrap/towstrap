@@ -23,6 +23,7 @@ import (
 	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/server"
 	"github.com/towstrap/towstrap/internal/totp"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 func freePort(t *testing.T) int {
@@ -94,9 +95,13 @@ func startAgentProtect(t *testing.T, httpPort int, token, helloName string, prot
 }
 
 // startAgentOpt 同上，可指定 agent 的 shell（测 zsh 的 NoExpand 路径用）。
+// mirror socket 放进临时目录（TOWSTRAP_MIRROR_SOCK）——免得测试去碰真实的
+// ~/.towstrap/mirror.sock 或互相踩；测试里读该环境变量能拿到 socket 路径。
 func startAgentOpt(t *testing.T, httpPort int, token, helloName string, protect []string, shell string) string {
 	t.Helper()
-	audit := filepath.Join(t.TempDir(), "audit.log")
+	dir := t.TempDir()
+	audit := filepath.Join(dir, "audit.log")
+	t.Setenv("TOWSTRAP_MIRROR_SOCK", filepath.Join(dir, "mirror.sock"))
 	go func() {
 		_ = client.ConnectOnce(client.Config{
 			ID:           helloName,
@@ -171,6 +176,10 @@ func sshEchoAuth(t *testing.T, sshPort int, cfg *gossh.ClientConfig, cmd string)
 	seen := make(chan string, 1)
 	var out strings.Builder
 	var mu sync.Mutex
+	marker := strings.TrimPrefix(cmd, "echo ")
+	if marker == cmd {
+		marker = "hello-"
+	}
 	go func() {
 		buf := make([]byte, 1024)
 		for {
@@ -180,7 +189,7 @@ func sshEchoAuth(t *testing.T, sshPort int, cfg *gossh.ClientConfig, cmd string)
 				out.Write(buf[:n])
 				got := out.String()
 				mu.Unlock()
-				if strings.Contains(got, "hello-") {
+				if strings.Contains(got, "\n"+marker) {
 					select {
 					case seen <- got:
 					default:
@@ -211,7 +220,7 @@ func kbdAuth(pw string, code func() string) gossh.AuthMethod {
 	return gossh.KeyboardInteractive(func(name, instruction string, questions []string, echos []bool) ([]string, error) {
 		answers := make([]string, len(questions))
 		for i, q := range questions {
-			if strings.Contains(q, "密码") {
+			if strings.Contains(q, "密码") || strings.Contains(strings.ToLower(q), "password") {
 				answers[i] = pw
 			} else {
 				answers[i] = code()
@@ -617,6 +626,7 @@ func TestIdleReverifyTOTP(t *testing.T) {
 
 	// 登录已消费当前时间片，重验必须用更新的码——先等下一个片
 	waitStepBoundary(t)
+	time.Sleep(1400 * time.Millisecond)
 
 	// 挂机后再敲键：先弹验证码
 	send("echo hello-idle2")
@@ -913,7 +923,7 @@ func TestMinAgentVersion(t *testing.T) {
 	}
 	startAgent(t, httpPort2, acct2.Machines[0].Token, "h2")
 	waitAgent(t, srv2.Hub, "alice+default")
-	if !containsAudit(t, audit2, "version=0.2.0") {
+	if !containsAudit(t, audit2, "version="+version.String()) {
 		t.Fatal("AGENT-CONNECT 应记录自报版本")
 	}
 }

@@ -29,12 +29,19 @@ type Config struct {
 	// "towstrap-mcp approve"，服务器内嵌模式是在服务器上跑的
 	// "towstrap-server mcp approve"。
 	ApproveCmd string `yaml:"-"`
-	// LocalNotify 控制本地批准回退要不要弹桌面通知：stdio 模式弹（进程跑在
-	// 用户的电脑上），服务器模式不弹（服务器大概率没桌面）。
+	// LocalNotify 控制 ask_via=local 的待批请求要不要弹系统级提醒：能弹
+	// 「允许/拒绝」对话框就弹对话框（点了直接生效），弹不了退到桌面通知。
+	// stdio 模式恒为 true（进程跑在用户的电脑上）；服务器模式默认开
+	// （审批本来就该让人看见），mcp.local_notify: false 显式关掉。
 	LocalNotify bool `yaml:"-"`
 	// Audit 是审计回调：策略拒绝、批准进出、批准结果各记一条。nil 时用
 	// slog 写 stderr；服务器模式换成服务器自己的审计器。
 	Audit func(event string, kv ...string) `yaml:"-"`
+	// OnPending 有待批请求挂上（等人批准）时回调：内嵌服务器用它把
+	// 提示写进同账号的活跃 SSH 终端——人正登着就立刻看得见，不用猜
+	// 为什么调用挂着。machine 是待批机器 ID（账号+机器名），服务端按
+	// 账号只发给同账号的终端，命令内容不跨账号。stdio 模式留 nil。
+	OnPending func(machine, text string) `yaml:"-"`
 }
 
 // Machine 一台被控机。Roots 里的目录 write_file 自动放行。
@@ -48,6 +55,10 @@ type Machine struct {
 	Protect []string `yaml:"-"`
 	Home    string   `yaml:"-"`
 	Dir     string   `yaml:"-"`
+	// Policy 是这台机器的批准姿态："open" = 免批准（deny 名单保底）。
+	// 两个来源：机器 yaml 里显式写（运维对老 agent 也能定），或 agent
+	// hello 自报（内嵌模式，机器部署者说了算——stdio 模式拿不到自报）。
+	Policy string `yaml:"policy"`
 }
 
 // PolicyCfg 策略配置；名单不写就用 policy.go 里的内置默认。
@@ -55,8 +66,17 @@ type PolicyCfg struct {
 	Default    string        `yaml:"default"` // run | ask | deny
 	Allow      []string      `yaml:"allow"`
 	Deny       []string      `yaml:"deny"`
+	Ask        []string      `yaml:"ask"` // 命中即进批准环节（危险但有正当场景的命令）
 	DenyPaths  []string      `yaml:"deny_paths"`
 	AskTimeout time.Duration `yaml:"ask_timeout"`
+	// AskVia 是 ask 请求的确认通道。不写 = auto：客户端支持弹窗就弹
+	// elicitation 确认框，不支持走本地待批文件——审批默认要真人。
+	// 显式写的优先级高于客户端能力：local = 本地待批文件 + 批准命令
+	// （配合 LocalNotify 会弹系统对话框）——客户端声称会弹窗却渲染
+	// 不出来时用 local 绕开它；llm = 会话内确认（把「先问用户」交还给
+	// LLM，用户同意后带 confirmed=true 重试）——只在显式配置时用，
+	// 是较弱的一种确认（LLM 声称的同意）。
+	AskVia string `yaml:"ask_via"`
 }
 
 // LimitsCfg 执行和文件的大小/时长上限。
@@ -101,7 +121,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.ApprovalsDir = DefaultApprovalsDir()
 	}
 	if cfg.ApproveCmd == "" {
-		cfg.ApproveCmd = "towstrap-mcp approve"
+		cfg.ApproveCmd = "towstrap-mcp approve --approvals-dir " + cfg.ApprovalsDir
 	}
 	cfg.LocalNotify = true
 	if err := cfg.validateSSH(); err != nil {
@@ -166,6 +186,11 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("policy.default 只能是 run/ask/deny，现在是 %q", c.Policy.Default)
 	}
+	switch c.Policy.AskVia {
+	case "", "llm", "local":
+	default:
+		return fmt.Errorf("policy.ask_via 只能是 llm/local，现在是 %q", c.Policy.AskVia)
+	}
 	if c.Policy.AskTimeout <= 0 || c.Limits.Timeout <= 0 || c.Limits.MaxTimeout <= 0 {
 		return fmt.Errorf("超时配置必须大于 0")
 	}
@@ -177,6 +202,16 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.SessionIdle <= 0 || c.Limits.MaxSessions <= 0 {
 		return fmt.Errorf("limits.session_idle 和 max_sessions 必须大于 0")
+	}
+	for id, m := range c.Machines {
+		if m == nil {
+			continue
+		}
+		switch m.Policy {
+		case "", "server", "open":
+		default:
+			return fmt.Errorf("machines.%s.policy 只能是 server/open，现在是 %q", id, m.Policy)
+		}
 	}
 	if _, err := newPolicy(&c.Policy); err != nil {
 		return err

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -54,7 +55,8 @@ func RefreshURL(server string) (string, error) {
 	default:
 		return "", fmt.Errorf("server 应为 ws:// 或 wss://")
 	}
-	u.Path = "/token/refresh"
+	// 路径当前缀拼接（同 client.go 的 /agent）：子路径部署也能指对端点。
+	u.Path = path.Join(u.Path, "/token/refresh")
 	u.RawQuery = ""
 	return u.String(), nil
 }

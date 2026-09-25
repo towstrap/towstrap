@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -75,9 +76,16 @@ type agentConn struct {
 	protect []string
 	home    string
 	dir     string
+	// mcpPol 是 agent 自报的 MCP 批准姿态（"open" = 免批准）。机器是
+	// 部署者自己的，宽严部署者定；服务端 deny 名单照样兜底。
+	mcpPol string
 
 	tokMu sync.RWMutex
 	token string
+
+	// hub 回指：会话增删要维护 Hub 的活动会话计数（旁路监控的指标）。
+	// 测试里直接 newAgent 出来的连接 hub 是 nil，add/remove 判空跳过。
+	hub *Hub
 }
 
 // AgentHello 是 agent 握手时自报的环境信息（proto.Msg 里 hello 捎带的
@@ -87,6 +95,7 @@ type AgentHello struct {
 	Protect []string
 	Home    string
 	Dir     string
+	MCPPol  string
 }
 
 func newAgent(name, token string, conn *websocket.Conn, hi AgentHello) *agentConn {
@@ -99,6 +108,7 @@ func newAgent(name, token string, conn *websocket.Conn, hi AgentHello) *agentCon
 		protect:  hi.Protect,
 		home:     hi.Home,
 		dir:      hi.Dir,
+		mcpPol:   hi.MCPPol,
 	}
 }
 
@@ -124,6 +134,15 @@ func (a *agentConn) send(m proto.Msg) error {
 	return a.conn.WriteMessage(websocket.TextMessage, m.Bytes())
 }
 
+// sendData 是给子进程喂输入的 data 帧：在 transport 边界计一次
+// bytesToAgent，pipe / hubShell / hubTerminal 三条写入路径都走这里。
+func (a *agentConn) sendData(id string, b []byte) error {
+	if a.hub != nil {
+		a.hub.bytesToAgent.Add(int64(len(b)))
+	}
+	return a.send(proto.EncodeData(id, b))
+}
+
 // keepalive 定期 ping：对端已经死了（收不到 pong，读超时会断）或卡住不读
 // （写超时报错）都会结束，不让 hub 里挂着僵尸连接、会话永久挂起。
 func (a *agentConn) keepalive() {
@@ -144,7 +163,7 @@ func (a *agentConn) openShell(id string, req OpenReq, max int) (*session, error)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.send(proto.Msg{T: proto.TypeOpen, ID: id, Cols: req.Cols, Rows: req.Rows, Pty: req.Pty, Cmd: req.Cmd, NoExpand: req.NoExpand, From: req.From}); err != nil {
+	if err := a.send(proto.Msg{T: proto.TypeOpen, ID: id, Cols: req.Cols, Rows: req.Rows, Pty: req.Pty, Cmd: req.Cmd, Cwd: req.Cwd, NoExpand: req.NoExpand, From: req.From}); err != nil {
 		a.removeSession(id)
 		return nil, err
 	}
@@ -161,6 +180,9 @@ func (a *agentConn) addSession(id string, max int) (*session, error) {
 	// agent 掉线、命令没起来这类中断不能记 0，不然自动化会把失败当成功。
 	s := &session{id: id, ch: make(chan chunk, 64), closed: make(chan struct{}), ready: make(chan error, 1), code: 255}
 	a.sessions[id] = s
+	if a.hub != nil {
+		a.hub.sessActive.Add(1)
+	}
 	return s, nil
 }
 
@@ -172,6 +194,9 @@ func (a *agentConn) removeSession(id string) {
 	}
 	a.sessMu.Unlock()
 	if ok {
+		if a.hub != nil {
+			a.hub.sessActive.Add(-1)
+		}
 		select {
 		case <-s.closed:
 		default:
@@ -286,6 +311,9 @@ func (a *agentConn) readLoop() {
 			if err != nil || len(payload) == 0 {
 				continue
 			}
+			if a.hub != nil {
+				a.hub.bytesFromAgent.Add(int64(len(payload)))
+			}
 			select {
 			case s.ch <- chunk{stderr: msg.S == "e", b: payload}:
 			case <-s.closed:
@@ -307,6 +335,12 @@ type Hub struct {
 	seq    uint64
 	// maxSessions 每台机器（= 每账号）的并发会话上限；0 = 不限。
 	maxSessions int
+
+	// 旁路监控的计数器：sessActive 是全网当前会话数（add/removeSession
+	// 里增减），bytes* 是双向转发字节总量（sendData / readLoop 里加）。
+	sessActive     atomic.Int64
+	bytesToAgent   atomic.Int64
+	bytesFromAgent atomic.Int64
 }
 
 func NewHub(maxSessions int) *Hub {
@@ -323,11 +357,22 @@ func (h *Hub) Attach(name, token string, conn *websocket.Conn, hi AgentHello) *a
 		slog.Info("agent replaced", "id", name)
 	}
 	a := newAgent(name, token, conn, hi)
+	a.hub = h
 	h.agents[name] = a
 	h.mu.Unlock()
 
 	slog.Info("agent connected", "id", name)
 	return a
+}
+
+// MCPPolicyOf 取一台在线机器自报的 MCP 批准姿态；不在线/没报 = ""。
+func (h *Hub) MCPPolicyOf(name string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if a := h.agents[name]; a != nil {
+		return a.mcpPol
+	}
+	return ""
 }
 
 // ProtectInfo 取一台在线机器自报的禁碰清单和路径解析上下文（家目录、
@@ -388,6 +433,13 @@ func (h *Hub) Has(name string) bool {
 	_, ok := h.agents[name]
 	return ok
 }
+
+// SessionCount 是全网当前活跃会话数（旁路监控指标）。
+func (h *Hub) SessionCount() int64 { return h.sessActive.Load() }
+
+// BytesToAgent / BytesFromAgent 是累计转发字节量（监控指标，单调递增）。
+func (h *Hub) BytesToAgent() int64   { return h.bytesToAgent.Load() }
+func (h *Hub) BytesFromAgent() int64 { return h.bytesFromAgent.Load() }
 
 func (h *Hub) Names() []string {
 	h.mu.Lock()
@@ -451,6 +503,7 @@ type OpenReq struct {
 	Pty        bool
 	NoExpand   bool // 常驻 shell：agent 起 shell 前先关掉会改写字面量的展开
 	Cmd, From  string
+	Cwd        string
 }
 
 // OpenShell 在已复核过的 agent 连接上开会话。
@@ -478,7 +531,7 @@ func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out, errOut io.Writer
 		for {
 			n, err := in.Read(buf)
 			if n > 0 {
-				if werr := a.send(proto.EncodeData(s.id, buf[:n])); werr != nil {
+				if werr := a.sendData(s.id, buf[:n]); werr != nil {
 					a.removeSession(s.id)
 					return
 				}

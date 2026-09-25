@@ -143,7 +143,11 @@ func isConnError(err error) bool {
 // Run 在 machine 上执行 cmd（经被控机的 shell -c），stdin 原样喂给进程。
 // 超时先发 SIGKILL 再关会话。连接层的错误自动重拨重试一次。
 func (p *Pool) Run(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int) (Result, error) {
-	res, err := p.runOnce(ctx, machine, cmd, stdin, timeout, maxOut)
+	return p.RunAt(ctx, machine, cmd, stdin, timeout, maxOut, "")
+}
+
+func (p *Pool) RunAt(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int, cwd string) (Result, error) {
+	res, err := p.runOnce(ctx, machine, cmd, stdin, timeout, maxOut, cwd)
 	if err == nil || !isConnError(err) {
 		return res, err
 	}
@@ -155,10 +159,10 @@ func (p *Pool) Run(ctx context.Context, machine, cmd string, stdin []byte, timeo
 	}(); c != nil {
 		p.drop(machine, c)
 	}
-	return p.runOnce(ctx, machine, cmd, stdin, timeout, maxOut)
+	return p.runOnce(ctx, machine, cmd, stdin, timeout, maxOut, cwd)
 }
 
-func (p *Pool) runOnce(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int) (Result, error) {
+func (p *Pool) runOnce(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int, cwd string) (Result, error) {
 	c, err := p.conn(machine)
 	if err != nil {
 		return Result{}, err
@@ -173,6 +177,11 @@ func (p *Pool) runOnce(ctx context.Context, machine, cmd string, stdin []byte, t
 	sess.Stderr = errW
 	if len(stdin) > 0 {
 		sess.Stdin = bytes.NewReader(stdin)
+	}
+	if cwd != "" {
+		if err := sess.Setenv("TOWSTRAP_MCP_CWD", cwd); err != nil {
+			return Result{}, fmt.Errorf("传工作目录: %w", err)
+		}
 	}
 
 	start := time.Now()
@@ -280,6 +289,102 @@ func (s *sshShell) Write(b []byte) (int, error) { return s.in.Write(b) }
 func (s *sshShell) Stdout() io.Reader           { return s.out }
 func (s *sshShell) Stderr() io.Reader           { return s.errR }
 func (s *sshShell) Close() error                { return s.sess.Close() }
+
+// OpenTerminal 在这台机器上开一条 PTY 会话：先 pty-req，再按 Command
+// 起 shell 命令或交互 shell。输出是 PTY 的一条合并流，不能拆 stderr。
+func (p *Pool) OpenTerminal(ctx context.Context, machine string, opts TerminalOptions) (Terminal, error) {
+	t, err := p.openTerminalOnce(machine, opts)
+	if err == nil || !isConnError(err) {
+		return t, err
+	}
+	if c := func() *gossh.Client {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.conns[machine]
+	}(); c != nil {
+		p.drop(machine, c)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return p.openTerminalOnce(machine, opts)
+}
+
+func (p *Pool) openTerminalOnce(machine string, opts TerminalOptions) (Terminal, error) {
+	c, err := p.conn(machine)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := c.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("开 SSH 会话: %w", err)
+	}
+	in, err := sess.StdinPipe()
+	if err != nil {
+		_ = sess.Close()
+		return nil, err
+	}
+	out, err := sess.StdoutPipe()
+	if err != nil {
+		_ = sess.Close()
+		return nil, err
+	}
+	if opts.Cwd != "" {
+		if err := sess.Setenv("TOWSTRAP_MCP_CWD", opts.Cwd); err != nil {
+			_ = sess.Close()
+			return nil, fmt.Errorf("传工作目录: %w", err)
+		}
+	}
+	if err := sess.RequestPty("xterm-256color", opts.Rows, opts.Cols, gossh.TerminalModes{}); err != nil {
+		_ = sess.Close()
+		return nil, fmt.Errorf("申请 PTY: %w", err)
+	}
+	if opts.Command != "" {
+		err = sess.Start(opts.Command)
+	} else {
+		err = sess.Shell()
+	}
+	if err != nil {
+		_ = sess.Close()
+		return nil, fmt.Errorf("起 PTY 命令: %w", err)
+	}
+	return newSSHTerminal(sess, in, out), nil
+}
+
+type sshTerminal struct {
+	sess *gossh.Session
+	in   io.Writer
+	out  io.Reader
+	done chan int
+}
+
+func newSSHTerminal(sess *gossh.Session, in io.Writer, out io.Reader) *sshTerminal {
+	t := &sshTerminal{sess: sess, in: in, out: out, done: make(chan int, 1)}
+	go func() {
+		code := 0
+		err := sess.Wait()
+		var exitErr *gossh.ExitError
+		switch {
+		case err == nil:
+		case errors.As(err, &exitErr):
+			code = exitErr.ExitStatus()
+		default:
+			code = -1
+		}
+		t.done <- code
+	}()
+	return t
+}
+
+func (t *sshTerminal) Read(b []byte) (int, error)  { return t.out.Read(b) }
+func (t *sshTerminal) Write(b []byte) (int, error) { return t.in.Write(b) }
+func (t *sshTerminal) Resize(cols, rows int) error {
+	return t.sess.WindowChange(rows, cols)
+}
+func (t *sshTerminal) Close() error { return t.sess.Close() }
+func (t *sshTerminal) Wait() int    { return <-t.done }
 
 // Close 关掉池里所有连接。
 func (p *Pool) Close() {

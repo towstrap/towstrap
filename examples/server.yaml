@@ -1,11 +1,11 @@
 server:
-  http: ":8080"        # /health、/agent、/status
-  ssh: ":2222"         # SSH 入口
+  http: "127.0.0.1:7880" # /health、/agent、/status——对外只经 nginx（见 examples/nginx.conf）
+  ssh: ":7822"         # SSH 入口（裸协议没有路径，nginx 按路径分发不了，单独开端口）
   host_key: /var/lib/towstrap/ssh_host_key
   users_db: /etc/towstrap/users.db    # 账号 SQLite 库（towstrap-server user 改的就是它）
   users_key: /etc/towstrap/users.key  # token 加密密钥（不写则用 users.db 同名的 .key；务必备份）
   audit_log: /var/lib/towstrap/server-audit.log  # 服务器审计：认证/agent/会话事件（16MB 轮转；/dev/null 关）
-  public_url: wss://ssh.example.com:443 # 写进 user add 生成的安装命令
+  public_url: wss://towstrap.vast-plan.com # 写进 user add 生成的安装命令
   # admin_token: 查 /status 用的管理口令（可选；账号 token 也能查）
   # tls: true                  # 网页口走 HTTPS/WSS；不给 cert/key 会自动生成自签证书
   # cert: /etc/towstrap/cert.pem # 正式证书（Let's Encrypt 等）配在这里
@@ -29,9 +29,14 @@ server:
   #   # 确认只在内网/隧道里跑才允许明文：
   #   # allow_plain_http: true
   #   # approvals_dir: /var/lib/towstrap/approvals  # 默认：审计日志目录旁的 approvals/
-  #   # 客户端不支持批准弹窗时，待批请求写在这，用
-  #   #   towstrap-server mcp pending / approve <id> / deny <id>
-  #   # 在服务器上兜底处理。
+  #   # 待批请求写在这（默认就有：客户端不支持批准弹窗时 auto 也走本地待批），
+  #   # 用 towstrap-server mcp pending / approve <id> / deny <id> 在服务器上处理。
+  #   # local_notify 默认开——待批时弹「允许/拒绝」系统对话框 + wall 广播 +
+  #   # 提示行写进同账号在登的 towstrap SSH 终端；headless 机器自动静默退化，
+  #   # 嫌吵可显式 local_notify: false 关掉。
+  #   # local_notify: false
+  #   # ——有的 MCP 客户端声称支持批准弹窗却渲染不出来，policy.ask_via: local
+  #   # 是绕开它的现成办法（auto 下它会把调用挂到超时）。
   #   # machines 是 MCP 侧元数据（说明 + write_file 自动放行目录），
   #   # 键 = 机器完整 ID（账号+机器名，如 bot+default）；客户端能看哪几台
   #   # 由它 token 的 --machine 列表定，这里不配也能跑，只是没说明、
@@ -40,5 +45,6 @@ server:
   #     bot+default:
   #       description: 办公机
   #       roots: ["~/work"]     # 目录里别放指向外面的符号链接
-  #   # policy/limits 与 examples/mcp.yaml 同格式（deny/allow/default/ask_timeout
-  #   # 及 timeout/max_timeout/max_output/max_file），不写用内置默认。
+  #   # policy/limits 与 examples/mcp.yaml 同格式（deny/ask/allow/default/
+  #   # ask_via/ask_timeout 及 timeout/max_timeout/max_output/max_file），
+  #   # 不写用内置默认。

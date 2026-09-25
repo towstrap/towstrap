@@ -35,24 +35,45 @@ var (
 		`^gofmt\b`,
 	}
 
-	// DefaultDeny 是默认直接拒绝的命令名单：删根、格盘、关机、管道执行
-	// 远程脚本、读私钥/sudoers、提权、动 agent 自身。
+	// DefaultDeny 是默认直接拒绝的命令名单：删根、格盘、管道执行远程
+	// 脚本、读私钥/sudoers、动 agent 自身——这些没有「确认一下就行」
+	// 的正当场景，不给批准机会。
 	DefaultDeny = []string{
 		`\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+)?(/|~|\$HOME)(\s|$)`,
 		`\bmkfs\b`,
 		`\bdd\b.*\bof=/dev/`,
-		`\b(shutdown|reboot|halt|poweroff)\b`,
 		`curl[^|]*\|\s*(ba|z)?sh\b`,
 		`wget[^|]*\|\s*(ba|z)?sh\b`,
-		`\bfind\b.*\s-(exec|execdir|ok|okdir|delete)\b`,
 		`\brg\b.*--pre\b`,
 		`>\s*/dev/sd`,
 		`\bchmod\s+(-R\s+)?777\s+/`,
 		`\.ssh/(id_|authorized_keys)`,
 		`/etc/(shadow|sudoers)`,
+		// 动 agent 自身。老名 towstrap-agent 整词挡；新名 towstrap 和仓库名、
+		// towstrap-server/-mcp 撞车，只挡「杀进程 / 服务启停 / 覆盖删除二进制
+		// 和单元文件」这几种写法。towstrap([^-\w]|$) = 后面不接 - 或字母数字。
+		`towstrap-agent`,
+		`\b(pkill|killall|kill|taskkill|Stop-Process)\b[^;&|\n]*\btowstrap([^-\w]|$)`,
+		`\b(systemctl|service|launchctl|sc|schtasks|rc-service)\b[^;&|\n]*\btowstrap([^-\w]|$)`,
+		`bin/towstrap([^-\w]|$)`,
+		`\btowstrap\.(service|plist)\b`,
+	}
+
+	// DefaultAsk 是默认要人工确认的命令名单：危险但有正当场景——删
+	// 文件、提权、杀进程、关机重启、改远端或丢本地改动的 git 操作、
+	// 动权限/属主/磁盘。命中后进批准环节，批了才执行。判定顺序在
+	// Command 里：deny > ask > allow > default——管理员 allow 了也
+	// 压不过 ask，想静默放行得把对应 ask 规则撤掉。
+	DefaultAsk = []string{
+		`\brm\b`,
 		`\bsudo\b`,
 		`\bsu\s`,
-		`towstrap-agent`,
+		`\b(kill|pkill|killall)\b`,
+		`\b(shutdown|reboot|halt|poweroff)\b`,
+		`\bfind\b.*\s-(exec|execdir|ok|okdir|delete)\b`,
+		`git\s+(push|reset|clean|rebase)\b`,
+		`\b(chmod|chown)\b`,
+		`\b(dd|fdisk|diskutil)\b`,
 	}
 
 	// DefaultDenyPaths 是 read_file/write_file 默认禁碰的路径：私钥、
@@ -71,6 +92,7 @@ type Policy struct {
 	def       Decision
 	allow     []*regexp.Regexp
 	deny      []*regexp.Regexp
+	ask       []*regexp.Regexp
 	denyPaths []*regexp.Regexp
 }
 
@@ -91,6 +113,9 @@ func newPolicy(cfg *PolicyCfg) (*Policy, error) {
 		return nil, err
 	}
 	if p.deny, err = compileAll("policy.deny", cfg.Deny, DefaultDeny); err != nil {
+		return nil, err
+	}
+	if p.ask, err = compileAll("policy.ask", cfg.Ask, DefaultAsk); err != nil {
 		return nil, err
 	}
 	if p.denyPaths, err = compileAll("policy.deny_paths", cfg.DenyPaths, DefaultDenyPaths); err != nil {
@@ -114,7 +139,8 @@ func compileAll(name string, pats, def []string) ([]*regexp.Regexp, error) {
 	return out, nil
 }
 
-// Command 裁定一条 shell 命令。流程：整串和每个段都过 deny → 段里出现
+// Command 裁定一条 shell 命令。流程：整串和每个段都过 deny → 整串过
+// ask（命中即去批准，$() 里藏的危险命令在段文本里也照中）→ 段里出现
 // 命令替换/重定向/后台符号就不敢自动放行 → 每段都命中 allow 才 Run →
 // 否则落到 policy.default。切段是按 && || ; | 换行的朴素切法，不是完整
 // shell 解析。
@@ -123,6 +149,11 @@ func (p *Policy) Command(cmd string) (Decision, string) {
 	for _, re := range p.deny {
 		if m := re.FindString(cmd); m != "" {
 			return Deny, fmt.Sprintf("命中 deny 规则 %q（%q）", re.String(), m)
+		}
+	}
+	for _, re := range p.ask {
+		if m := re.FindString(cmd); m != "" {
+			return Ask, ""
 		}
 	}
 	safe := true
@@ -169,6 +200,22 @@ func splitCmd(cmd string) []string {
 
 // Path 判断一个路径能不能碰：命中 deny_paths 就不行。
 func (p *Policy) Path(path string) bool {
+	return p.PathFor(path, false)
+}
+
+func (p *Policy) PathFor(path string, windows bool) bool {
+	if windows {
+		if winPathBad(path) || !winPathAbs(path) {
+			return false
+		}
+		clean := cleanWinPath(path)
+		for _, re := range p.denyPaths {
+			if re.MatchString(path) || re.MatchString(clean) {
+				return false
+			}
+		}
+		return true
+	}
 	clean := cleanRemotePath(path)
 	for _, re := range p.denyPaths {
 		if re.MatchString(path) || re.MatchString(clean) {
@@ -184,6 +231,23 @@ func (p *Policy) Path(path string) bool {
 // 已知绕法：roots 目录里若有指向外面的符号链接（如 ~/work/link -> /etc），
 // 写 ~/work/link/x 会逃过前缀匹配——远端不解析真实路径，roots 里别放这种链接。
 func (m *Machine) InRoots(p string) bool {
+	return m.InRootsFor(p, false)
+}
+
+func (m *Machine) InRootsFor(p string, windows bool) bool {
+	if windows {
+		if winPathBad(p) || !winPathAbs(p) {
+			return false
+		}
+		cp := cleanWinPath(p)
+		for _, r := range m.Roots {
+			cr := cleanWinPath(r)
+			if cp == cr || strings.HasPrefix(cp, cr+"/") {
+				return true
+			}
+		}
+		return false
+	}
 	if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~/") {
 		return false
 	}
@@ -202,13 +266,69 @@ func cleanRemotePath(p string) string {
 	return path.Clean(p)
 }
 
+func cleanWinPath(p string) string {
+	q := strings.ReplaceAll(p, `\`, "/")
+	return strings.ToLower(path.Clean(q))
+}
+
+func isDriveLetter(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+func winPathBad(p string) bool {
+	if strings.HasPrefix(p, `\\?\`) || strings.HasPrefix(p, `\\.\`) ||
+		strings.HasPrefix(p, "//?/") || strings.HasPrefix(p, "//./") {
+		return true
+	}
+	if len(p) >= 2 && p[1] == ':' && isDriveLetter(p[0]) {
+		if len(p) == 2 {
+			return true
+		}
+		return p[2] != '/' && p[2] != '\\'
+	}
+	return false
+}
+
+func winPathAbs(p string) bool {
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		return true
+	}
+	if len(p) >= 3 && p[1] == ':' && isDriveLetter(p[0]) && (p[2] == '/' || p[2] == '\\') {
+		return true
+	}
+	return strings.HasPrefix(p, `\\`) || strings.HasPrefix(p, "//")
+}
+
 // Protected 判断路径是否命中这台机器 agent 自报的禁碰清单（token 文件、
 // 配置文件）。~/ 用上报的 Home 展开、相对路径按上报的 Dir 解析，清洗后
 // 和清单逐项精确比对——LLM 换写法（./x、a/../x）洗完后是同一个路径。
 // 清单是文件级精确匹配，不含目录前缀关系；机器没上报（离线/旧版本/
 // stdio 模式）返回 false。
 func (m *Machine) Protected(p string) bool {
+	return m.ProtectedFor(p, false)
+}
+
+func (m *Machine) ProtectedFor(p string, windows bool) bool {
 	if m == nil || len(m.Protect) == 0 {
+		return false
+	}
+	if windows {
+		if winPathBad(p) || !winPathAbs(p) {
+			return true
+		}
+		q := strings.ReplaceAll(p, `\`, "/")
+		cp := cleanWinPath(q)
+		switch {
+		case strings.HasPrefix(q, "~/") && m.Home != "":
+			cp = cleanWinPath(m.Home + "/" + q[2:])
+		case q == "~" && m.Home != "":
+			cp = cleanWinPath(m.Home)
+		}
+		for _, t := range m.Protect {
+			if cleanWinPath(t) == cp {
+				return true
+			}
+		}
 		return false
 	}
 	cp := cleanRemotePath(p)
@@ -220,8 +340,8 @@ func (m *Machine) Protected(p string) bool {
 	case !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "~/") && m.Dir != "":
 		cp = cleanRemotePath(m.Dir + "/" + p)
 	}
-	for _, q := range m.Protect {
-		if cleanRemotePath(q) == cp {
+	for _, t := range m.Protect {
+		if cleanRemotePath(t) == cp {
 			return true
 		}
 	}

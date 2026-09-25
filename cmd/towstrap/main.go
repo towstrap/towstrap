@@ -7,47 +7,73 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/proto"
 	"github.com/towstrap/towstrap/internal/version"
 )
 
-// towstrap-agent 只含客户端：装在被控机器上，主动连出到 towstrap-server。
+// towstrap 只含客户端：装在被控机器上，主动连出到 towstrap-server。
 // 服务器端和账号管理在另一个二进制 towstrap-server 里——被控机上不需要
 // （也不该有）SQLite 账号库、SSH 服务端这些东西。
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
+	args := os.Args
+	// busybox 式别名：以 mirror（或 towstrap-mirror）的名字被调起 = towstrap mirror。
+	// install.sh 会建 PREFIX/mirror → towstrap 软链，让接入短成 `mirror work`。
+	switch mirrorProg() {
+	case "mirror", "towstrap-mirror":
+		args = append([]string{args[0], "mirror"}, args[1:]...)
+	}
+	if len(args) < 2 || args[1] == "-h" || args[1] == "--help" {
 		usage()
 		os.Exit(2)
 	}
-	switch os.Args[1] {
+	switch args[1] {
 	case "agent": // 容忍旧的子命令写法
-		os.Exit(runAgent(os.Args[2:]))
+		os.Exit(runAgent(args[2:]))
+	case "mirror":
+		os.Exit(runMirror(args[2:]))
 	case "token":
-		if len(os.Args) < 3 || os.Args[2] != "refresh" {
+		if len(args) < 3 || args[2] != "refresh" {
 			usageToken()
 			os.Exit(2)
 		}
-		os.Exit(runTokenRefresh(os.Args[3:]))
+		os.Exit(runTokenRefresh(args[3:]))
+	case "oauth":
+		os.Exit(runOAuth(args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
-		os.Exit(runAgent(os.Args[1:]))
+		os.Exit(runAgent(args[1:]))
 	}
 }
 
+// mirrorProg 返回提示里该用的命令名：被软链成 mirror 起的就显示 mirror，
+// 否则显示完整写法 towstrap mirror。
+func mirrorProg() string {
+	switch b := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe"); b {
+	case "mirror", "towstrap-mirror":
+		return b
+	}
+	return "towstrap mirror"
+}
+
 func usage() {
-	fmt.Fprintf(os.Stderr, `towstrap-agent — 装在要被访问的机器上（不用开 sshd），主动连出到服务器
+	fmt.Fprintf(os.Stderr, `towstrap — 装在要被访问的机器上（不用开 sshd），主动连出到服务器
 
 用法:
-  towstrap-agent [--config 文件.yaml] [选项]
-  towstrap-agent version
+  towstrap [--config 文件.yaml] [选项]
+  towstrap oauth [--wait 5m] [选项]   发起 OIDC 授权，拿到短时效 SSH 凭据
+  towstrap mirror [ls|kill|<名字> [命令]]   本机的可接力终端（Ctrl-\ 脱离）
+                                       （install.sh 会把它软链成 mirror，直接敲 mirror work）
+  towstrap version
 
 选项:
   --config 文件.yaml
-  --server wss://主机:443      服务器开了 --tls 就写 wss://
+  --server wss://主机:443      服务器地址（默认官方服务器；自建才需要传）
   --agent-token tsa-...        user add 生成的那个 token（会进 ps，不建议）
   --agent-token-file 路径      从文件读 token（推荐，文件权限设 0600）
                                （也可用环境变量 TOWSTRAP_AGENT_TOKEN；
@@ -58,17 +84,18 @@ func usage() {
                                否则 ~/.towstrap/audit.log）
   --quiet                      关掉会话开始/结束的桌面通知和 wall 广播
                                （审计日志不受影响，仍照写）
+  --mirror-idle 时长           镜像终端闲置多久自动终结（默认 72h；0/off 不启用）
 
 服务器地址、shell、审计路径这些长久配置建议写进 agent.yaml（见 examples/agent.yaml），
 命令行旗标只做临时覆盖。
 
-换 token 用 towstrap-agent token refresh（见 towstrap-agent token 不带参数的说明）。
+换 token 用 towstrap token refresh（见 towstrap token 不带参数的说明）。
 `)
 }
 
 func usageToken() {
 	fmt.Fprintf(os.Stderr, `用法:
-  towstrap-agent token refresh [--machine 机器名]... [--all] [选项]
+  towstrap token refresh [--machine 机器名]... [--all] [选项]
 
 在一台已登记的 agent 机器上换发 token：本机 token + 账号密码 + TOTP 鉴权，
 新 token 由服务器经各机器的 WebSocket 连接直接下推写进各自的 token 文件，
@@ -89,7 +116,7 @@ func visited(fs *flag.FlagSet) map[string]string {
 }
 
 func runAgent(args []string) int {
-	fs := flag.NewFlagSet("towstrap-agent", flag.ExitOnError)
+	fs := flag.NewFlagSet("towstrap", flag.ExitOnError)
 	configPath := fs.String("config", "", "")
 	fs.String("server", "", "")
 	agentToken := fs.String("agent-token", "", "")
@@ -98,6 +125,8 @@ func runAgent(args []string) int {
 	fs.Bool("insecure", false, "")
 	fs.Bool("quiet", false, "")
 	fs.String("audit-log", "", "")
+	fs.String("mirror-idle", "", "")
+	fs.String("mcp-policy", "", "")
 	_ = fs.Parse(args)
 
 	var file config.Agent
@@ -119,8 +148,7 @@ func runAgent(args []string) int {
 	}
 	slog.Info("agent token 来源", "source", tokenSource)
 	if cfg.Server == "" {
-		slog.Error("必须设置 server（配置文件或命令行）")
-		return 2
+		cfg.Server = proto.OfficialServer
 	}
 	// 上报给服务器的禁碰清单：token 文件（文件来源时）和配置文件（可能
 	// 内嵌 agent_token）。清洗成绝对路径；配置文件只要用了 --config 就
@@ -132,6 +160,11 @@ func runAgent(args []string) int {
 	if *configPath != "" {
 		protect = append(protect, absPath(*configPath))
 	}
+	mirrorIdle, err := parseMirrorIdle(cfg.MirrorIdle)
+	if err != nil {
+		slog.Error("mirror_idle 时长不对", "value", cfg.MirrorIdle, "err", err)
+		return 2
+	}
 	if err := client.Run(client.Config{
 		Server:       cfg.Server,
 		AgentToken:   tok,
@@ -141,11 +174,29 @@ func runAgent(args []string) int {
 		Insecure:     cfg.Insecure,
 		Quiet:        cfg.Quiet,
 		AuditLog:     cfg.AuditLog,
+		MirrorIdle:   mirrorIdle,
+		MCPPolicy:    cfg.MCPPolicy,
 	}); err != nil {
 		slog.Error("agent", "err", err)
 		return 1
 	}
 	return 0
+}
+
+// parseMirrorIdle 把 mirror_idle 配置（"72h"/"168h" 这类时长，或 0/off
+// 关闭）解析成 Duration；空 = 默认 72h。
+func parseMirrorIdle(s string) (time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "default":
+		return 72 * time.Hour, nil
+	case "0", "off", "false", "no", "never":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("%q 不是时长（如 72h）也不是 0/off", s)
+	}
+	return d, nil
 }
 
 // resolveAgentToken 按优先级取 token：显式旗标 > token 文件旗标 > 环境变量 >

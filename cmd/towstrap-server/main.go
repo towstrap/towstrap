@@ -18,6 +18,7 @@ import (
 	"github.com/towstrap/towstrap/internal/allow"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/monitor"
 	"github.com/towstrap/towstrap/internal/qrcode"
 	"github.com/towstrap/towstrap/internal/server"
 	"github.com/towstrap/towstrap/internal/totp"
@@ -48,7 +49,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `towstrap-server — 服务器端 + 账号管理（被控机上装的是另一个二进制 towstrap-agent）
+	fmt.Fprintf(os.Stderr, `towstrap-server — 服务器端 + 账号管理（被控机上装的是另一个二进制 towstrap）
 
 用法:
   towstrap-server [--config 文件.yaml] [选项]        跑服务器
@@ -60,19 +61,19 @@ func usage() {
 开通一台机器（都在服务器上操作，不用网页）:
   towstrap-server user add alice --password 密码 --allow-ip 1.2.3.4   # 自定义用户名密码和白名单
   # 输出这台默认机器（alice+default）的 agent token 和安装命令：
-  towstrap-agent --server wss://服务器:443 --agent-token tsa-...
+  towstrap --server wss://服务器:443 --agent-token tsa-...
 
-之后外人: ssh alice@服务器 -p 2222 （密码就是上面设置的）
+之后外人: ssh alice@服务器 -p 7822 （密码就是上面设置的）
 
 同一账号再加一台机器:
   towstrap-server machine add alice build          # 拿到 build 的独立 token
   # 多台机器后外人要指名登录：
-  ssh alice+build@服务器 -p 2222                  # 或 ssh alice+default@...
+  ssh alice+build@服务器 -p 7822                  # 或 ssh alice+default@...
 
 服务端:
   --config 文件.yaml
-  --http :8080                 网页口（/health、/agent、/status）
-  --ssh :2222                  SSH 入口
+  --http :7880                 网页口（/health、/agent、/status）
+  --ssh :7822                  SSH 入口
   --host-key 路径              SSH 主机密钥；默认和 users.db 同目录下的 ssh_host_key，不存在会自动生成
   --users-db users.db           账号 SQLite 库（user 子命令改的就是它）
   --users-key users.key         token 加密密钥；不写用 users.db 同名的 .key
@@ -127,7 +128,7 @@ func usage() {
                                                                   --regen 是应急换法，必须 --admin）
 账号本人确认：add 和 token 会先问账号密码（绑了 TOTP 再问验证码）；
 --admin 跳过确认（打警告并写审计 MACHINE-*-ADMIN）；--audit-log 指定审计文件。
-换 token 的正常通道是在 agent 机器上跑 towstrap-agent token refresh（新 token
+换 token 的正常通道是在 agent 机器上跑 towstrap token refresh（新 token
 直接写进那台机器的 token 文件，不断连接），--regen --admin 只用于机器丢了
 
 白名单写法：IP、网段、IP:端口、主机名、*.domain、*。不写就全放行。
@@ -255,17 +256,25 @@ func runServer(args []string) int {
 	var mcpCfg *mcpsrv.Config
 	mcpPath, mcpState := "", "关闭"
 	if cfg.MCP != nil && cfg.MCP.Enabled {
+		// local_notify 默认开（审批就该让人看见）：yaml 显式 false 才关。
+		localNotify := true
+		if cfg.MCP.LocalNotify != nil {
+			localNotify = *cfg.MCP.LocalNotify
+		}
 		mc := &mcpsrv.Config{
 			Machines:     cfg.MCP.Machines,
 			Policy:       cfg.MCP.Policy,
 			Limits:       cfg.MCP.Limits,
 			ApprovalsDir: cfg.MCP.ApprovalsDir,
+			LocalNotify:  localNotify,
 		}
 		if mc.Machines == nil {
 			mc.Machines = map[string]*mcpsrv.Machine{}
 		}
 		if mc.ApprovalsDir == "" {
-			mc.ApprovalsDir = filepath.Join(filepath.Dir(server.DefaultAuditPath()), "approvals")
+			// 待批目录默认跟着实际审计路径走（auditPath 已解好旗标/yaml/默认），
+			// 不能拿 DefaultAuditPath——自定义 audit_log 时会放错地方。
+			mc.ApprovalsDir = filepath.Join(filepath.Dir(expandHome(auditPath)), "approvals")
 		}
 		mc.ApprovalsDir = expandHome(mc.ApprovalsDir)
 		mc.ApplyDefaults()
@@ -279,6 +288,47 @@ func runServer(args []string) int {
 			mcpPath = "/mcp"
 		}
 		mcpState = mcpPath
+	}
+
+	// 旁路监控：yaml 的 monitor.url 才开。interval/buffer 留空走默认。
+	monState := "关闭"
+	monCfg := monitor.Config{
+		URL:    cfg.Monitor.URL,
+		Token:  cfg.Monitor.Token,
+		Buffer: cfg.Monitor.Buffer,
+	}
+	if cfg.Monitor.URL != "" {
+		monCfg.Interval = 5 * time.Second
+		if cfg.Monitor.Interval != "" {
+			monCfg.Interval, err = time.ParseDuration(cfg.Monitor.Interval)
+			if err != nil {
+				slog.Error("monitor.interval 格式不对（如 5s、30s）: " + cfg.Monitor.Interval)
+				return 2
+			}
+		}
+		monState = cfg.Monitor.URL
+	}
+	// OIDC 外部身份接入：yaml 的 oauth: 小节。issuer+client_id 必填；
+	// 不配则不挂 /oauth/* 端点。
+	var oauthCfg *server.OAuthConfig
+	oauthState := "关闭"
+	if cfg.OAuth != nil {
+		if cfg.OAuth.Issuer == "" || cfg.OAuth.ClientID == "" {
+			slog.Error("oauth: 需要 issuer 和 client_id")
+			return 2
+		}
+		if cfg.OAuth.RedirectURL == "" && cfg.PublicURL == "" && !cfg.TLS {
+			slog.Warn("oauth 没配 redirect_url/public_url 且未开 TLS：回调地址按请求 Host 推导，" +
+				"浏览器访问的地址变了授权就失败——建议显式配置")
+		}
+		oauthCfg = &server.OAuthConfig{
+			Issuer:       cfg.OAuth.Issuer,
+			ClientID:     cfg.OAuth.ClientID,
+			ClientSecret: cfg.OAuth.ClientSecret,
+			RedirectURL:  cfg.OAuth.RedirectURL,
+			Scopes:       cfg.OAuth.Scopes,
+		}
+		oauthState = cfg.OAuth.Issuer
 	}
 	// 启动回显生效配置（秘密只显示设没设）：排查「yaml 到底生效没」靠这行。
 	adminTokenState := "未设置"
@@ -294,7 +344,8 @@ func runServer(args []string) int {
 		"max_sessions", cfg.MaxSessions,
 		"max_conns", cfg.MaxConns, "max_conns_per_ip", cfg.MaxConnsPerIP,
 		"ssh_idle_timeout", sshIdle.String(), "ssh_max_timeout", sshMax.String(),
-		"audit_log", auditPath, "mcp", mcpState)
+		"audit_log", auditPath, "mcp", mcpState, "monitor", monState,
+		"oauth", oauthState)
 	s := server.New(server.Config{
 		HTTPAddr:          cfg.HTTP,
 		SSHAddr:           cfg.SSH,
@@ -317,6 +368,9 @@ func runServer(args []string) int {
 		MCP:               mcpCfg,
 		MCPPath:           mcpPath,
 		MCPAllowPlainHTTP: cfg.MCP != nil && cfg.MCP.AllowPlainHTTP,
+		Monitor:           monCfg,
+		MonitorAllowPlain: cfg.Monitor.AllowPlain,
+		OAuth:             oauthCfg,
 	})
 	if err := s.Run(); err != nil {
 		slog.Error("server", "err", err)
@@ -337,7 +391,14 @@ func usageUser() {
                            [--agent-allow-ip 地址]... [--clear-agent-allow]
                            [--ssh-key 公钥]... [--ssh-key-file 文件]
                            [--remove-ssh-key 公钥或SHA256指纹]... [--clear-ssh-keys]
-                           [--disable] [--enable] [通用选项]
+                           [--disable] [--enable]
+                           [--oauth-only | --no-oauth-only]       账号级：名下所有
+                               机器 SSH 只收 OAuth 换来的短时效凭据
+                           [--oidc-bind IdP的sub [--oidc-email 邮箱] [--oidc-issuer 来源]]
+                           [--oidc-unbind IdP的sub [--oidc-issuer 来源]]
+                               预先绑定/解绑外部身份；issuer 默认取 server.yaml
+                               的 oauth.issuer
+                           [通用选项]
   towstrap-server user remove 用户名 [通用选项]
   towstrap-server user token  用户名 [--regen] [--admin] [通用选项]
                            看 token（仅当账号只有一台机器；多台用 machine
@@ -569,7 +630,7 @@ func userList(args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "用户名\t状态\tTOTP\t公钥\t联系方式\tSSH白名单\t机器")
+	fmt.Fprintln(tw, "用户名\t状态\tTOTP\t公钥\tOAuth\t联系方式\tSSH白名单\t机器")
 	for _, a := range list {
 		state := "启用"
 		if a.Disabled {
@@ -599,7 +660,13 @@ func userList(args []string) int {
 		if contact == "" {
 			contact = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Username, state, totpState, keys, contact, ips, machines)
+		oauthState := "-"
+		if a.OAuthOnly {
+			oauthState = "仅OAuth"
+		} else if n := len(env.store.OAuthIdentities(a.Username)); n > 0 {
+			oauthState = fmt.Sprintf("%d个绑定", n)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.Username, state, totpState, keys, oauthState, contact, ips, machines)
 	}
 	tw.Flush()
 	return 0
@@ -628,6 +695,12 @@ func userSet(args []string) int {
 	clearSSHKeys := fs.Bool("clear-ssh-keys", false, "")
 	disable := fs.Bool("disable", false, "")
 	enable := fs.Bool("enable", false, "")
+	oauthOnly := fs.Bool("oauth-only", false, "")
+	noOAuthOnly := fs.Bool("no-oauth-only", false, "")
+	oidcBind := fs.String("oidc-bind", "", "")
+	oidcUnbind := fs.String("oidc-unbind", "", "")
+	oidcEmail := fs.String("oidc-email", "", "")
+	oidcIssuer := fs.String("oidc-issuer", "", "")
 	rest := parseMix(fs, args)
 	name := firstArg(rest)
 	if name == "" {
@@ -743,6 +816,44 @@ func userSet(args []string) int {
 		}
 		fmt.Println("已启用")
 	}
+	if *oauthOnly || *noOAuthOnly {
+		if err := env.store.SetOAuthOnly(name, *oauthOnly && !*noOAuthOnly); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		if *oauthOnly && !*noOAuthOnly {
+			fmt.Println("已开启仅 OAuth 登录：SSH 密码/公钥都不再能建隧道，只收 OAuth 换来的短时效凭据")
+		} else {
+			fmt.Println("已关闭仅 OAuth 登录：恢复普通密码/公钥")
+		}
+	}
+	if *oidcBind != "" || *oidcUnbind != "" {
+		issuer := *oidcIssuer
+		if issuer == "" && *configPath != "" {
+			if sc, err := config.LoadServer(*configPath); err == nil && sc.OAuth != nil {
+				issuer = sc.OAuth.Issuer
+			}
+		}
+		if issuer == "" {
+			slog.Error("--oidc-bind/--oidc-unbind 需要身份来源：在 server.yaml 的 oauth.issuer 里配，或用 --oidc-issuer 指定")
+			return 2
+		}
+		if *oidcBind != "" {
+			if err := env.store.BindOAuthIdentity(name, issuer, *oidcBind, *oidcEmail); err != nil {
+				slog.Error(err.Error())
+				return 2
+			}
+			fmt.Printf("已绑定外部身份 sub=%s @ %s（OAuth 校验通过即可给名下机器发 SSH 凭据）\n",
+				*oidcBind, strings.TrimSuffix(issuer, "/"))
+		}
+		if *oidcUnbind != "" {
+			if err := env.store.UnbindOAuthIdentity(issuer, *oidcUnbind); err != nil {
+				slog.Error(err.Error())
+				return 2
+			}
+			fmt.Println("已解绑外部身份")
+		}
+	}
 	return 0
 }
 
@@ -796,7 +907,7 @@ func userToken(args []string) int {
 	}
 	// 换 token 只允许在 agent 机器上发起（token refresh）；--admin 是应急通道。
 	if *regen && !*admin {
-		slog.Error("换 token 请在 agent 机器上执行 towstrap-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
+		slog.Error("换 token 请在 agent 机器上执行 towstrap token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
 		return 2
 	}
 	event := "MACHINE-TOKEN-ADMIN"
@@ -907,14 +1018,16 @@ func usageMachine() {
                                SSH 登录名随之变成 账号+机器名（如 alice+build）。
   towstrap-server machine list   [账号] [通用选项]                列机器（不给账号列全部）
   towstrap-server machine set    账号 机器名 [--agent-allow-ip 地址]...
-                               [--clear-agent-allow] [通用选项]
+                               [--clear-agent-allow]
+                               [--oauth-only | --no-oauth-only]   只收 OAuth 凭据
+                               [通用选项]
   towstrap-server machine remove 账号 机器名 [通用选项]           删机器（token 作废，
                                连着的 agent 会被巡检断开）
   towstrap-server machine token  账号 机器名 [--regen] [--admin] [通用选项]
                                看这台机器的 token；--regen 是应急换法（机器
                                离线/丢失时用），必须加 --admin，记
                                MACHINE-TOKEN-REGEN-ADMIN。正常换法是在 agent
-                               机器上跑 towstrap-agent token refresh
+                               机器上跑 towstrap token refresh
 
 账号本人确认：add 和 token 会先问这个账号的 SSH 密码（绑了 TOTP 再问验证码），
 防「能碰服务器 DB 就能给任何账号发 token」。--admin 跳过确认：打一条警告，
@@ -1013,14 +1126,18 @@ func machineList(args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "账号\t机器\t登录名\tagent来源\ttoken\t创建于")
+	fmt.Fprintln(tw, "账号\t机器\t登录名\tagent来源\tOAuth\ttoken\t创建于")
 	for _, m := range machines {
 		ips := strings.Join(m.AgentAllowIPs, ",")
 		if ips == "" {
 			ips = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.Username, m.Name, m.ID(), ips, m.Token, m.CreatedAt.Format("2006-01-02 15:04"))
+		oauthState := "-"
+		if m.OAuthOnly {
+			oauthState = "仅OAuth"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			m.Username, m.Name, m.ID(), ips, oauthState, m.Token, m.CreatedAt.Format("2006-01-02 15:04"))
 	}
 	tw.Flush()
 	return 0
@@ -1032,6 +1149,8 @@ func machineSet(args []string) int {
 	var agentAllowIPs stringList
 	fs.Var(&agentAllowIPs, "agent-allow-ip", "")
 	clearAgentAllow := fs.Bool("clear-agent-allow", false, "")
+	oauthOnly := fs.Bool("oauth-only", false, "")
+	noOAuthOnly := fs.Bool("no-oauth-only", false, "")
 	rest := parseMix(fs, args)
 	user, name, ok := machineArgs(rest)
 	if !ok {
@@ -1042,22 +1161,35 @@ func machineSet(args []string) int {
 	if !ok {
 		return 2
 	}
-	if len(agentAllowIPs) == 0 && !*clearAgentAllow {
-		slog.Error("没给要改的内容（--agent-allow-ip / --clear-agent-allow）")
+	if len(agentAllowIPs) == 0 && !*clearAgentAllow && !*oauthOnly && !*noOAuthOnly {
+		slog.Error("没给要改的内容（--agent-allow-ip / --clear-agent-allow / --oauth-only / --no-oauth-only）")
 		return 2
 	}
-	ips := []string(agentAllowIPs)
-	if *clearAgentAllow {
-		ips = nil
+	if len(agentAllowIPs) > 0 || *clearAgentAllow {
+		ips := []string(agentAllowIPs)
+		if *clearAgentAllow {
+			ips = nil
+		}
+		if err := env.store.SetMachineAgentAllow(user, name, ips); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		if len(ips) == 0 {
+			fmt.Println("agent 来源白名单已清空（不限来源，仅记录变更）")
+		} else {
+			fmt.Printf("agent 来源白名单已更新: %s\n", strings.Join(ips, ", "))
+		}
 	}
-	if err := env.store.SetMachineAgentAllow(user, name, ips); err != nil {
-		slog.Error(err.Error())
-		return 2
-	}
-	if len(ips) == 0 {
-		fmt.Println("agent 来源白名单已清空（不限来源，仅记录变更）")
-	} else {
-		fmt.Printf("agent 来源白名单已更新: %s\n", strings.Join(ips, ", "))
+	if *oauthOnly || *noOAuthOnly {
+		if err := env.store.SetMachineOAuthOnly(user, name, *oauthOnly && !*noOAuthOnly); err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		if *oauthOnly && !*noOAuthOnly {
+			fmt.Printf("机器 %s+%s 已开启仅 OAuth 登录：SSH 密码/公钥都不再能建隧道\n", user, name)
+		} else {
+			fmt.Printf("机器 %s+%s 已关闭仅 OAuth 登录\n", user, name)
+		}
 	}
 	return 0
 }
@@ -1102,7 +1234,7 @@ func machineToken(args []string) int {
 	env.auditPath = cliAuditPath(*auditLog, *configPath)
 	// 换 token 只允许在 agent 机器上发起（token refresh）；--admin 是应急通道。
 	if *regen && !*admin {
-		slog.Error("换 token 请在 agent 机器上执行 towstrap-agent token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
+		slog.Error("换 token 请在 agent 机器上执行 towstrap token refresh；机器离线/丢失的应急换法：加 --admin（记审计）")
 		return 2
 	}
 	event := "MACHINE-TOKEN-ADMIN"
@@ -1208,9 +1340,14 @@ func mcpApprovalsDir(flagDir, configPath string) string {
 		return expandHome(flagDir)
 	}
 	if configPath != "" {
-		if s, err := config.LoadServer(configPath); err == nil &&
-			s.MCP != nil && s.MCP.ApprovalsDir != "" {
-			return expandHome(s.MCP.ApprovalsDir)
+		if s, err := config.LoadServer(configPath); err == nil {
+			if s.MCP != nil && s.MCP.ApprovalsDir != "" {
+				return expandHome(s.MCP.ApprovalsDir)
+			}
+			// 和服务端运行时同一个兜底：实际 audit_log 旁边的 approvals/
+			if s.AuditLog != "" {
+				return filepath.Join(filepath.Dir(expandHome(s.AuditLog)), "approvals")
+			}
 		}
 	}
 	return filepath.Join(filepath.Dir(server.DefaultAuditPath()), "approvals")
@@ -1463,7 +1600,7 @@ func mcpPending(args []string) int {
 			p.ID, p.Machine, p.Kind, p.Detail,
 			time.Since(p.Created).Round(time.Second))
 	}
-	fmt.Println("\n批准：towstrap-server mcp approve <id>|--all；拒绝：towstrap-server mcp deny <id>|--all")
+	fmt.Println("\n批准：towstrap-server mcp approve [--remember] <id>|--all；拒绝：towstrap-server mcp deny <id>|--all")
 	return 0
 }
 
@@ -1472,6 +1609,7 @@ func mcpSettle(verb string, args []string) int {
 	configPath := fs.String("config", "", "")
 	dir := fs.String("approvals-dir", "", "")
 	all := fs.Bool("all", false, "")
+	rem := fs.Bool("remember", false, "")
 	rest := parseMix(fs, args)
 	id := firstArg(rest)
 	if id == "" && !*all {
@@ -1482,7 +1620,7 @@ func mcpSettle(verb string, args []string) int {
 	var n int
 	var err error
 	if verb == "approve" {
-		n, err = mcpsrv.ApprovePending(approvalsDir, id, *all)
+		n, err = mcpsrv.ApprovePending(approvalsDir, id, *all, *rem)
 	} else {
 		n, err = mcpsrv.DenyPending(approvalsDir, id, *all)
 	}

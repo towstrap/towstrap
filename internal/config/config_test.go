@@ -26,6 +26,8 @@ server:
   admin_token: adm
   public_url: wss://ssh.example.com:443
   allow_ips: [10.0.0.0/8]
+  audit_log: /tmp/server-audit.log
+  min_agent_version: 0.2.0
 `)
 	s, err := LoadServer(path)
 	if err != nil {
@@ -41,15 +43,18 @@ server:
 		t.Fatalf("%#v", s)
 	}
 
-	m := MergeServer(s, map[string]string{"ssh": "127.0.0.1:2222"})
-	if m.SSH != "127.0.0.1:2222" || m.HTTP != "127.0.0.1:9000" {
+	m := MergeServer(s, map[string]string{"ssh": "127.0.0.1:7822"})
+	if m.SSH != "127.0.0.1:7822" || m.HTTP != "127.0.0.1:9000" {
 		t.Fatalf("命令行应覆盖文件: %#v", m)
+	}
+	if m.AuditLog != "/tmp/server-audit.log" || m.MinAgentVersion != "0.2.0" {
+		t.Fatalf("audit_log/min_agent_version 应透传: %#v", m)
 	}
 }
 
 func TestMergeServerDefaults(t *testing.T) {
 	m := MergeServer(Server{}, nil)
-	if m.HTTP != ":8080" || m.SSH != ":2222" || m.HostKey != "/etc/towstrap/ssh_host_key" {
+	if m.HTTP != ":7880" || m.SSH != ":7822" || m.HostKey != "/etc/towstrap/ssh_host_key" {
 		t.Fatalf("%#v", m)
 	}
 	if m.UsersDB != "/etc/towstrap/users.db" {
@@ -72,7 +77,7 @@ agent:
 		t.Fatalf("%#v", a)
 	}
 
-	flat := write(t, "server: wss://5.6.7.8:443\nagent_token: tsa-flat\n")
+	flat := write(t, "server: wss://5.6.7.8:443\nagent_token: tsa-flat\nquiet: true\naudit_log: /tmp/agent-audit.log\n")
 	a2, err := LoadAgent(flat)
 	if err != nil {
 		t.Fatal(err)
@@ -80,10 +85,35 @@ agent:
 	if a2.Server != "wss://5.6.7.8:443" || a2.AgentToken != "tsa-flat" || a2.Insecure {
 		t.Fatalf("%#v", a2)
 	}
+	if !a2.Quiet || a2.AuditLog != "/tmp/agent-audit.log" {
+		t.Fatalf("平铺写法的 quiet/audit_log 应生效: %#v", a2)
+	}
 
 	m := MergeAgent(a2, map[string]string{"agent-token": "tsa-new", "insecure": "true"})
 	if m.AgentToken != "tsa-new" || !m.Insecure || m.Server != a2.Server {
 		t.Fatalf("%#v", m)
+	}
+}
+
+// TestMCPLocalNotifyTriState：local_notify 是三态——不写 = nil（上层默认
+// 开），显式 false 才是关。审批提醒默认开启依赖这个区分。
+func TestMCPLocalNotifyTriState(t *testing.T) {
+	def := write(t, "server:\n  mcp:\n    enabled: true\n")
+	s, err := LoadServer(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MCP == nil || s.MCP.LocalNotify != nil {
+		t.Fatalf("不写 local_notify 应是 nil（默认开）: %#v", s.MCP)
+	}
+
+	off := write(t, "server:\n  mcp:\n    enabled: true\n    local_notify: false\n")
+	s, err = LoadServer(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MCP.LocalNotify == nil || *s.MCP.LocalNotify {
+		t.Fatalf("显式 false 应解析成 *false: %#v", s.MCP.LocalNotify)
 	}
 }
 

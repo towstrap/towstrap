@@ -32,14 +32,14 @@ TowStrap 让 NAT/防火墙后面的机器可以被安全访问：被控机上的
 | 二进制 | 装在哪 | 干什么 |
 | --- | --- | --- |
 | `towstrap-server` | 有公网 IP 的服务器 | SSH/HTTP 入口 + 账号/机器/MCP 凭据管理 |
-| `towstrap-agent` | 要被访问的每台机器 | 主动连服务器，执行远程会话 |
+| `towstrap` | 要被访问的每台机器 | 主动连服务器，执行远程会话 |
 | `towstrap-mcp` | 跑 LLM 应用的机器（可选） | stdio MCP 入口 + skill 安装器 |
 
 ### go install（推荐）
 
 ```bash
 go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
-go install github.com/towstrap/towstrap/cmd/towstrap-agent@latest
+go install github.com/towstrap/towstrap/cmd/towstrap@latest
 go install github.com/towstrap/towstrap/cmd/towstrap-mcp@latest
 ```
 
@@ -47,16 +47,16 @@ go install github.com/towstrap/towstrap/cmd/towstrap-mcp@latest
 
 ```bash
 git clone https://github.com/towstrap/towstrap && cd towstrap
-make build    # 产出 bin/towstrap-server、towstrap-agent、towstrap-mcp
+make build    # 产出 bin/towstrap-server、towstrap、towstrap-mcp
 ```
 
 ### 预编译二进制
 
-见 [Releases](https://github.com/towstrap/towstrap/releases)，文件名形如 `towstrap-agent-linux-arm64`。`make release` 同时产出 `SHA256SUMS` 和（有签名密钥时的）minisign 签名，**安装前请先校验**：
+见 [Releases](https://github.com/towstrap/towstrap/releases)，文件名形如 `towstrap-linux-arm64`（被控端改名前的旧版本叫 `towstrap-agent-linux-arm64`）。`make release` 同时产出 `SHA256SUMS` 和（有签名密钥时的）minisign 签名，**安装前请先校验**：
 
 ```bash
 shasum -a 256 -c SHA256SUMS --ignore-missing
-minisign -Vm towstrap-agent-linux-amd64   # 有签名文件时
+minisign -Vm towstrap-linux-amd64   # 有签名文件时
 ```
 
 ### 一键安装脚本（agent 推荐）
@@ -65,18 +65,18 @@ minisign -Vm towstrap-agent-linux-amd64   # 有签名文件时
 
 ```bash
 # Linux / macOS
-curl -fsSL https://你的服务器:8080/install.sh | sh -s -- --token tsa-…
+curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 
 # Windows（PowerShell）
-powershell -Command "& { $(irm https://你的服务器:8080/install.ps1) } -Token tsa-…"
+powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
 ```
 
-脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap-agent`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和最小 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。
+脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和最小 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）；GitHub 直拉的脚本默认 latest。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。
 
-也可以从 GitHub 直接拉脚本（此时必须显式给 `--server`）：
+也可以从 GitHub 直接拉脚本（默认指向官方服务器；自建才加 `--server wss://…`）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-… --server wss://你的服务器:443
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-…
 ```
 
 `machine add` / `user add` / `@machine add` 打印的接入指引里就带这条一键命令。自签证书时 curl 加 `-k`。
@@ -90,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/inst
 ### 启动
 
 ```bash
-# 最小启动：SSH 监听 :2222，HTTP 监听 :8080，账号库 /etc/towstrap/users.db
+# 最小启动：SSH 监听 :7822，HTTP 监听 :7880，账号库 /etc/towstrap/users.db
 towstrap-server
 
 # 用配置文件（推荐；examples/server.yaml 是全量注释模板）
@@ -112,8 +112,8 @@ towstrap-server --users-db ~/.towstrap/users.db &
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `http` | `:8080` | HTTP 口：`/health`、`/agent`、`/status`、`/mcp`、`/token/refresh`、`/skill` |
-| `ssh` | `:2222` | SSH 入口 |
+| `http` | `:7880` | HTTP 口：`/health`、`/agent`、`/status`、`/mcp`、`/token/refresh`、`/skill` |
+| `ssh` | `:7822` | SSH 入口 |
 | `host_key` | 与 users_db 同目录的 `ssh_host_key` | SSH 主机密钥；不存在才生成，读不了/解析失败直接报错退出（不会静默换钥） |
 | `users_db` | `/etc/towstrap/users.db` | 账号 SQLite 库 |
 | `users_key` | `users_db` 去掉 `.db` + `.key` | token 加密密钥文件（0600，自动生成；**务必备份**，丢了所有 token 解不开） |
@@ -161,7 +161,7 @@ TLS 开不开只影响 HTTP 口（agent 的 WebSocket、`/mcp`、`/status` 等�
 ```bash
 # token 从文件读（推荐——只有这种来源才支持远程换 token）
 echo 'tsa-…' > ~/.towstrap-token && chmod 600 ~/.towstrap-token
-towstrap-agent --server wss://你的服务器:443 --agent-token-file ~/.towstrap-token
+towstrap --server wss://towstrap.vast-plan.com --agent-token-file ~/.towstrap-token
 ```
 
 `--server` 接受 `ws://`、`wss://`（也认 `http://`/`https://`，自动换算）。断线自动重连：2 秒起步、指数退避封顶 30 秒、带随机抖动；连接稳定超过 1 分钟后退避重置。
@@ -181,7 +181,7 @@ agent 给远程会话起 shell 时会把 `TOWSTRAP_AGENT_TOKEN` 从子进程环�
 
 ```yaml
 agent:
-  server: wss://你的服务器:443       # 必填；没开 TLS 写 ws://
+  server: wss://towstrap.vast-plan.com  # 必填；没开 TLS 写 ws://
   agent_token_file: /path/to/token  # 推荐：0600 文件，支持远程换发
   # agent_token: tsa-...            # 直写 token（不能远程换发）
   # shell: /bin/bash                # 不写用 $SHELL，都没有用 /bin/bash
@@ -194,15 +194,15 @@ agent:
 
 ### systemd
 
-`examples/towstrap-agent.service` 是现成单元，注释里有完整步骤。要点：
+`examples/towstrap.service` 是现成单元，注释里有完整步骤。要点：
 
 ```bash
 sudo useradd -r -m -s /bin/bash towstrap
 sudo mkdir -p /etc/towstrap && sudo cp agent.yaml /etc/towstrap/
 sudo chown towstrap:towstrap /etc/towstrap/agent.yaml /path/to/token_file
 sudo chmod 600 /path/to/token_file     # token 文件要能让 towstrap 用户读写（refresh 会重写它）
-sudo cp towstrap-agent.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now towstrap-agent
+sudo cp towstrap.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 ```
 
 注意单元里是 `ProtectSystem=true` 而不是 `full`：full 会把 `/etc` 挂成只读，token 换发时 agent 重写不了 token 文件。
@@ -215,6 +215,32 @@ agent 默认让机器主人能感知到远程访问：
 - **审计**：每次启动记 `AGENT-START`（版本、连哪台服务器、shell、insecure/quiet、uid），每个会话记 `START`/`END`（来源 `登录账号@IP`、命令、结束）
 - `--quiet` / `quiet: true` 只关通知，审计照写；通知发不出去不影响会话
 - 以 root 跑会打警告：`agent 正以 root 运行：远程登录者将拿到 root shell`
+
+### 镜像终端（可接力终端）
+
+agent 内置一个类似 tmux 的「带名常驻终端」功能，不用装 tmux：镜像进程的伪终端由 agent 持有，接入方断开只是「脱离」，进程继续跑——在机器前开着 `pi`、`vim`、`top`，换手机或另一台电脑上来还能接回同一个画面。
+
+```bash
+# 在被控机上（本机终端、或直接 sshd 上去、或 towstrap SSH 进去都行）
+mirror                            # 列出本机所有镜像终端
+mirror work                          # 接入 work；不存在就以登录 shell 新建
+mirror work vim a.go                 # 不存在就以该命令新建
+mirror kill work                     # 终结 work（杀掉里面的进程）
+```
+
+`mirror` 是 `towstrap` 的软链别名（busybox 式，install.sh 装好就有）；没有软链的机器上写全称 `towstrap mirror …`，完全一样。
+
+新建出的镜像，shell 落在你敲命令时所在的目录（`mirror ls` 的「目录」列能看到）；接入已存在的镜像不改变它里面的目录——接力的是原工作现场，不是你这次接入的目录。
+
+- 接入后按 **`Ctrl-\`** 脱离——只断开你的接入，镜像里的进程继续跑；同名再 `mirror` 就接回去
+- 想让工作「默认就在镜像里」（离开机器后随时远程接力）：`mirror setup --write` 往 shell 启动文件（`~/.zshrc`/`~/.bashrc`）写一段钩子——**默认只提醒不接入**：新终端里有活镜像时提示一行；把段里 `TOWSTRAP_MIRROR_AUTO=` 后面填上镜像名（或 `mirror setup work --write` 预填）才会自动接入它。`mirror setup` 不加 `--write` 只打印片段自己贴；临时跳过 `export TOWSTRAP_NO_MIRROR=1`，彻底去掉删掉 `# >>> towstrap mirror >>>` 那段即可
+- `mirror ls -q` 是存在性探针：有活镜像退出 0，没有退出 1，不打印——rc 钩子和脚本用它判断「有没有可接的」
+- 多个接入方可以同时看同一个镜像（画面同步），谁敲键都进同一个终端；尺寸以最后接入/调整的一方为准
+- 套在 SSH 里接力：`ssh -t 机器 mirror work`（`ssh -t` 经 towstrap 服务器也行）——接力是给人用的功能：本机终端、普通 sshd、towstrap SSH 三种门进来，最后都是跑本机 `mirror` 命令
+- MCP 不参与：`terminal_open` 开的是会话级临时终端，接入不了镜像终端——AI 没有「接管人正在用的终端」的入口
+- 实现位置：`~/.towstrap/mirror.sock`（root 装法 `/var/lib/towstrap/mirror.sock`），0600，只有 agent 的系统用户能连——和「能在本机给这个用户开 shell」等价
+- 闲置终结：镜像超过 **72 小时**没有任何输入/输出会被自动杀掉（接着但没动静也算；审计写 `MIRROR-KILL via=idle`）。阈值用 `mirror_idle` 配置或 `--mirror-idle` 旗标改，写 `0`/`off` 关掉
+- 边界：镜像只活在 agent 进程里——agent 重启镜像就没了（tmux 也一样）；Windows 上暂没有 `mirror` 命令，Windows 机器上没有镜像终端
 
 ---
 
@@ -269,8 +295,8 @@ agent 默认让机器主人能感知到远程访问：
 ### 密码登录
 
 ```bash
-ssh -p 2222 alice@服务器          # 单机账号
-ssh -p 2222 alice+office@服务器   # 多机账号必须指名
+ssh -p 7822 alice@服务器          # 单机账号
+ssh -p 7822 alice+office@服务器   # 多机账号必须指名
 ```
 
 多机账号不带后缀登录会报错并列出机器名单（含在线状态）。
@@ -325,14 +351,14 @@ towstrap-server user set bot --ssh-key-file ~/.ssh/towstrap_bot.pub   # 补登
 ## 6. 执行命令与自动化
 
 ```bash
-ssh -p 2222 alice@S 'uname -a'                 # 执行命令，stdout/stderr 分开，退出码原样带回
-ssh -p 2222 -T alice@S                         # 无 PTY 的非交互 shell
-echo hello | ssh -p 2222 alice@S 'cat'         # stdin 管道，EOF 会传给子进程
+ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # 执行命令，stdout/stderr 分开，退出码原样带回
+ssh -p 7822 -T alice@towstrap.vast-plan.com                         # 无 PTY 的非交互 shell
+echo hello | ssh -p 7822 alice@towstrap.vast-plan.com 'cat'         # stdin 管道，EOF 会传给子进程
 ```
 
 - 退出码约定：子进程退出码原样返回；被信号杀按 shell 惯例 128+信号号；命令没起来/连接中断返回非 0（255），agent 侧起命令失败的原因会打到 stderr（`agent: ...` 前缀）
 - 单条命令上限 64KB；每条命令都是新起的 shell，`cd`、环境变量不会带到下一条
-- **没有 scp/sftp**：传文件用 `cat`/heredoc（`ssh alice@S 'cat > f' < f`）或 MCP 的 `read_file`/`write_file`
+- **没有 scp/sftp**：传文件用 `cat`/heredoc（`ssh alice@towstrap.vast-plan.com 'cat > f' < f`）或 MCP 的 `read_file`/`write_file`
 - 自带终端的 AI 助手（Claude Code、Codex 等）不用任何适配就能把它当普通 ssh 主机用；自己写程序调的话用任意 SSH 库 + 公钥认证即可
 - 每个远程会话拿到的都是 **agent 进程那个系统用户**的 shell
 
@@ -343,12 +369,12 @@ echo hello | ssh -p 2222 alice@S 'cat'         # stdin 管道，EOF 会传给子
 `@` 开头的命令由服务器自己执行，不发给 agent。账号本人 SSH 登录后直接管名下机器：
 
 ```bash
-ssh alice@S -p 2222 '@machine list'                 # 列机器：ID、在线/离线、agent 白名单（不显示 token）
-ssh alice@S -p 2222 '@machine add build'            # 加机器，直接打印新 token 和安装命令
-ssh alice@S -p 2222 '@machine add build --agent-allow-ip 10.0.0.5'
-ssh alice@S -p 2222 '@machine remove build'         # 删机器，在线 agent 立刻断开
-ssh alice@S -p 2222 '@machine token build'          # 看这台的 token
-ssh alice@S -p 2222 '@machine help'                 # 用法说明
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine list'                 # 列机器：ID、在线/离线、agent 白名单（不显示 token）
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build'            # 加机器，直接打印新 token 和安装命令
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10.0.0.5'
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # 删机器，在线 agent 立刻断开
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # 看这台的 token
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # 用法说明
 ```
 
 限制：
@@ -356,7 +382,7 @@ ssh alice@S -p 2222 '@machine help'                 # 用法说明
 - **只能密码类登录**跑：公钥登录会被拒（`MGMT-DENY reason=pubkey`）——公钥是给自动化的，不能管机器
 - **绑了 TOTP 的账号要再输一个新验证码**（登录时用过的那个不能重放）；连错 3 次断开，每次错记 `MGMT-DENY reason=totp` 并计入登录限速
 - 登录名带 `+机器名` 也行，按账号部分处理
-- 换 token 不在这里——在 agent 机器上跑 `towstrap-agent token refresh`（见下节）
+- 换 token 不在这里——在 agent 机器上跑 `towstrap token refresh`（见下节）
 
 ---
 
@@ -366,9 +392,9 @@ ssh alice@S -p 2222 '@machine help'                 # 用法说明
 
 ```bash
 # 在 alice 的某台 agent 机器上执行：
-towstrap-agent token refresh                  # 只换本机
-towstrap-agent token refresh --machine build  # 换同账号的 build（它得在线）
-towstrap-agent token refresh --all            # 换账号下全部机器
+towstrap token refresh                  # 只换本机
+towstrap token refresh --machine build  # 换同账号的 build（它得在线）
+towstrap token refresh --all            # 换账号下全部机器
 ```
 
 会问**账号密码**（绑了 TOTP 再问验证码）——鉴权是双重的：本机 agent token 证明「你在一台已登记机器上」，密码+TOTP 证明「你是账号主人」。
@@ -407,7 +433,9 @@ towstrap-server machine token alice build --regen --admin   # 打警告 + 记 MA
 
 ## 9. MCP：给 LLM 用
 
-LLM 通过 MCP 拿四个工具在被控机上干活：`list_machines`（有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`。
+LLM 通过 MCP 拿这些工具在被控机上干活：`list_machines`（有哪些机器）、`run_command`（跑命令，返回分开的 stdout/stderr/exit_code）、`read_file`、`write_file`，以及一组真实终端工具 `terminal_open`/`terminal_write`/`terminal_read`/`terminal_resize`/`terminal_close`/`terminal_list`（开 PTY 跑 pi、vim、top 这类要终端的交互程序）。
+
+`terminal_open` 开的是**会话级临时终端**：挂在当前 MCP 会话下，`terminal_close` 或会话结束即终止，`terminal_list` 只列本会话的终端。它接不了镜像终端（见 §3「镜像终端」）——可接力终端是给人用的功能，入口只有被控机上的 `towstrap mirror` 命令（本机终端或 SSH 上去跑）。
 
 `run_command` 默认每条命令都是新起的 shell（cd、export 不保留）；带 `session` 参数（如 `session: "work"`）则进**常驻 shell**——同名会话共享一个远端 shell 进程，cd、环境变量、`source` 激活的环境、后台任务跨命令保留，跟本地终端一样。边界：不支持 `stdin`；`cwd` 只在建会话时生效；命令超时或会话终结会杀掉**整个进程组**——shell 正在跑的前台命令和 `&` 后台任务一起清掉（想在会话结束后留一个守护进程，用 `setsid` 起，比如 `setsid npm run dev >/tmp/dev.log 2>&1 &`；Windows 下只杀主进程）；`exit`/`exec` 终结会话后同名命令自动起新 shell（返回 `session_restarted` 提示）；要终端的交互程序跑不了。空闲会话按 `session_idle`（默认 30m）回收，每个 MCP 客户端最多 `max_sessions`（默认 8）个。
 
@@ -427,7 +455,7 @@ LLM 通过 MCP 拿四个工具在被控机上干活：`list_machines`（有哪�
 配置默认读 `~/.config/towstrap/mcp.yaml`（`--config` 可换；`examples/mcp.yaml` 是全量注释模板）：
 
 ```yaml
-server: ssh.example.com:2222        # towstrap 服务器的 SSH 入口
+server: towstrap.vast-plan.com:7822   # towstrap 服务器的 SSH 入口
 key: ~/.ssh/towstrap_bot            # 无口令私钥（MCP 没地方输 passphrase）
 known_hosts: ~/.ssh/known_hosts     # 或改成 host_key: SHA256:... 钉死指纹（二选一，必填其一）
 machines:
@@ -444,10 +472,10 @@ limits:
   max_file: 1048576                  # read_file/write_file 文件大小上限
   session_idle: 30m                  # 常驻 shell 空闲多久回收
   max_sessions: 8                    # 每个 MCP 客户端会话最多几个常驻 shell
-approvals_dir: ~/.config/towstrap/approvals   # 待批请求落这（客户端不支持弹窗时）
+approvals_dir: ~/.config/towstrap/approvals   # ask_via: local 的待批请求落这
 ```
 
-先在服务器上把公钥登记给账号：`towstrap-server user set office --ssh-key-file ~/.ssh/towstrap_bot.pub`。known_hosts 里没有记录时，先 `ssh-keyscan -p 2222 服务器 >> ~/.ssh/known_hosts`，或在 yaml 写 `host_key: SHA256:...`。
+先在服务器上把公钥登记给账号：`towstrap-server user set office --ssh-key-file ~/.ssh/towstrap_bot.pub`。known_hosts 里没有记录时，先 `ssh-keyscan -p 7822 服务器 >> ~/.ssh/known_hosts`，或在 yaml 写 `host_key: SHA256:...`。
 
 Claude Code 的 `mcpServers` 写法（`command` 给绝对路径）：
 
@@ -495,7 +523,7 @@ towstrap-server mcp add ops --machine alice --machine bob # 多个账号
   "mcpServers": {
     "towstrap": {
       "type": "http",
-      "url": "https://服务器:8080/mcp",
+      "url": "https://服务器:7880/mcp",
       "headers": { "Authorization": "Bearer tsm-..." }
     }
   }
@@ -514,34 +542,54 @@ towstrap-server mcp add ops --machine alice --machine bob # 多个账号
 | `mcp remove 名字` | 删除，token 作废 |
 | `mcp token 名字 [--regen]` | 看/换 token |
 | `mcp pending [--approvals-dir 目录] [--config server.yaml]` | 列等待批准的请求 |
-| `mcp approve <id>\|--all` / `mcp deny <id>\|--all` | 批准/拒绝待批请求 |
+| `mcp approve [--remember] <id>\|--all` / `mcp deny <id>\|--all` | 批准/拒绝待批请求（--remember：本会话内相同命令不再问） |
 
 批准目录查找顺序：`--approvals-dir` > server.yaml 的 `mcp.approvals_dir` > 审计日志目录下的 `approvals/`。
 
 `--allow-ip` 给客户端加来源白名单（不在名单里的来源带这个 token 也进不来，记 `MCP-AUTH-FAIL reason=client-allow-ip`）。
 
-### 9.4 策略三档
+### 9.4 策略名单
 
-每条 `run_command` 过一遍策略（`policy` 小节）：
+每条 `run_command` 过一遍策略（`policy` 小节），判定顺序 **deny > ask > allow > default**：
 
-- `deny` 名单命中的**直接拒绝**（删根、格盘、关机、`curl|sh`、读私钥/sudoers、`sudo`、动 agent 自身等）
+- `deny` 名单命中的**直接拒绝**，没有「确认一下就行」的余地（删根、格盘、`curl|sh` 管道执行、读私钥/sudoers、动 agent 自身等）
+- `ask` 名单命中的**要用户确认后执行**——危险但有正当场景的操作：`rm`、`sudo`/`su`、`kill`/`pkill`、关机重启、`find -delete/-exec`、`git push/reset/clean/rebase`、`chmod`/`chown`、`dd`/`fdisk` 等
 - `allow` 名单里的只读/低风险命令**自动放行**（`ls`、`cat`、`git status` 这类）；命令按 `&&`、`||`、`;`、`|`、换行切段，**每段**都得命中 allow 才算；段里出现反引号、`$(`、`>`、`<`、`&` 就不敢自动放行
-- 其余落到 `policy.default`（默认 `ask` = 要人批准）
+- 其余落到 `policy.default`（`ask` 要确认 / `run` 直接跑 / `deny` 直接拒，默认 `ask`）
+
+注意顺序是 ask 压过 allow：管理员把 `rm` 写进 allow 也压不过内置 ask 规则，想让某类命令静默放行得先把对应的 `ask` 规则撤掉（yaml 写了自己的 `ask:` 就整份替换内置名单）。
 
 `read_file` 不需要批准但受 `deny_paths` 限制（私钥、凭证默认都在名单里）；agent 上线时还会把自己的 token 文件和配置文件路径报给服务器，这两个文件无论叫什么名字、放在哪都读写不到。`write_file` 落在机器的 `roots` 里自动放行，之外要批准；`deny_paths` 和 agent 自报清单照样先拦。
 
-内置名单全文在 `internal/mcpsrv/policy.go` 的 `DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`；yaml 里写了对应项就**整份替换**，不是在默认上追加。
+内置名单全文在 `internal/mcpsrv/policy.go` 的 `DefaultAllow`/`DefaultAsk`/`DefaultDeny`/`DefaultDenyPaths`；yaml 里写了对应项就**整份替换**，不是在默认上追加。
+
+**机器级免批准**：机器是它部署者的，宽严部署者说了算——agent 端写 `mcp_policy: open`（agent.yaml 或 `--mcp-policy`），这台机器的 ask 命中（rm、sudo 等）和越界 write_file 就**不再问**直接执行；`deny` 名单保底不动。服务端也能在 `machines.<名字>.policy: open` 里定（没上报能力的老 agent 靠它；yaml 显式写的优先于 agent 自报）。放行的执行审计记 `MCP-POLICY-OPEN`，输出标 `approval=open`——事后能分清是姿态放行的、不是真人批的。stdio 模式的 `mcp.yaml` 也认 `machines.<名字>.policy`。
 
 ⚠️ 策略是过滤层**不是沙箱**：shell 语法总能绕过朴素切段。真正的边界是 agent 的系统用户权限。roots 是**文本前缀匹配**、不解析远端符号链接：`~/work/link -> /etc` 这种指向外面的链接会让 `write_file ~/work/link/x` 逃过 roots 检查——roots 目录里别放这种链接。
 
 ### 9.5 人工批准
 
-需要批准的操作有两条路：
+需要批准的操作走哪条路由 `policy.ask_via` 决定；不写（auto）时客户端支持弹窗就弹窗、不支持就走本地待批文件——**审批默认要真人**，不会自动降格成让 LLM 自己确认：
 
-1. **弹窗**：MCP 客户端支持 elicitation（确认框）就弹「允许执行」，可勾「本次会话内相同命令不再询问」
-2. **本地兜底**：不支持弹窗时，待批请求落到 `approvals_dir`（stdio 模式同时弹桌面通知），人去终端跑 `towstrap-mcp approve <id>`（stdio）或 `towstrap-server mcp approve <id>`（内嵌）
+1. **弹窗**（auto + 客户端支持 elicitation）：弹「允许执行」确认框，可勾「本次会话内相同命令不再询问」——这是最强的一种，同意是真人点的
+2. **本地待批**（`ask_via: local`，或 auto 时客户端不支持弹窗）：待批文件落到 `approvals_dir`，人去终端跑 `towstrap-mcp approve <id>`（stdio）或 `towstrap-server mcp approve <id>`（内嵌）；加 `--remember` 时本会话内相同命令不再问。同时会弹一个**能点的系统对话框**——三个钮：拒绝 / 允许 / 「允许并不再问」（macOS 用系统对话框、Linux 用 zenity，弹不了退到桌面通知 + `wall` 广播到本机所有登录终端）；stdio 恒弹，内嵌模式默认也弹（`mcp.local_notify` 默认开；无桌面的服务器自动静默退化，嫌吵显式 `local_notify: false` 关）。**等批准期间发起调用的 MCP 客户端会收到一条日志通知**（id、机器、命令、怎么批）；内嵌服务器还会把提示直接写进**同账号正在登着的 towstrap SSH 终端**——你 `ssh` 登在服务器上时，终端里会冒出一行 `[towstrap] 等待人工批准 ap-xxxx（机器: 命令）…`，不用猜调用为什么挂着
+3. **会话内确认**（`ask_via: llm`，显式配置才走）：第一次调用**不执行**，工具给 LLM 返回一段指引；LLM 把命令和风险转述给用户、问过同意后带 `confirmed=true` 原样重试才真正执行。确认按「会话 + 机器 + 命令」记账，**一次性**、10 分钟有效；`confirmed=true` 不能预授权没发起过确认的命令。用户说「以后这类都允许」时 LLM 可加 `remember=true`，本会话内同命令不再问。注意这只是 LLM 声称的同意，比前两条弱——不写 `ask_via` 不会自动走这条
 
-等到 `ask_timeout`（默认 5 分钟）没人理就超时拒绝。
+⚠️ `ask_via` 写死了就**压过客户端能力**：有的客户端（如某些版本的 Cursor）声称支持弹窗却渲染不出来，调用会一直挂着直到超时——这时把 `policy.ask_via: local`（本机弹对话框，内嵌模式 `local_notify` 默认开着）或 `llm` 写上就能绕开。
+
+等到 `ask_timeout`（默认 5 分钟）没人理就超时拒绝；会话内确认的 10 分钟是另一个窗口（等 LLM 带 confirmed 回来）。
+
+⚠️ 「会话内确认」里服务端看到的是 **LLM 声称用户同意了**，防的是误操作和闷头执行，不能当作独立核实过的真人批准——审计里单独记 `MCP-CONFIRMED` 与真人点弹窗的 `MCP-APPROVED` 区分。对确认强度有要求的部署应该用支持弹窗的客户端或 `ask_via: local`。
+
+### 9.6 授权会话记录
+
+普通命令执行完不留内容级记录（只有审计事件）；**凡是批了才执行的操作会留档**，把「申请的命令 → 哪次批准 → 实际跑了什么 → 结果」串起来：
+
+- 每次批准请求发一个授权编号 `ap-xxxx`（批准命令、审计事件里都用它）；每次实际执行再发执行编号 `ex-xxxx`
+- 记录写在批准目录旁的 `auth-records/` 里（0600）：普通命令记命令全文、退出码、时长、stdout/stderr；`write_file` 记路径、字节数和内容的 sha256 指纹（不记文件全文）；授权开的 PTY 终端把输出全程落盘（单个文件上限 4MB，超出截断并注明）
+- `remember` 过的重复执行各留一份记录，`auth` 指回当初那次批准——事后能查清「这条命令凭的是哪一次同意」
+
+审计字段对应关系：`MCP-ASK auth=ap-…`（发起确认）→ `MCP-CONFIRMED`/`MCP-APPROVED auth=ap-…`（拿到同意）→ `MCP-AUTH-EXEC auth=ap-… exec=ex-… record=路径`（执行留档）。
 
 ---
 
@@ -552,7 +600,7 @@ towstrap-server mcp add ops --machine alice --machine bob # 多个账号
 ### 服务器直接拉（不装 towstrap-mcp 也行）
 
 ```bash
-mkdir -p ~/.claude/skills/towstrap && curl -fsSL https://服务器:8080/skill -o ~/.claude/skills/towstrap/SKILL.md
+mkdir -p ~/.claude/skills/towstrap && curl -fsSL https://服务器:7880/skill -o ~/.claude/skills/towstrap/SKILL.md
 # 其他助手换目录：Cursor ~/.cursor/skills/，Codex/Grok 共用 ~/.agents/skills/
 # 服务器是自签证书的话 curl 要加 -k
 ```
@@ -578,7 +626,7 @@ towstrap-mcp connect --dry-run        # 演练，不写文件
 ### print-mcp：打印各家客户端的配置片段
 
 ```bash
-towstrap-mcp connect print-mcp --url https://服务器:8080/mcp --token tsm-...
+towstrap-mcp connect print-mcp --url https://服务器:7880/mcp --token tsm-...
 towstrap-mcp connect print-mcp --stdio [--config mcp.yaml]
 ```
 
@@ -590,17 +638,17 @@ towstrap-mcp connect print-mcp --stdio [--config mcp.yaml]
 
 ```bash
 # 活着没：不需要口令
-curl https://服务器:8080/health        # ok
+curl https://服务器:7880/health        # ok
 
 # 看谁在线：两种口令
-curl -H "X-Admin-Token: <admin_token>" https://服务器:8080/status   # 管理口令看全量
-curl -H "X-Agent-Token: tsa-..."       https://服务器:8080/status   # 机器 token 只看自己
+curl -H "X-Admin-Token: <admin_token>" https://服务器:7880/status   # 管理口令看全量
+curl -H "X-Agent-Token: tsa-..."       https://服务器:7880/status   # 机器 token 只看自己
 ```
 
 `/status` 返回形如：
 
 ```json
-{"ok":true,"http":":8080","ssh":":2222","users":[{"user":"alice","machine":"alice+default","online":true}]}
+{"ok":true,"http":":7880","ssh":":7822","users":[{"user":"alice","machine":"alice+default","online":true}]}
 ```
 
 管理口令看全部机器（`machine` 是完整登录名），机器 token 只看得到自己那一台——普通用户没法枚举机群。没有在线机器时 `ok:false` 且 HTTP 状态 503。
@@ -641,7 +689,11 @@ curl -H "X-Agent-Token: tsa-..."       https://服务器:8080/status   # 机器 
 | `MCP-SESSION-CMD` | 常驻 shell 会话里执行了一条命令：machine、session、cmd |
 | `MCP-AUTH-FAIL` | MCP 认证失败：reason=allow-ip/token/client-allow-ip |
 | `MCP-POLICY-DENY` | 命中策略 deny/deny_paths：client、machine、kind、detail |
-| `MCP-ASK` / `MCP-APPROVED` / `MCP-DENIED` / `MCP-ASK-TIMEOUT` | 批准流转：via=elicit/local，结果三态 |
+| `MCP-ASK` / `MCP-APPROVED` / `MCP-CONFIRMED` / `MCP-DENIED` / `MCP-ASK-TIMEOUT` | 批准流转：via=elicit/local/llm，带授权编号 auth=ap-… |
+| `MCP-AUTH-EXEC` | 授权过的执行留档：auth=ap-… exec=ex-… record=记录文件路径 |
+| `MCP-TERMINAL-OPEN` / `MCP-TERMINAL-CLOSE` / `MCP-TERMINAL-END` | MCP PTY 终端的开关：machine、terminal、cmd、approval |
+
+agent 侧（`audit.log`）另有 `START`/`END`（mode=mirror 的本机接入）、`MIRROR-KILL`（name、via=local 手动终结 / via=idle 闲置超时自动终结）。
 
 ---
 
@@ -661,6 +713,7 @@ curl -H "X-Agent-Token: tsa-..."       https://服务器:8080/status   # 机器 
 | `token refresh` 被 429 | 密码/TOTP 错太多次被锁，等锁过期（初始 1 分钟，翻倍封顶 1 小时） |
 | agent 频繁 `AGENT-REPLACE` | 同一台机器起了两个 agent 互顶，或 token 被拷到别处。查重复进程；怀疑泄露就换 token |
 | 连接数被打满 | 看 `max_conns`/`max_conns_per_ip` 的拒绝日志（`连接数达上限，拒绝新连接`），按需调大 |
+| `towstrap mirror` 连不上 socket | agent 没在跑，或 socket 被旧文件占着（日志会写 `mirror socket 已被占用`）。socket 在 `~/.towstrap/mirror.sock`（root 装法 `/var/lib/towstrap/`），可用 `--sock` 或 `TOWSTRAP_MIRROR_SOCK` 换位置 |
 
 ---
 

@@ -1,8 +1,8 @@
 agent:
-  server: wss://你的服务器:443    # 服务器没开 tls 就写 ws://
+  server: wss://towstrap.vast-plan.com    # 服务器没开 tls 就写 ws://
   agent_token_file: /etc/towstrap/token  # 从 0600 文件读 token（推荐）——只有
                                       # 这种写法服务器才能远程换 token：
-                                      # towstrap-agent token refresh 会把新
+                                      # towstrap token refresh 会把新
                                       # token 原子写进这个文件，agent 不用重启
   # agent_token: tsa-安装时生成的  # 直写 token（方便但不能远程换发，不推荐）
   # 也可用环境变量 TOWSTRAP_AGENT_TOKEN（同样不能远程换发）
@@ -12,3 +12,10 @@ agent:
   # 每个会话都写审计日志。
   # quiet: true                          # 只关通知（审计日志仍写）
   # audit_log: /var/log/towstrap-audit.log # 审计日志路径（默认 /var/lib/towstrap/audit.log 或 ~/.towstrap/audit.log）
+  # mirror_idle: 72h   # 镜像终端闲置多久自动终结（按最后一次输入/输出算；
+                       # 默认 72h，写 0 或 off 不启用）
+  # mcp_policy: open   # 这台机器对 MCP 免批准：命中 ask 名单的命令（rm、sudo
+                       # 等）和越界 write_file 不再等人工确认，直接执行。
+                       # deny 名单保底不动（rm -rf /、格盘、动 agent 自身照样拒）。
+                       # 不写 = 跟服务端策略走。机器是你自己的，宽严你定；
+                       # 服务端也能在 machines.<名字>.policy 里给没上报的老 agent 设。

@@ -2,7 +2,7 @@
 # 这个文件让 LLM 应用通过 MCP 工具在被控机上跑命令、读写文件。
 
 # towstrap 服务器的 SSH 入口（server.yaml 里 ssh_addr 那个地址）。
-server: ssh.example.com:2222
+server: towstrap.vast-plan.com:7822
 
 # 登录用的私钥。必须无口令（MCP 没地方给你输 passphrase）。
 # 建议单独生成一把专用钥匙：ssh-keygen -t ed25519 -f ~/.ssh/towstrap_bot -N ""
@@ -23,19 +23,33 @@ machines:
     # 用绝对路径或 ~/ 开头；~ 按文本匹配远端路径里的 ~/。
     # 注意：匹配不解析远端符号链接，目录里别放指向外面的符号链接。
     roots: [~/work]
+    # policy: open    # 这台机器免批准：命中 ask 的命令和越界 write_file 不再
+                      # 等确认直接跑（deny 名单保底）。agent 端也能用
+                      # mcp_policy: open 自报——两处等价，yaml 显式写的优先。
 
 policy:
-  # 落不进 allow/deny 名单的命令怎么办：run（直接放行）| ask（问人）| deny（拒绝）。
+  # 落不进名单的命令怎么办：run（直接放行）| ask（要确认）| deny（拒绝）。
   # 不写 = ask。
   default: ask
-  # 正则名单。不写某一项就用内置默认（见 internal/mcpsrv/policy.go 的
-  # DefaultAllow / DefaultDeny / DefaultDenyPaths）；写了就整份替换，
-  # 不是在默认上追加。策略只是方便过滤，不是安全边界。
+  # 正则名单，判定顺序 deny > ask > allow > default。不写某一项就用内置
+  # 默认（见 internal/mcpsrv/policy.go 的 DefaultAllow / DefaultAsk /
+  # DefaultDeny / DefaultDenyPaths）；写了就整份替换，不是在默认上追加。
+  # 策略只是方便过滤，不是安全边界。
   allow: []
+  ask: []   # 危险但有正当场景的命令（rm、sudo、kill、git push 等）：要用户确认
   deny: []
   # read_file/write_file 禁碰的路径正则。
   deny_paths: []
-  # 等待人工批准的最长时间。
+  # 要确认的命令怎么要：不写 = auto（客户端支持弹窗就弹，否则走本地待批
+  # 文件——审批默认要真人）。显式写会压过客户端能力——有的客户端声称支持
+  # 弹窗却渲染不出来：
+  #   local = 落待批文件（stdio 模式会同时弹能点的「允许/拒绝」系统对话框），
+  #           用 towstrap-mcp / towstrap-server mcp approve 批准
+  #   llm   = LLM 在会话里问用户后带 confirmed=true 重试（较弱：LLM 声称的
+  #           同意；只在显式配置时用，不写 ask_via 不会自动走这条）
+  # ask_via: local
+  # 等待人工批准的最长时间（local 文件回退和弹窗用；会话内确认另有自己的
+  # 10 分钟窗口）。
   ask_timeout: 5m
 
 limits:
@@ -46,5 +60,5 @@ limits:
   session_idle: 30m    # run_command 常驻会话（session 参数）空闲多久回收
   max_sessions: 8      # 每个 MCP 客户端最多同时保持几个常驻会话
 
-# 客户端不支持弹确认框时，待批请求写到这里，用 towstrap-mcp pending/approve/deny 处理。
+# ask_via: local 时待批请求写到这里，用 towstrap-mcp pending/approve/deny 处理。
 approvals_dir: ~/.config/towstrap/approvals

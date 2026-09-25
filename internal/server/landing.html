@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>towstrap — 反向连接的远程访问</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    font: 15px/1.7 -apple-system, "SF Pro SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0c0f14; color: #d7dde6; min-height: 100vh;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 64px 24px 48px; }
+  h1 {
+    font-size: 40px; letter-spacing: -1px; color: #fff;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .tagline { color: #8b95a3; font-size: 17px; margin: 10px 0 6px; }
+  .tagline-en { color: #5c6674; font-size: 13px; margin-bottom: 44px; }
+  h2 {
+    font-size: 15px; color: #6ee7b7; margin: 34px 0 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-weight: 600;
+  }
+  h2::before { content: "# "; color: #3f4753; }
+  p.intro { color: #a7b0bd; }
+  .card {
+    background: #12171f; border: 1px solid #1f2630; border-radius: 10px;
+    padding: 18px 20px; margin-top: 14px;
+  }
+  pre {
+    font: 13px/1.65 ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: pre-wrap; word-break: break-all; color: #c9d4e0;
+  }
+  pre .c { color: #5c6674; }
+  pre .hl { color: #6ee7b7; }
+  .note { color: #5c6674; font-size: 12.5px; margin-top: 10px; }
+  .feats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; margin-top: 14px; }
+  .feats div { color: #a7b0bd; font-size: 14px; }
+  .feats b { color: #d7dde6; font-weight: 600; }
+  footer {
+    margin-top: 52px; padding-top: 18px; border-top: 1px solid #1f2630;
+    color: #4c5563; font-size: 12.5px; display: flex; justify-content: space-between;
+  }
+  a { color: #6ea8fe; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  @media (max-width: 560px) { .feats { grid-template-columns: 1fr; } h1 { font-size: 32px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>towstrap</h1>
+  <p class="tagline">反向连接的远程访问：被控机不开端口、不要公网 IP，一条命令装好，SSH 和 AI 都能上。</p>
+  <p class="tagline-en">Reverse-connect remote access — the controlled machine opens no inbound ports; SSH for humans, MCP for AI agents.</p>
+
+  <h2>安装 agent（被控机上跑）</h2>
+  <p class="intro">向管理员要到 agent token（<code>tsa-…</code>）后选一条：</p>
+  <div class="card">
+<pre><span class="c"># Linux / macOS —— 从这台服务器拉（地址已填好）</span>
+curl -fsSL <span class="hl">{{BASE}}/install.sh</span> | sh -s -- --token tsa-…{{VERARG}}
+
+<span class="c"># Windows（PowerShell）</span>
+powershell -Command "&amp; { $(irm <span class="hl">{{BASE}}/install.ps1</span>) } -Token tsa-…{{VERARG}}"</pre>
+    <p class="note">脚本按系统架构从 <b>GitHub Releases 下载与服务器同版本的二进制</b>、SHA256 校验后安装；加 <code>--systemd</code> 顺带装成服务。也可以从 GitHub 直接拉脚本：<code>curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-…{{VERARG}}</code>（不加 --version 时默认指向官方服务器 + latest）。</p>
+  </div>
+
+  <h2>连上去（你的电脑）</h2>
+  <div class="card">
+<pre><span class="c"># 标准 OpenSSH 直连，不用装客户端</span>
+ssh -p {{SSHPORT}} 账号@{{HOST}}
+
+<span class="c"># 可接力终端：detach 后进程照跑，换设备接回同一画面</span>
+ssh -t -p {{SSHPORT}} 账号@{{HOST}} 'mirror work'</pre>
+    <p class="note">镜像内 Ctrl-\ 脱离；本机装 towstrap 后还有 <code>mirror ls / kill</code> 等管理命令。</p>
+  </div>
+
+  <h2>能力</h2>
+  <div class="feats">
+    <div><b>反向连接，零入站</b>——agent 主动连出 WebSocket，NAT/防火墙后面也能到</div>
+    <div><b>标准 SSH</b>——密码 + TOTP + 公钥，限速防爆破，一个账号多台机器</div>
+    <div><b>MCP 给 AI 用</b>——Claude Code / Cursor 直连跑命令、读写文件，审批保底</div>
+    <div><b>镜像终端</b>——tmux 式常驻终端，不依赖 tmux，多端同屏接力</div>
+    <div><b>审计与通知</b>——会话起止桌面提醒、wall 广播、全量审计日志</div>
+    <div><b>单二进制</b>——server / agent / mcp 三个可执行文件，无外部依赖</div>
+  </div>
+
+  <footer>
+    <span>towstrap {{VERSION}}</span>
+    <span><a href="https://github.com/towstrap/towstrap">github.com/towstrap/towstrap</a></span>
+  </footer>
+</div>
+</body>
+</html>

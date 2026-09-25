@@ -29,11 +29,11 @@
 三个进程：
 
 - **towstrap-server**（`cmd/towstrap-server`，`internal/server`）：一个进程两个端口——SSH 口（gliderlabs/ssh）面向人，HTTP 口面向 agent（`/agent` 的 WebSocket）、监控（`/health` `/status`）、MCP（`/mcp`）、token 换发（`/token/refresh`）、公开 skill（`/skill`）和一键安装脚本（`/install.sh`、`/install.ps1`）。`Hub` 是核心：机器 ID → 已连接 agent 的映射，所有会话都经它建立。账号库是 SQLite（`internal/accounts`）。
-- **towstrap-agent**（`cmd/towstrap-agent`，`internal/client`）：被控机上的常驻进程。主动 WebSocket 连出到 `/agent`，收 `open` 消息起本地进程（PTY 或 exec），双向搬运数据；处理 `token` 消息做远程换发；本地写审计、弹通知。
+- **towstrap**（`cmd/towstrap`，`internal/client`）：被控机上的常驻进程。主动 WebSocket 连出到 `/agent`，收 `open` 消息起本地进程（PTY 或 exec），双向搬运数据；处理 `token` 消息做远程换发；持有**镜像终端 登记处**（`internal/client/mirror.go`，见 §7）并监听本机 `mirror.sock`（unix socket，NDJSON 协议）给 `towstrap mirror` 子命令用；本地写审计、弹通知。
 - **towstrap-mcp**（`cmd/towstrap-mcp`）：stdio MCP server。内部起 `mcpsrv.Server`，执行后端是 SSH 连接池（`Pool`）——它自己当 SSH 客户端登到服务器，走和普通 `ssh` 客户端一样的路。
 
 ```
-SSH 会话:  ssh 客户端 ──SSH──> server(:2222) ──WS open/data──> agent ──> 本地 shell/进程
+SSH 会话:  ssh 客户端 ──SSH──> server(:7822) ──WS open/data──> agent ──> 本地 shell/进程
 exec:      同上，pty=false，stdout/stderr 分两条流
 MCP 调用:  LLM ──MCP──> towstrap-mcp(stdio, SSH 到 S) 或 /mcp(HTTP Bearer)
                         └── 都落到 server.Hub ──WS──> agent ──> shell -c
@@ -51,7 +51,7 @@ agent ↔ server 走一条 WebSocket（`/agent`），消息是单行 JSON 文本
 
 | `t` | 方向 | 字段 | 语义 |
 | --- | --- | --- | --- |
-| `hello` | agent→server | `name`(agent ID)、`ver`(自报版本)、`protect`(禁碰文件清单)、`home`、`dir` | 连接后第一条；不是 hello 就回 `err` 断开。`protect` 是 agent 自己的 token 文件和配置文件的绝对路径，`home`/`dir` 是 agent 侧家目录、工作目录——服务器拿来做 MCP 文件工具的拒名单和路径解析 |
+| `hello` | agent→server | `name`(agent ID)、`ver`(自报版本)、`protect`(禁碰文件清单)、`home`、`dir`、`mcpol`(MCP 批准姿态) | 连接后第一条；不是 hello 就回 `err` 断开。`protect` 是 agent 自己的 token 文件和配置文件的绝对路径，`home`/`dir` 是 agent 侧家目录、工作目录——服务器拿来做 MCP 文件工具的拒名单和路径解析；`mcpol` 取值 `open` = 这台机器免批准（部署者在 agent.yaml 里写 `mcp_policy`） |
 | `open` | server→agent | `id`、`cols`、`rows`、`pty`、`cmd`、`from`、`nx` | 开会话；`cmd` 空 = 交互 shell，`pty` 决定走 PTY 还是 exec；`nx` 是 MCP 常驻 shell 标记（agent 给 zsh 加 `+o nomatch +o banghist`） |
 | `data` | 双向 | `id`、`d`(base64)、`s` | 数据分片；`s` 空 = stdout/PTY 流，`"e"` = stderr（仅 agent→server 用） |
 | `eof` | server→agent | `id` | 客户端关了 stdin；exec 会话传给子进程，PTY 忽略 |
@@ -180,7 +180,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 存储:  machines.token_enc（AES-GCM 确定性，UNIQUE + 索引）
 查找:  X-Agent-Token → MachineByToken(token_enc 等值查询) → 机器 + 账号未停用检查
 换发（两阶段）:
-  ①  agent 机器上 towstrap-agent token refresh
+  ①  agent 机器上 towstrap token refresh
        → POST /token/refresh（X-Agent-Token + JSON{password, totp, machines|all}）
   ②  服务器：验 token → 调用方 agent 白名单 → 锁定检查 → 验密码 → 验 TOTP
        → 对每台目标机器：Hub.RotateToken 下推 "token" 消息（10s 等 ack）
@@ -206,6 +206,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 - **命令长度**：`open.cmd` 上限 64KB，超长 `SESSION-DENY reason=cmd-too-long`
 - **环境**：子进程环境剥掉 `TOWSTRAP_AGENT_TOKEN`，补 `TERM=xterm-256color`
 - **空闲重验**：见 §3
+- **镜像终端（`internal/client/mirror.go` + `mirrorsock_unix.go`）**：接入只走本机 `mirror.sock`（`towstrap mirror` 子命令；远端接力靠 SSH 上机器再跑它）——`mirrorManager` 登记处里 `mirror` 对象持有 `ptyFile`、子进程和一份输出尾部留档（`mirrorReplayBytes` 256KB，接入时按 32KB 切片重放还原画面）；泵协程读 PTY 后**扇出**给所有接入方（`mirrorSink`，本机接入封 NDJSON `{d:...}`）——每个接入方一条独立发送队列 + 发送协程，泵只入队不等人；积压超过 `mirrorAttQueue`（512 片）的接入方直接踢掉（关连接），一个卡住的接入拖不住别人。输入从任意接入方写进同一 PTY；resize 最后到的生效，某接入方脱离后尺寸退回仍在的、最近活跃的那个。接入时重放留档：留档截断点避开转义序列中间（回扫找到被截到的那条序列、从它开头截），并剥掉历史输出里的终端查询序列（DSR/DA/模式询问/OSC 询问/DCS 请求——回放了它们，新接入方的终端会把应答打进共享输入变成幽灵按键）；程序在备用屏幕里就先补发 `\e[?1049h`，再给前台进程组补一个 SIGWINCH 让它整屏重画（尺寸变了内核自己发）。收尾以主进程退出为准：`Wait` 返回 200ms 后关主端，后台任务攥着从端也不会让镜像挂住；改尺寸/取前台进程组走 `SyscallConn().Control`，不用 `Fd()`（会把主端切成阻塞模式，Close 就打断不了读）。接入方断开（`detach` 或连接断）只是**脱离**，进程继续跑；登记处建在连接循环外，agent 与服务器断线重连不影响镜像。闲置终结：`mirror_idle`（默认 72h，`0`/`off` 关）驱动每分钟一轮的 `sweepIdle`——按 `lastIO`（`write` 和 `broadcast` 都刷新，敲键不回显也算活动）超时就 `kill`，审计写 `MIRROR-KILL via=idle`。socket 文件 0600，accept 时再核对端 uid——Linux `SO_PEERCRED`、macOS `LOCAL_PEERCRED`——只放 agent 同一个用户；`Ctrl-\` 发 `detach` 脱离，脱离/断开后给本地终端发复位序列：关鼠标上报、括号粘贴，显示光标，在备用屏幕里就退出）；单机上限 `maxMirrors=32`
 
 ## 8. MCP 层
 
@@ -215,14 +216,18 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 - 内嵌模式每个请求新建 `mcpsrv.Server`（`getServer` 回调），机器集合按该请求的客户端凭据现算——改授权不用重启
 - `Implementation.Name = "towstrap-mcp"`；`initialize` 响应带 `Instructions`（给 LLM 的使用须知 + 机器列表 + 策略概况）
 
-### 四个工具（`tools.go`）
+### 工具（`tools.go`）
 
 | 工具 | 入参 | 出参 | 策略 |
 | --- | --- | --- | --- |
 | `list_machines` | — | `machines[]`：name/description/roots/connected | 无 |
-| `run_command` | `machine`、`command`、`cwd?`、`stdin?`、`timeout_seconds?`、`session?` | `exit_code`、`stdout`、`stderr`、`timed_out`、`*_truncated`、`duration_ms`、`approval`、`session`、`session_restarted` | deny→拒；全段 allow→放行；否则批准 |
+| `run_command` | `machine`、`command`、`cwd?`、`stdin?`、`timeout_seconds?`、`session?`、`confirmed?`、`remember?` | `exit_code`、`stdout`、`stderr`、`timed_out`、`*_truncated`、`duration_ms`、`approval`、`session`、`session_restarted` | deny→拒；ask 名单→要确认；全段 allow→放行；否则按 default |
 | `read_file` | `machine`、`path` | `content`、`bytes` | deny_paths + agent 自报禁碰清单拦；≤max_file；含 NUL 拒（二进制） |
-| `write_file` | `machine`、`path`、`content` | `bytes_written` | deny_paths + agent 自报禁碰清单拦；≤max_file；在 roots 内放行否则批准 |
+| `write_file` | `machine`、`path`、`content`、`confirmed?`、`remember?` | `bytes_written` | deny_paths + agent 自报禁碰清单拦；≤max_file；在 roots 内放行否则批准 |
+| `terminal_open` | `machine`、`command`、`cwd?`、`cols?`、`rows?`、`confirmed?`、`remember?` | `terminal_id`、`approval` | command 和 run_command 同一条审批链；终端挂在 MCP 会话下，关闭/会话结束即终止 |
+| `terminal_write` / `terminal_read` / `terminal_resize` | `terminal_id` 等 | 输入计数 / 输出+closed+exit_code / 尺寸 | 终端须在本会话且机器仍有权 |
+| `terminal_close` | `terminal_id` | `closed`、`exit_code` | 终止远端进程 |
+| `terminal_list` | — | `terminals[]` | 只列本会话的终端 |
 
 实现细节：`run_command` 带 `cwd` 时包成 `cd -- 'cwd' && (命令)`（shellQuote 单引号包裹）；`read_file` 实际是 `head -c max+1`；`write_file` 是 `cat > 'path'` + stdin；输出超限保留头尾各半加省略标记（`CapWriter`）；`timeout_seconds` 超 `max_timeout` 会被夹到上限并注明。工具错误走 `IsError` + 文字（不变成协议级错误，LLM 能看到原因）。
 
@@ -240,7 +245,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 `deny` 优先于一切。内置名单（写配置里同名项就**整份替换**）：
 
 - `DefaultAllow`：`ls/pwd/cat/head/tail/wc/grep/rg/find/stat/file/echo/which/whoami/id/uname/df/du/ps/date/tree`；裸 `env`；`git status|diff|log|show|remote|rev-parse|ls-files|blame`、`git branch` 只读形态；`go build|test|vet|fmt|list|mod tidy|doc|version`；`npm/pnpm/yarn test|run test|run lint|run build|ls`；`cargo/make test|build|check|fmt`；`python/python3/node --version`；`gofmt`
-- `DefaultDeny`：`rm -r /`、`rm ~`、`mkfs`、`dd of=/dev/`、`shutdown/reboot/halt/poweroff`、`curl|sh`、`wget|sh`、`find -exec/-delete`、`rg --pre`、`> /dev/sd`、`chmod 777 /`、`.ssh/id_*`、`.ssh/authorized_keys`、`/etc/shadow`、`/etc/sudoers`、`sudo`、`su`、`towstrap-agent`（不许动 agent 自身）
+- `DefaultDeny`：`rm -r /`、`rm ~`、`mkfs`、`dd of=/dev/`、`shutdown/reboot/halt/poweroff`、`curl|sh`、`wget|sh`、`find -exec/-delete`、`rg --pre`、`> /dev/sd`、`chmod 777 /`、`.ssh/id_*`、`.ssh/authorized_keys`、`/etc/shadow`、`/etc/sudoers`、`sudo`、`su`、动 agent 自身（老名 `towstrap-agent` 整词挡；新名 `towstrap` 只挡 `pkill/killall/kill/taskkill`、`systemctl/service/launchctl/sc/schtasks` 指向它，以及 `bin/towstrap` 路径和 `towstrap.service/.plist`——不误伤仓库目录名和 `towstrap-server`/`towstrap-mcp`）
 - `DefaultDenyPaths`：`.ssh/`、`.gnupg/`、`/etc/shadow`、`/etc/sudoers`、`.aws/credentials`、`towstrap/token`、`towstrap/agent.yaml`
 
 ### 路径策略
@@ -252,12 +257,15 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 
 ### 人工批准（`approval.go`）
 
-两层机制：
+三条通道由 `policy.ask_via` 选；不写（auto）时按客户端能力自动挑：
 
-1. **elicitation（弹窗）**：客户端 `initialize` 声明了 elicitation 能力 → handler 返回带 `InputRequests` 的 `CallToolResult`（go-sdk 的 MRTR/SEP-2322 模式，新旧协议都兼容，SDK 完成往返后把 handler 再调一次、答复在 `InputResponses["approval"]`）。schema 两个字段：`approve`（bool，必填）和 `remember`（bool，「本次会话内相同命令不再询问」）
-2. **本地文件回退**：不支持弹窗 → `approvals_dir` 里落 `<id>.json`（`{id,machine,kind,detail,cwd,created,pid}`，0600），stdio 模式同时弹桌面通知；用户跑 `approve <id>` 写 `<id>.approved`、deny 写 `<id>.denied`，服务侧每 500ms 轮询直到 `ask_timeout`
+1. **elicitation（弹窗）**：auto 且客户端 `initialize` 声明了 elicitation 能力 → handler 返回带 `InputRequests` 的 `CallToolResult`（go-sdk 的 MRTR/SEP-2322 模式，新旧协议都兼容，SDK 完成往返后把 handler 再调一次、答复在 `InputResponses["approval"]`）。schema 两个字段：`approve`（bool，必填）和 `remember`（bool，「本次会话内相同命令不再询问」）
+2. **本地文件**（`ask_via: local` 或 auto 且客户端不支持弹窗；**显式设置压过客户端能力**——有的客户端声明了弹窗能力却渲染不出来，用它绕开）：`approvals_dir` 里落 `<id>.json`（`{id,machine,kind,detail,cwd,created,pid}`，0600）；待批挂上后立刻四处发提示——MCP logging 通知给调用方会话、stderr slog（stdio-over-SSH 时落在远端终端）、`LocalNotify` 开时（stdio 恒开，内嵌模式默认开、`mcp.local_notify: false` 关）`notify.Desktop` 横幅 + `notify.Wall` 广播到本机登录终端 + 能点的系统对话框 `notify.Confirm`（macOS osascript `display dialog`、Linux zenity），三个钮：拒绝/允许/「允许并不再问」，点了就写 `.approved`/`.denied`（第三钮多落一个 `.remember`）；内嵌模式另走 `OnPending` 钩子把提示行写进**同账号的活跃 towstrap SSH 终端**（`broadcastSSH`，exec 会话不写）；用户跑 `approve <id>` 写 `<id>.approved`（`--remember` 同写 `.remember`）、deny 写 `<id>.denied`，服务侧每 500ms 轮询直到 `ask_timeout`；`.remember` 随批准把「机器+命令」记进发起会话的名单，同命令再来直接放行（对应 `approval=remembered`）
+3. **会话内确认**（`ask_via: llm`，显式配置才走——auto 不会自动降格到这条）：工具入参带 `confirmed`/`remember` 两个 bool。第一次调用只 `markPending`（键 `sessionID + machine + detail`）记一笔「已发起确认」，返回 `AwaitingLLM` → 调用方把一段操作指引当错误结果还给 LLM（说明命令、风险、请用户明确同意后用相同参数加 `confirmed=true` 重试）。重试时凭挂起标记放行：标记一次性、10 分钟过期（`llmConfirmTTL`）、`confirmed=true` 对没发起过确认的命令无效；`remember=true` 时同时进 remembered 名单。注意 confirmed 只是 LLM 声称的同意——防误操作，不等于独立核实的真人批准，审计单列 `MCP-CONFIRMED`
 
-`remember` 按**客户端会话**记（`machine + detail` 为键，会话结束清理）。超时/用户取消 → `Timeout`；批准环节不可用 → `Unavailable`。进出批准环节记 `MCP-ASK`（via=elicit/local）和结果事件 `MCP-APPROVED`/`MCP-DENIED`/`MCP-ASK-TIMEOUT`。
+`remember` 按**客户端会话**记（`machine + detail` 为键，会话结束清理），记住的值是当初那次授权的编号。超时/用户取消 → `Timeout`；批准环节不可用 → `Unavailable`。进出批准环节记 `MCP-ASK`（via=elicit/local/llm，带 `auth=ap-…` 授权编号）和结果事件 `MCP-APPROVED`/`MCP-CONFIRMED`/`MCP-DENIED`/`MCP-ASK-TIMEOUT`。
+
+**授权会话记录**：批准放行的执行由 `recordAuthExec` 留档——`auth-records/`（批准目录旁，0600）下按执行编号 `ex-…` 存「申请的命令 + 实际结果（退出码/时长/输出全文）」；`write_file` 记路径、字节数、内容 sha256 不记全文；授权 PTY 终端由 `openTermRecord` 在起输出泵前开 `.pty` 文件全程落盘（上限 `authRecordMaxBytes` 4MB）。审计事件 `MCP-AUTH-EXEC auth exec record` 把三者串起来；remembered 复用的执行也各留一档、`auth` 指回当初的批准编号。
 
 ### 内嵌模式鉴权顺序（`internal/server/mcp.go`）
 
@@ -290,8 +298,8 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 
 | 键 | 类型 | 默认 | 说明 / 对应旗标 |
 | --- | --- | --- | --- |
-| `http` | string | `:8080` | HTTP 监听地址 / `--http` |
-| `ssh` | string | `:2222` | SSH 监听地址 / `--ssh` |
+| `http` | string | `:7880` | HTTP 监听地址 / `--http` |
+| `ssh` | string | `:7822` | SSH 监听地址 / `--ssh` |
 | `host_key` | string | users_db 同目录 `ssh_host_key` | SSH 主机密钥 / `--host-key` |
 | `users_db` | string | `/etc/towstrap/users.db` | 账号库 / `--users-db` |
 | `users_key` | string | `users_db` 去 `.db` + `.key` | 加密密钥 / `--users-key` |
@@ -312,6 +320,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 | `mcp.path` | string | `/mcp` | 挂载路径 |
 | `mcp.allow_plain_http` | bool | `false` | 明文+非回环放行开关 |
 | `mcp.approvals_dir` | string | 审计日志目录旁 `approvals/` | 待批文件目录 |
+| `mcp.local_notify` | bool | `true` | 待批请求的本机提醒：弹「允许/拒绝」系统对话框 + wall 广播 + 写提示到同账号 towstrap SSH 终端（无桌面自动静默退化；显式 `false` 关闭） |
 | `mcp.machines.<id>.description` / `.roots` | string / []string | — | MCP 侧元数据；键是完整机器 ID |
 | `mcp.policy` / `mcp.limits` | — | 内置默认 | 与 mcp.yaml 同格式 |
 
@@ -328,6 +337,8 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 | `agent.insecure` | bool | `false` | 跳过 TLS 校验 / `--insecure` |
 | `agent.quiet` | bool | `false` | 关通知（审计仍写）/ `--quiet` |
 | `agent.audit_log` | string | root `/var/lib/towstrap/audit.log`，其他 `~/.towstrap/audit.log` | / `--audit-log` |
+| `agent.mirror_idle` | string（时长） | `72h` | 镜像终端闲置多久自动终结（`0`/`off` 不启用）/ `--mirror-idle` |
+| `agent.mcp_policy` | string | `server` | 这台机器对 MCP 批准的姿态：`open` = 免批准（`deny` 保底）/ `--mcp-policy`；经 hello 上报，服务端按机器应用 |
 
 token 也认环境变量 `TOWSTRAP_AGENT_TOKEN`。token 来源优先级（`resolveAgentToken`）：`--agent-token` > `--agent-token-file` > 环境变量 > yaml `agent_token` > yaml `agent_token_file`；其余项是旗标 > yaml > 默认。
 
@@ -378,14 +389,17 @@ towstrap-server version                                  版本
 - `mcp list` / `mcp set 名字 [--machine]... [--allow-ip]... [--clear-allow] [--disable|--enable]` / `mcp remove` / `mcp token [--regen]`
 - `mcp pending` / `mcp approve <id>|--all` / `mcp deny <id>|--all`：`--approvals-dir` > yaml `mcp.approvals_dir` > 审计目录旁 `approvals/`
 
-### towstrap-agent
+### towstrap
 
 ```
-towstrap-agent [旗标]                                    常驻运行
-towstrap-agent token refresh [--machine 机器名]... [--all] [--allow-plain]
+towstrap [旗标]                                    常驻运行
+towstrap token refresh [--machine 机器名]... [--all] [--allow-plain]
+towstrap mirror [ls | kill 名字 | 名字 [命令]] [--sock 路径]   镜像终端 管理/接入
 ```
 
-旗标：`--config --server --agent-token --agent-token-file --shell --insecure --audit-log --quiet`。`refresh` 交互问密码 + TOTP；退出码 0 全 ok / 1 部分失败 / 2 参数或鉴权错。
+`mirror` 子命令有 busybox 式别名：二进制被叫成 `mirror` 或 `towstrap-mirror`（软链/硬链/拷贝都算）时等价于 `towstrap mirror`；install.sh 装完会自动建 `PREFIX/mirror` 软链，所以机器上直接敲 `mirror ls`、`mirror work`。
+
+旗标：`--config --server --agent-token --agent-token-file --shell --insecure --audit-log --quiet --mirror-idle --mcp-policy`。`refresh` 交互问密码 + TOTP；退出码 0 全 ok / 1 部分失败 / 2 参数或鉴权错。`mirror` 走本机 `mirror.sock`（`--sock` 或 `TOWSTRAP_MIRROR_SOCK` 覆盖）：无参/`ls` 列表，`mirror 名字 [命令]` 接入或新建（接入后 `Ctrl-\` 脱离），`kill` 终结；需要真实终端。
 
 ### towstrap-mcp
 
@@ -438,17 +452,21 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 | `MCP-SESSION` | client ip | MCP 新会话（30s 去重） |
 | `MCP-AUTH-FAIL` | ip reason | Bearer 校验失败 |
 | `MCP-POLICY-DENY` | client ip machine kind detail reason | 策略拒绝 |
-| `MCP-ASK` | client ip machine kind detail via(elicit/local) | 进入批准 |
-| `MCP-APPROVED` `MCP-DENIED` `MCP-ASK-TIMEOUT` | client ip machine kind detail | 批准结果 |
+| `MCP-POLICY-OPEN` | client ip machine kind detail | 机器姿态 open（`mcp_policy`/`machines.<id>.policy`）免批准放行——ask 命中直接执行 |
+| `MCP-ASK` | client ip machine kind detail via(elicit/local/llm) auth(ap-…) | 进入批准 |
+| `MCP-APPROVED` `MCP-CONFIRMED` `MCP-DENIED` `MCP-ASK-TIMEOUT` | client ip machine kind detail auth | 批准结果 |
+| `MCP-AUTH-EXEC` | client ip auth exec machine kind cmd exit_code duration_ms record | 授权过的执行留档 |
+| `MCP-TERMINAL-OPEN` `MCP-TERMINAL-CLOSE` `MCP-TERMINAL-END` `MCP-TERMINAL-READ` `MCP-TERMINAL-WRITE` `MCP-TERMINAL-RESIZE` | client ip machine terminal cmd approval | MCP PTY 终端生命周期 |
 
 **agent 侧**（`audit.log`）：
 
 | 事件 | 字段 | 触发 |
 | --- | --- | --- |
 | `AGENT-START` | version id server shell insecure quiet uid audit | 进程启动 |
-| `START` | id from mode(pty/exec) cmd | 会话开始（from 格式校验不过会脱敏为「未知来源」） |
-| `END` | id from | 会话结束 |
+| `START` | id from mode(pty/exec/mirror) cmd | 会话开始（from 格式校验不过会脱敏为「未知来源」）；mode=mirror 是镜像终端的一次接入 |
+| `END` | id from | 会话结束（镜像接入的 END 是脱离，不是进程退出） |
 | `TOKEN-ROTATED` | id | 下推的新 token 写入文件 |
+| `MIRROR-KILL` | name via=local / via=idle | 终结镜像终端（本机 socket 手动操作 / 闲置超时自动终结） |
 
 ## 14. 安全模型与已知限制
 
@@ -467,6 +485,7 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 - **root 运行**：只打告警不阻止（`warnIfRoot`，审计 `uid=`）
 - **roots 符号链接**：前缀匹配不解析远端链接，逃逸见 §8
 - **明文**：`/mcp` 有拒启动保护；agent 普通连接 ws:// 不拦（内网场景），但 `token refresh` 的密码走非回环明文要 `--allow-plain` 显式确认
+- **镜像终端只活在 agent 进程里**：agent 重启则镜像消失（PTY 主端随进程死）；接入只走本机 `mirror.sock`（`towstrap mirror` 命令），Windows 暂无实现即 Windows 上没有镜像终端；接入方共享输入（谁都能敲），尺寸以最后 resize 为准；闲置超过 `mirror_idle`（默认 72h）自动终结
 - **公钥登录不进限速器**：客户端试多把钥匙计失败会误锁；同时公钥不可猜测。代价：公钥探测不设限（也不记每次失败审计）
 - **agent 版本自报**：`min_agent_version` 是运维门槛不是安全控制
 - **限速状态在内存**：重启清零

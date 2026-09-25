@@ -29,11 +29,11 @@ For anyone integrating, auditing, or extending TowStrap. Everything below is wri
 Three processes:
 
 - **towstrap-server** (`cmd/towstrap-server`, `internal/server`): one process, two ports — an SSH port (gliderlabs/ssh) for humans, and an HTTP port serving the agent WebSocket (`/agent`), monitoring (`/health` `/status`), MCP (`/mcp`), token rotation (`/token/refresh`), the public skill (`/skill`), and the one-line installers (`/install.sh`, `/install.ps1`). The `Hub` is the core: a machine-ID → connected-agent map through which every session is established. Accounts live in SQLite (`internal/accounts`).
-- **towstrap-agent** (`cmd/towstrap-agent`, `internal/client`): a daemon on the controlled machine. Dials out to `/agent`, spawns local processes on `open` (PTY or exec), pumps data both ways, handles `token` messages for remote rotation, and keeps a local audit log + notifications.
+- **towstrap** (`cmd/towstrap`, `internal/client`): a daemon on the controlled machine. Dials out to `/agent`, spawns local processes on `open` (PTY or exec), pumps data both ways, handles `token` messages for remote rotation, holds the **named-mirror registry** (`internal/client/mirror.go`, see §7) and listens on the local `mirror.sock` (unix socket, NDJSON) for the `towstrap mirror` subcommand; keeps a local audit log + notifications.
 - **towstrap-mcp** (`cmd/towstrap-mcp`): a stdio MCP server. Hosts `mcpsrv.Server` whose execution backend is an SSH connection pool (`Pool`) — it acts as an SSH client to the server, same path as any `ssh` client.
 
 ```
-SSH session:  ssh client ──SSH──> server(:2222) ──WS open/data──> agent ──> local shell/process
+SSH session:  ssh client ──SSH──> server(:7822) ──WS open/data──> agent ──> local shell/process
 exec:         same path, pty=false; stdout/stderr on separate streams
 MCP call:     LLM ──MCP──> towstrap-mcp (stdio, SSH to S) or /mcp (HTTP Bearer)
                         └── both land on server.Hub ──WS──> agent ──> shell -c
@@ -51,7 +51,7 @@ Agent ↔ server share one WebSocket (`/agent`); messages are single-line JSON t
 
 | `t` | Direction | Fields | Meaning |
 | --- | --- | --- | --- |
-| `hello` | agent→server | `name` (agent ID), `ver` (self-reported version), `protect` (off-limits files), `home`, `dir` | first message after connect; anything else gets an `err` and a disconnect. `protect` lists the agent's token file and config file as absolute paths; `home`/`dir` are the agent-side home and working directories — the server uses them for MCP file-tool deny checks and path resolution |
+| `hello` | agent→server | `name` (agent ID), `ver` (self-reported version), `protect` (off-limits files), `home`, `dir`, `mcpol` (MCP approval posture) | first message after connect; anything else gets an `err` and a disconnect. `protect` lists the agent's token file and config file as absolute paths; `home`/`dir` are the agent-side home and working directories — the server uses them for MCP file-tool deny checks and path resolution; `mcpol` is `open` = this machine skips approvals (set by the deployer via `mcp_policy` in agent.yaml) |
 | `open` | server→agent | `id`, `cols`, `rows`, `pty`, `cmd`, `from`, `nx` | open a session; empty `cmd` = interactive shell, `pty` selects PTY vs exec; `nx` marks an MCP persistent shell (agent starts zsh with `+o nomatch +o banghist`) |
 | `data` | both | `id`, `d` (base64), `s` | payload chunk; `s` empty = stdout/PTY, `"e"` = stderr (agent→server only) |
 | `eof` | server→agent | `id` | client closed stdin; forwarded to the subprocess on exec sessions, ignored on PTY |
@@ -180,7 +180,7 @@ Issue:   user add / machine add / @machine add → accounts.NewAgentToken() (tsa
 Store:   machines.token_enc (deterministic AES-GCM, UNIQUE + index)
 Lookup:  X-Agent-Token → MachineByToken (ciphertext equality) → machine + account-enabled check
 Rotate (two-phase):
-  ①  on the agent machine: towstrap-agent token refresh
+  ①  on the agent machine: towstrap token refresh
        → POST /token/refresh (X-Agent-Token + JSON{password, totp, machines|all})
   ②  server: check token → caller's agent allowlist → lockout → password → TOTP
        → per target machine: Hub.RotateToken pushes a "token" message (10s ack wait)
@@ -206,6 +206,7 @@ Rotate (two-phase):
 - **Command length**: `open.cmd` caps at 64KB; over → `SESSION-DENY reason=cmd-too-long`
 - **Environment**: `TOWSTRAP_AGENT_TOKEN` is stripped from child env; `TERM=xterm-256color` is set
 - **Idle re-verification**: see §3
+- **named mirrors** (`internal/client/mirror.go` + `mirrorsock_unix.go`): attachments come only through the local `mirror.sock` (driven by the `towstrap mirror` subcommand; remote users SSH to the machine and run it there) — a `mirror` object in the `mirrorManager` registry holds the `ptyFile`, the subprocess, and an output tail replay buffer (`mirrorReplayBytes` 256KB, replayed to a new attachment in 32KB chunks to restore the screen); the pump goroutine fans PTY output out to every attachment (`mirrorSink`, wrapped as NDJSON `{d:...}`) — each attachment has its own send queue + sender goroutine, the pump only enqueues and never waits; an attachment whose backlog exceeds `mirrorAttQueue` (512 chunks) is dropped (its connection is closed), so one stalled client can't hold up the others. Input from any attachment writes to the same PTY; the last resize wins, and when an attachment detaches the size falls back to the most recently active remaining one. On attach the replay is queued: the buffer's cut point never lands mid-escape-sequence (the trim walks back to the start of the sequence it would have split), and terminal query sequences are stripped from the replay (DSR/DA/mode/OSC queries and DCS requests — replayed queries would make the freshly attached terminal auto-answer into the shared PTY input, showing up as phantom keystrokes for everyone); `\e[?1049h` is prepended if the program is in the alternate screen, and the foreground process group gets a SIGWINCH to force a full redraw (the kernel sends one itself when the size changes). Teardown follows the main process: 200ms after `Wait` returns the master is closed, so a background job holding the slave can't keep the mirror hanging; resize/foreground-pgrp ioctls go through `SyscallConn().Control`, not `Fd()` (which flips the master to blocking mode so Close can no longer interrupt the read). An attachment going away (`detach` or a dropped connection) only **detaches** — the process keeps running; the registry lives outside the connect loop, so agent↔server reconnects don't touch TUIs. Idle kill: `mirror_idle` (default 72h, `0`/`off` disables) drives a once-a-minute `sweepIdle` — a mirror whose `lastIO` (refreshed by both `write` and `broadcast`, so typing without echo still counts as activity) exceeds the TTL is `kill`ed, audited as `MIRROR-KILL via=idle`. The socket file is 0600, plus a peer-uid check on accept — `SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS — admitting only the agent's own user; driven by the `towstrap mirror` subcommand; `Ctrl-\` sends `detach`, and after detaching/disconnecting the client sends the local terminal a reset: mouse reporting and bracketed paste off, cursor shown, alternate screen left if it was on); the per-machine cap is `maxMirrors=32`
 
 ## 8. The MCP layer
 
@@ -215,14 +216,18 @@ Rotate (two-phase):
 - Embedded mode builds a fresh `mcpsrv.Server` per request (`getServer` callback); the visible machine set is computed from that request's client credential — grant changes need no restart
 - `Implementation.Name = "towstrap-mcp"`; the `initialize` response carries `Instructions` (usage rules for the LLM + machine list + policy summary)
 
-### The four tools (`tools.go`)
+### The tools (`tools.go`)
 
 | Tool | Input | Output | Policy |
 | --- | --- | --- | --- |
 | `list_machines` | — | `machines[]`: name/description/roots/connected | none |
-| `run_command` | `machine`, `command`, `cwd?`, `stdin?`, `timeout_seconds?`, `session?` | `exit_code`, `stdout`, `stderr`, `timed_out`, `*_truncated`, `duration_ms`, `approval`, `session`, `session_restarted` | deny→reject; all-segments allow→run; else approval |
+| `run_command` | `machine`, `command`, `cwd?`, `stdin?`, `timeout_seconds?`, `session?`, `confirmed?`, `remember?` | `exit_code`, `stdout`, `stderr`, `timed_out`, `*_truncated`, `duration_ms`, `approval`, `session`, `session_restarted` | deny→reject; ask list→confirmation; all-segments allow→run; else default |
 | `read_file` | `machine`, `path` | `content`, `bytes` | deny_paths + agent-reported off-limits list; ≤max_file; NUL bytes rejected (binary) |
-| `write_file` | `machine`, `path`, `content` | `bytes_written` | deny_paths + agent-reported off-limits list; ≤max_file; inside roots → auto-allowed, else approval |
+| `write_file` | `machine`, `path`, `content`, `confirmed?`, `remember?` | `bytes_written` | deny_paths + agent-reported off-limits list; ≤max_file; inside roots → auto-allowed, else approval |
+| `terminal_open` | `machine`, `command`, `cwd?`, `cols?`, `rows?`, `confirmed?`, `remember?` | `terminal_id`, `approval` | command goes through the same approval chain as `run_command`; the terminal belongs to the MCP session and dies on close/session end |
+| `terminal_write` / `terminal_read` / `terminal_resize` | `terminal_id` etc. | input count / output+closed+exit_code / size | terminal must belong to this session and the machine must still be authorized |
+| `terminal_close` | `terminal_id` | `closed`, `exit_code` | kills the remote process |
+| `terminal_list` | — | `terminals[]` | lists only this session's terminals |
 
 Implementation details: `run_command` with `cwd` wraps as `cd -- 'cwd' && (command)` (single-quote shellQuote); `read_file` is really `head -c max+1`; `write_file` is `cat > 'path'` on stdin; oversized output keeps head and tail halves with an elision marker (`CapWriter`); `timeout_seconds` above `max_timeout` is clamped and noted. Tool errors return `IsError` + text (not protocol errors — the LLM sees the reason).
 
@@ -240,7 +245,7 @@ Implementation details: `run_command` with `cwd` wraps as `cd -- 'cwd' && (comma
 `deny` beats everything. Built-in lists (setting the same key in yaml **replaces the whole list**):
 
 - `DefaultAllow`: `ls/pwd/cat/head/tail/wc/grep/rg/find/stat/file/echo/which/whoami/id/uname/df/du/ps/date/tree`; bare `env`; `git status|diff|log|show|remote|rev-parse|ls-files|blame`, read-only `git branch` forms; `go build|test|vet|fmt|list|mod tidy|doc|version`; `npm/pnpm/yarn test|run test|run lint|run build|ls`; `cargo/make test|build|check|fmt`; `python/python3/node --version`; `gofmt`
-- `DefaultDeny`: `rm -r /`, `rm ~`, `mkfs`, `dd of=/dev/`, `shutdown/reboot/halt/poweroff`, `curl|sh`, `wget|sh`, `find -exec/-delete`, `rg --pre`, `> /dev/sd`, `chmod 777 /`, `.ssh/id_*`, `.ssh/authorized_keys`, `/etc/shadow`, `/etc/sudoers`, `sudo`, `su`, `towstrap-agent` (the agent can't touch itself)
+- `DefaultDeny`: `rm -r /`, `rm ~`, `mkfs`, `dd of=/dev/`, `shutdown/reboot/halt/poweroff`, `curl|sh`, `wget|sh`, `find -exec/-delete`, `rg --pre`, `> /dev/sd`, `chmod 777 /`, `.ssh/id_*`, `.ssh/authorized_keys`, `/etc/shadow`, `/etc/sudoers`, `sudo`, `su`, touching the agent itself (the old name `towstrap-agent` is blocked outright; the new name `towstrap` only when targeted by `pkill/killall/kill/taskkill` or `systemctl/service/launchctl/sc/schtasks`, plus the `bin/towstrap` path and `towstrap.service/.plist` — so the repo directory name and `towstrap-server`/`towstrap-mcp` aren't caught)
 - `DefaultDenyPaths`: `.ssh/`, `.gnupg/`, `/etc/shadow`, `/etc/sudoers`, `.aws/credentials`, `towstrap/token`, `towstrap/agent.yaml`
 
 ### Path policy
@@ -252,12 +257,15 @@ Implementation details: `run_command` with `cwd` wraps as `cd -- 'cwd' && (comma
 
 ### Human approval (`approval.go`)
 
-Two mechanisms:
+Three channels, selected by `policy.ask_via`; unset (auto) picks by client capability:
 
-1. **elicitation (popup)**: clients declaring elicitation capability → the handler returns a `CallToolResult` with `InputRequests` (the go-sdk's MRTR/SEP-2322 pattern — compatible with old and new protocol revisions; the SDK completes the round-trip and re-invokes the handler with the answer in `InputResponses["approval"]`). Schema: `approve` (bool, required) and `remember` (bool, "don't ask again for this command this session")
-2. **Local file fallback**: no popup support → a `<id>.json` lands in `approvals_dir` (`{id,machine,kind,detail,cwd,created,pid}`, 0600); stdio mode also fires a desktop notification; `approve <id>` writes `<id>.approved`, `deny` writes `<id>.denied`, and the server side polls every 500ms until `ask_timeout`
+1. **elicitation (popup)**: auto + client declared elicitation in `initialize` → the handler returns a `CallToolResult` with `InputRequests` (the go-sdk's MRTR/SEP-2322 pattern — compatible with old and new protocol revisions; the SDK completes the round-trip and re-invokes the handler with the answer in `InputResponses["approval"]`). Schema: `approve` (bool, required) and `remember` (bool, "don't ask again for this command this session")
+2. **Local file** (`ask_via: local` or auto when the client can't pop; **an explicit setting overrides client capability** — some clients declare elicitation but never render the prompt, this routes around them): a `<id>.json` lands in `approvals_dir` (`{id,machine,kind,detail,cwd,created,pid}`, 0600); once pending, the notice is pushed everywhere — an MCP logging notification to the calling session, an slog line on stderr (lands on the remote terminal when stdio runs over SSH, the server log when embedded), and with `LocalNotify` on (always on in stdio, on by default in embedded mode — `mcp.local_notify: false` disables) a `notify.Desktop` banner + `notify.Wall` broadcast to logged-in terminals + a clickable system dialog `notify.Confirm` (osascript `display dialog` on macOS, zenity on Linux) with three buttons: deny / allow / "allow and don't ask again", writing `.approved`/`.denied` (the third also writes `.remember`); embedded mode additionally routes through the `OnPending` hook to write the notice line into **same-account interactive towstrap SSH terminals** (`broadcastSSH`; exec sessions are skipped); `approve <id>` writes `<id>.approved` (`--remember` writes `.remember` too), `deny` writes `<id>.denied`, and the server side polls every 500ms until `ask_timeout`; `.remember` records the machine+command in the requesting session's grant list so identical commands auto-approve (`approval=remembered`)
+3. **In-conversation confirmation** (`ask_via: llm`, explicit opt-in only — auto never downgrades to this): tool inputs carry `confirmed`/`remember` bools. The first call only `markPending`s (key `sessionID + machine + detail`) a "confirmation requested" marker and returns `AwaitingLLM` → the caller hands the LLM an error result containing instructions (state the command and its risk, ask the user for explicit agreement, retry with identical args plus `confirmed=true`). The retry passes only with a matching pending marker: one-time, 10-minute expiry (`llmConfirmTTL`), `confirmed=true` is a no-op for commands never asked about; `remember=true` also enters the remembered list. Note confirmed is only the LLM's claim of consent — it guards against mistakes, it is not an independently verified human approval, and it audits separately as `MCP-CONFIRMED`
 
-`remember` is scoped to the **client session** (keyed `machine + detail`, cleaned up on session end). Timeout/cancel → `Timeout`; no approval path at all → `Unavailable`. Entering/leaving approval logs `MCP-ASK` (via=elicit/local) and an outcome `MCP-APPROVED`/`MCP-DENIED`/`MCP-ASK-TIMEOUT`.
+`remember` is scoped to the **client session** (keyed `machine + detail`, cleaned up on session end), and the remembered value is the original authorization ID. Timeout/cancel → `Timeout`; no approval path at all → `Unavailable`. Entering/leaving approval logs `MCP-ASK` (via=elicit/local/llm, with `auth=ap-…` authorization ID) and an outcome `MCP-APPROVED`/`MCP-CONFIRMED`/`MCP-DENIED`/`MCP-ASK-TIMEOUT`.
+
+**Authorized-session records**: executions allowed under approval are archived by `recordAuthExec` — `auth-records/` (next to the approvals dir, 0600) holds one `ex-…` file per execution with "requested command + actual result (exit code/duration/full output)"; `write_file` records path, byte count and content sha256, not the content; approved PTY terminals get a `.pty` file opened by `openTermRecord` before the output pump starts so the whole session is captured (cap `authRecordMaxBytes` = 4MB). The `MCP-AUTH-EXEC auth exec record` audit event ties the three together; remembered re-executions each get their own record pointing back to the original `auth`.
 
 ### Embedded-mode auth order (`internal/server/mcp.go`)
 
@@ -290,8 +298,8 @@ Execution goes through `mcpRunner.Run`: the machine must be in the client's gran
 
 | Key | Type | Default | Meaning / flag |
 | --- | --- | --- | --- |
-| `http` | string | `:8080` | HTTP bind / `--http` |
-| `ssh` | string | `:2222` | SSH bind / `--ssh` |
+| `http` | string | `:7880` | HTTP bind / `--http` |
+| `ssh` | string | `:7822` | SSH bind / `--ssh` |
 | `host_key` | string | `ssh_host_key` next to users_db | SSH host key / `--host-key` |
 | `users_db` | string | `/etc/towstrap/users.db` | account DB / `--users-db` |
 | `users_key` | string | `users_db` minus `.db` + `.key` | encryption key / `--users-key` |
@@ -312,6 +320,7 @@ Execution goes through `mcpRunner.Run`: the machine must be in the client's gran
 | `mcp.path` | string | `/mcp` | mount path |
 | `mcp.allow_plain_http` | bool | `false` | plaintext + non-loopback override |
 | `mcp.approvals_dir` | string | `approvals/` next to audit log | pending-approval dir |
+| `mcp.local_notify` | bool | `true` | local notice for pending approvals: approve/deny system dialog + `wall` broadcast + notice line in same-account towstrap SSH terminals (quietly degrades on headless machines; explicit `false` disables) |
 | `mcp.machines.<id>.description` / `.roots` | string / []string | — | MCP-side metadata; key is the full machine ID |
 | `mcp.policy` / `mcp.limits` | — | built-in defaults | same format as mcp.yaml |
 
@@ -328,6 +337,8 @@ Default audit path: root → `/var/lib/towstrap/server-audit.log`, others → `~
 | `agent.insecure` | bool | `false` | skip TLS verification / `--insecure` |
 | `agent.quiet` | bool | `false` | mute notifications (audit still written) / `--quiet` |
 | `agent.audit_log` | string | root `/var/lib/towstrap/audit.log`, others `~/.towstrap/audit.log` | / `--audit-log` |
+| `agent.mirror_idle` | string (duration) | `72h` | auto-kill for named mirrors idle this long (`0`/`off` disables) / `--mirror-idle` |
+| `agent.mcp_policy` | string | `server` | this machine's MCP approval posture: `open` = skip approvals (`deny` still applies) / `--mcp-policy`; reported in hello, applied per machine server-side |
 
 The env var `TOWSTRAP_AGENT_TOKEN` is also recognized. Token source precedence (`resolveAgentToken`): `--agent-token` > `--agent-token-file` > env > yaml `agent_token` > yaml `agent_token_file`; for everything else it's flag > yaml > default.
 
@@ -378,14 +389,17 @@ Shared options (all management subcommands): `--config server.yaml` (reads users
 - `mcp list` / `mcp set NAME [--machine]... [--allow-ip]... [--clear-allow] [--disable|--enable]` / `mcp remove` / `mcp token [--regen]`
 - `mcp pending` / `mcp approve <id>|--all` / `mcp deny <id>|--all`: `--approvals-dir` > yaml `mcp.approvals_dir` > `approvals/` next to the audit log
 
-### towstrap-agent
+### towstrap
 
 ```
-towstrap-agent [flags]                                    run the daemon
-towstrap-agent token refresh [--machine NAME]... [--all] [--allow-plain]
+towstrap [flags]                                    run the daemon
+towstrap token refresh [--machine NAME]... [--all] [--allow-plain]
+towstrap mirror [ls | kill NAME | NAME [COMMAND]] [--sock PATH]   named-mirror manage/attach
 ```
 
-Flags: `--config --server --agent-token --agent-token-file --shell --insecure --audit-log --quiet`. `refresh` interactively asks password + TOTP; exit code 0 all-ok / 1 partial / 2 argument-or-auth error.
+The `mirror` subcommand has a busybox-style alias: invoking the binary as `mirror` or `towstrap-mirror` (symlink, hardlink or copy) is the same as `towstrap mirror`; install.sh creates a `PREFIX/mirror` symlink, so on the machine you just type `mirror ls`, `mirror work`.
+
+Flags: `--config --server --agent-token --agent-token-file --shell --insecure --audit-log --quiet --mirror-idle --mcp-policy`. `refresh` interactively asks password + TOTP; exit code 0 all-ok / 1 partial / 2 argument-or-auth error. `mirror` talks to the local `mirror.sock` (override with `--sock` or `TOWSTRAP_MIRROR_SOCK`): no args/`ls` lists, `mirror NAME [COMMAND]` attaches or creates (press `Ctrl-\` to detach while attached), `kill` terminates; needs a real terminal.
 
 ### towstrap-mcp
 
@@ -438,17 +452,21 @@ Format: `<RFC3339 time> <event> k=v`; `cmd` truncated past 512 bytes; control ch
 | `MCP-SESSION` | client ip | new MCP session (30s dedup) |
 | `MCP-AUTH-FAIL` | ip reason | Bearer check failed |
 | `MCP-POLICY-DENY` | client ip machine kind detail reason | policy rejection |
-| `MCP-ASK` | client ip machine kind detail via(elicit/local) | entered approval |
-| `MCP-APPROVED` `MCP-DENIED` `MCP-ASK-TIMEOUT` | client ip machine kind detail | approval outcome |
+| `MCP-POLICY-OPEN` | client ip machine kind detail | machine posture `open` (`mcp_policy`/`machines.<id>.policy`) skipped approval — ask-matched commands run directly |
+| `MCP-ASK` | client ip machine kind detail via(elicit/local/llm) auth(ap-…) | entered approval |
+| `MCP-APPROVED` `MCP-CONFIRMED` `MCP-DENIED` `MCP-ASK-TIMEOUT` | client ip machine kind detail auth | approval outcome |
+| `MCP-AUTH-EXEC` | client ip auth exec machine kind cmd exit_code duration_ms record | approved execution archived |
+| `MCP-TERMINAL-OPEN` `MCP-TERMINAL-CLOSE` `MCP-TERMINAL-END` `MCP-TERMINAL-READ` `MCP-TERMINAL-WRITE` `MCP-TERMINAL-RESIZE` | client ip machine terminal cmd approval | MCP PTY terminal lifecycle |
 
 **Agent side** (`audit.log`):
 
 | Event | Fields | Fires when |
 | --- | --- | --- |
 | `AGENT-START` | version id server shell insecure quiet uid audit | process start |
-| `START` | id from mode(pty/exec) cmd | session start (`from` failing the format check is sanitized to "unknown source") |
-| `END` | id from | session end |
+| `START` | id from mode(pty/exec/mirror) cmd | session start (`from` failing the format check is sanitized to "unknown source"); mode=mirror is one attachment to a named mirror |
+| `END` | id from | session end (on a mirror attachment END means detach, not process exit) |
 | `TOKEN-ROTATED` | id | a pushed token was written to the file |
+| `MIRROR-KILL` | name via=local / via=idle | named mirror terminated (manual via local socket / automatic idle-timeout kill) |
 
 ## 14. Security model and known limitations
 
@@ -467,6 +485,7 @@ Format: `<RFC3339 time> <event> k=v`; `cmd` truncated past 512 bytes; control ch
 - **Running as root**: warns but doesn't stop (`warnIfRoot`, audit `uid=`)
 - **roots symlinks**: prefix matching doesn't resolve remote links — see §8
 - **Plaintext**: `/mcp` has a refuse-to-start guard; plain agent connections over `ws://` are not blocked (intranet use), but `token refresh` requires `--allow-plain` to send a password over non-loopback plaintext
+- **named mirrors live only inside the agent process**: restarting the agent loses them (the PTY master dies with it); attachment goes only through the local `mirror.sock` (the `towstrap mirror` command), which has no Windows implementation — so no named mirrors on Windows; attachments share input (anyone can type) and the last resize wins; mirrors idle longer than `mirror_idle` (default 72h) are killed automatically
 - **Public-key login bypasses the rate limiter**: clients try several keys and counting would false-lock; keys aren't guessable anyway. The cost: key probing is unthrottled (and not per-attempt audited)
 - **Agent version is self-reported**: `min_agent_version` is an ops floor, not a security control
 - **Rate-limit state is in-memory**: a restart clears it

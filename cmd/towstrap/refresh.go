@@ -1,6 +1,6 @@
 package main
 
-// towstrap-agent token refresh 的命令行入口；核心逻辑在 internal/client
+// towstrap token refresh 的命令行入口；核心逻辑在 internal/client
 // （TokenRefresh），这里只做配置解析和旗标接线。
 
 import (
@@ -11,6 +11,7 @@ import (
 
 	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 type stringList []string
@@ -50,8 +51,7 @@ func runTokenRefresh(args []string) int {
 		return 2
 	}
 	if cfg.Server == "" {
-		slog.Error("必须设置 server（配置文件或命令行）")
-		return 2
+		cfg.Server = proto.OfficialServer
 	}
 	return client.TokenRefresh(client.RefreshOpts{
 		Server:     cfg.Server,

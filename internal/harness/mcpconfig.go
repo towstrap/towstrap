@@ -8,7 +8,7 @@ import (
 // MCPRequest 描述要为各家 harness 生成哪种接入方式的 MCP 配置片段。
 // HTTP 方式填 URL+Token；Stdio 方式置 Stdio 并填 Command/Config。
 type MCPRequest struct {
-	URL     string // 服务器内嵌 MCP 地址，如 https://S:8080/mcp
+	URL     string // 服务器内嵌 MCP 地址，如 https://S:7880/mcp
 	Token   string // tsm- token，进 Authorization: Bearer 头
 	Stdio   bool   // true → 本机 towstrap-mcp 的 stdio 片段
 	Command string // stdio：towstrap-mcp 可执行文件绝对路径

@@ -54,6 +54,39 @@ func auditHasCmd(path, sub string) bool {
 	return false
 }
 
+// TestSSHLoginAliases 登录名的宽松写法：alice/default（/ 别名）和裸机器名
+// default（唯一命中）都等价于 alice+default；机器名跨账号重名后裸写登录
+// 失败，限定写法不受影响。
+func TestSSHLoginAliases(t *testing.T) {
+	srvAudit := filepath.Join(t.TempDir(), "server-audit.log")
+	srv, httpPort, sshPort, users := startServerOpt(t, server.Config{AuditLog: srvAudit})
+	acct, err := users.Add("alice", "alicepw123", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startAgent(t, httpPort, acct.Machines[0].Token, "host-a")
+	waitAgent(t, srv.Hub, "alice+default")
+
+	if out, err := sshExec(t, sshPort, "alice/default", "alicepw123", "echo slash-ok"); err != nil || !strings.Contains(out, "slash-ok") {
+		t.Fatalf("alice/default 登录应成功: %v %q", err, out)
+	}
+	if out, err := sshExec(t, sshPort, "default", "alicepw123", "echo bare-ok"); err != nil || !strings.Contains(out, "bare-ok") {
+		t.Fatalf("裸机器名唯一命中应登录成功: %v %q", err, out)
+	}
+
+	// 重名：新建账号 bob 自带 bob+default，裸 default 不再唯一
+	if _, err := users.Add("bob", "bobpw12345", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sshExec(t, sshPort, "default", "alicepw123", "echo x"); err == nil {
+		t.Fatal("裸机器名重名后应拒绝登录")
+	}
+	// 限定写法不受影响
+	if out, err := sshExec(t, sshPort, "alice/default", "alicepw123", "echo still-ok"); err != nil || !strings.Contains(out, "still-ok") {
+		t.Fatalf("限定写法不应受重名影响: %v %q", err, out)
+	}
+}
+
 // TestMultiMachineCoexist 一个账号两台机器同时在线：互不顶替
 // （不出 AGENT-REPLACE），指名登录各自落在各自的 agent 上。
 func TestMultiMachineCoexist(t *testing.T) {

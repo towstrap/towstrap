@@ -1,4 +1,4 @@
-# towstrap-agent 的 systemd 单元示例。要点：agent 用专用低权限用户跑——
+# towstrap 的 systemd 单元示例。要点：agent 用专用低权限用户跑——
 # 每个远程会话拿到的都是这个用户的 shell，以 root 跑等于把 root shell 发出去。
 #
 # 先建用户和配置目录：
@@ -10,8 +10,8 @@
 #   sudo chown towstrap:towstrap /etc/towstrap/agent.yaml /path/to/token_file
 #   sudo chmod 600 /path/to/token_file
 #
-#   sudo cp towstrap-agent.service /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now towstrap-agent
+#   sudo cp towstrap.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 [Unit]
 Description=towstrap agent（被控端）
@@ -21,7 +21,7 @@ Wants=network-online.target
 [Service]
 User=towstrap
 Group=towstrap
-ExecStart=/usr/local/bin/towstrap-agent --config /etc/towstrap/agent.yaml
+ExecStart=/usr/local/bin/towstrap --config /etc/towstrap/agent.yaml
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

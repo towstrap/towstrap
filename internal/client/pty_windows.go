@@ -30,7 +30,12 @@ type ptyFile struct {
 
 // startPty 起 ConPTY 会话：建两条管道 → CreatePseudoConsole → 用
 // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 把子进程挂上去。
-func startPty(shell, command string, cols, rows uint32) (*ptyFile, error) {
+func startPty(shell, command, cwd string, cols, rows uint32) (*ptyFile, error) {
+	return startPtyEnv(shell, command, cwd, cols, rows, nil)
+}
+
+// startPtyEnv 同上，extraEnv 追加进子进程环境（镜像打 TOWSTRAP_MIRROR 标记用）。
+func startPtyEnv(shell, command, cwd string, cols, rows uint32, extraEnv []string) (*ptyFile, error) {
 	if cols == 0 {
 		cols = 80
 	}
@@ -84,14 +89,21 @@ func startPty(shell, command string, cols, rows uint32) (*ptyFile, error) {
 	if err != nil {
 		return fail(err)
 	}
-	envp, err := envBlock(childEnv())
+	envp, err := envBlock(append(childEnv(), extraEnv...))
 	if err != nil {
 		return fail(err)
+	}
+	var cwdPtr *uint16
+	if cwd != "" {
+		cwdPtr, err = windows.UTF16PtrFromString(expandHome(cwd))
+		if err != nil {
+			return fail(err)
+		}
 	}
 	var pi windows.ProcessInformation
 	if err := windows.CreateProcess(nil, cmdline, nil, nil, false,
 		windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_UNICODE_ENVIRONMENT,
-		envp, nil, (*windows.StartupInfo)(unsafe.Pointer(si)), &pi); err != nil {
+		envp, cwdPtr, (*windows.StartupInfo)(unsafe.Pointer(si)), &pi); err != nil {
 		return fail(err)
 	}
 
@@ -141,6 +153,10 @@ func (p *ptyFile) Wait() int {
 func (p *ptyFile) closeConsole() {
 	p.conOnce.Do(func() { windows.ClosePseudoConsole(p.hpc) })
 }
+
+// redraw Windows 上没有 SIGWINCH；ConPTY 同尺寸 resize 是空操作，接入时
+// 只靠重放还原画面。
+func (p *ptyFile) redraw() {}
 
 func (p *ptyFile) resize(cols, rows uint32) error {
 	return windows.ResizePseudoConsole(p.hpc,

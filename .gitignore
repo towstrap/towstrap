@@ -14,3 +14,4 @@ bin/
 /server.yaml
 /agent.yaml
 .video_agent/
+*.pid

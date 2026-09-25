@@ -32,14 +32,14 @@ Three binaries, three jobs:
 | Binary | Runs on | Purpose |
 | --- | --- | --- |
 | `towstrap-server` | a server with a public IP | SSH/HTTP entry + account/machine/MCP credential management |
-| `towstrap-agent` | every machine to control | dials out to the server, executes remote sessions |
+| `towstrap` | every machine to control | dials out to the server, executes remote sessions |
 | `towstrap-mcp` | the machine running the LLM app (optional) | stdio MCP entry + skill installer |
 
 ### go install (recommended)
 
 ```bash
 go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
-go install github.com/towstrap/towstrap/cmd/towstrap-agent@latest
+go install github.com/towstrap/towstrap/cmd/towstrap@latest
 go install github.com/towstrap/towstrap/cmd/towstrap-mcp@latest
 ```
 
@@ -47,16 +47,16 @@ go install github.com/towstrap/towstrap/cmd/towstrap-mcp@latest
 
 ```bash
 git clone https://github.com/towstrap/towstrap && cd towstrap
-make build    # produces bin/towstrap-server, towstrap-agent, towstrap-mcp
+make build    # produces bin/towstrap-server, towstrap, towstrap-mcp
 ```
 
 ### Prebuilt binaries
 
-See [Releases](https://github.com/towstrap/towstrap/releases); artifacts are named like `towstrap-agent-linux-arm64`. `make release` also produces `SHA256SUMS` and (with a signing key) minisign signatures — **verify before installing**:
+See [Releases](https://github.com/towstrap/towstrap/releases); artifacts are named like `towstrap-linux-arm64` (releases before the agent rename used `towstrap-agent-linux-arm64`). `make release` also produces `SHA256SUMS` and (with a signing key) minisign signatures — **verify before installing**:
 
 ```bash
 shasum -a 256 -c SHA256SUMS --ignore-missing
-minisign -Vm towstrap-agent-linux-amd64   # when a signature file exists
+minisign -Vm towstrap-linux-amd64   # when a signature file exists
 ```
 
 ### One-line install script (recommended for agents)
@@ -65,18 +65,18 @@ The server serves the install script itself — whichever server you download it
 
 ```bash
 # Linux / macOS
-curl -fsSL https://your-server:8080/install.sh | sh -s -- --token tsa-…
+curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 
 # Windows (PowerShell)
-powershell -Command "& { $(irm https://your-server:8080/install.ps1) } -Token tsa-…"
+powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
 ```
 
-What the script does: downloads the `towstrap-agent` binary for your OS/arch from GitHub Releases, verifies it against `SHA256SUMS`, installs to `/usr/local/bin` (falling back to `~/.local/bin`), writes a `0600` token file and a minimal `agent.yaml` (under `/etc/towstrap` when root, `~/.config/towstrap` otherwise). With `--systemd` it also installs a service: as root it creates a dedicated `towstrap` user plus a system unit and starts it; as a regular user it writes a `~/.config/systemd/user` unit.
+What the script does: downloads the `towstrap` binary for your OS/arch from GitHub Releases, verifies it against `SHA256SUMS`, installs to `/usr/local/bin` (falling back to `~/.local/bin`), writes a `0600` token file and a minimal `agent.yaml` (under `/etc/towstrap` when root, `~/.config/towstrap` otherwise). **A script served by a server installs the same version as that server** (`--version vX.Y.Z` overrides); a script pulled from GitHub defaults to latest. With `--systemd` it also installs a service: as root it creates a dedicated `towstrap` user plus a system unit and starts it; as a regular user it writes a `~/.config/systemd/user` unit.
 
-You can also pull the script straight from GitHub — then `--server` is required:
+You can also pull the script straight from GitHub (defaults to the official server; add `--server wss://…` only for self-hosted):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-… --server wss://your-server:443
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-…
 ```
 
 `machine add` / `user add` / `@machine add` print this one-liner in their install hint. With a self-signed cert add `-k` to curl.
@@ -90,7 +90,7 @@ Linux, macOS and Windows are supported (amd64/arm64). On Windows the agent runs 
 ### Starting
 
 ```bash
-# Minimal: SSH on :2222, HTTP on :8080, account DB /etc/towstrap/users.db
+# Minimal: SSH on :7822, HTTP on :7880, account DB /etc/towstrap/users.db
 towstrap-server
 
 # With a config file (recommended; examples/server.yaml is a fully-commented template)
@@ -112,8 +112,8 @@ Precedence: **explicit CLI flags > yaml > built-in defaults** (flags are the yam
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `http` | `:8080` | HTTP port: `/health`, `/agent`, `/status`, `/mcp`, `/token/refresh`, `/skill` |
-| `ssh` | `:2222` | SSH entry |
+| `http` | `:7880` | HTTP port: `/health`, `/agent`, `/status`, `/mcp`, `/token/refresh`, `/skill` |
+| `ssh` | `:7822` | SSH entry |
 | `host_key` | `ssh_host_key` next to users_db | SSH host key; generated only if absent — unreadable/unparseable file aborts startup (never silently regenerated) |
 | `users_db` | `/etc/towstrap/users.db` | account SQLite DB |
 | `users_key` | `users_db` minus `.db` plus `.key` | token encryption key (0600, auto-generated; **back it up** — losing it orphans every token) |
@@ -161,7 +161,7 @@ See the table above for audit log paths; the file rotates to `.1` at 16MB (the o
 ```bash
 # Token from a file (recommended — the only source that supports remote rotation)
 echo 'tsa-…' > ~/.towstrap-token && chmod 600 ~/.towstrap-token
-towstrap-agent --server wss://your-server:443 --agent-token-file ~/.towstrap-token
+towstrap --server wss://towstrap.vast-plan.com --agent-token-file ~/.towstrap-token
 ```
 
 `--server` accepts `ws://` and `wss://` (`http://`/`https://` are also understood and converted). On disconnect it retries with exponential backoff: starts at 2s, caps at 30s, with random jitter; a connection that stayed up for over a minute resets the backoff.
@@ -181,7 +181,7 @@ The agent strips `TOWSTRAP_AGENT_TOKEN` from the environment of spawned shells, 
 
 ```yaml
 agent:
-  server: wss://your-server:443       # required; ws:// when the server has no TLS
+  server: wss://towstrap.vast-plan.com  # required; ws:// when the server has no TLS
   agent_token_file: /path/to/token    # recommended: 0600 file, supports remote rotation
   # agent_token: tsa-...              # literal token (no remote rotation)
   # shell: /bin/bash                  # defaults to $SHELL, then /bin/bash
@@ -194,15 +194,15 @@ Flags: `--config --server --agent-token --agent-token-file --shell --insecure --
 
 ### systemd
 
-`examples/towstrap-agent.service` is a ready-made unit with full setup steps in its comments. The gist:
+`examples/towstrap.service` is a ready-made unit with full setup steps in its comments. The gist:
 
 ```bash
 sudo useradd -r -m -s /bin/bash towstrap
 sudo mkdir -p /etc/towstrap && sudo cp agent.yaml /etc/towstrap/
 sudo chown towstrap:towstrap /etc/towstrap/agent.yaml /path/to/token_file
 sudo chmod 600 /path/to/token_file     # the towstrap user must be able to read AND write it (refresh rewrites it)
-sudo cp towstrap-agent.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now towstrap-agent
+sudo cp towstrap.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 ```
 
 Note the unit uses `ProtectSystem=true`, not `full`: `full` mounts `/etc` read-only, which would break the atomic token-file rewrite during rotation.
@@ -215,6 +215,32 @@ The agent keeps the machine's owner in the loop by default:
 - **Audit**: every start logs `AGENT-START` (version, server, shell, insecure/quiet, uid); every session logs `START`/`END` (source `login@IP`, command, end)
 - `--quiet` / `quiet: true` mutes notifications only; audit is always written; failed notifications don't affect sessions
 - Running as root logs a warning: `agent is running as root: remote logins get a root shell`
+
+### named mirrors (relayable terminals)
+
+The agent ships a tmux-style **named persistent terminal** feature — no tmux needed: the mirror's PTY is held by the agent, and a client disconnecting just *detaches*; the process keeps running. Start `pi`, `vim`, or `top` at the machine, then pick the same screen up from your phone or another computer.
+
+```bash
+# On the controlled machine (local console, direct sshd, or via towstrap SSH)
+mirror                            # list all named mirrors on this machine
+mirror work                          # attach to work; created as a login shell if missing
+mirror work vim a.go                 # created with that command if missing
+mirror kill work                     # kill work (terminates the process inside)
+```
+
+`mirror` is a symlink alias for `towstrap` (busybox-style; install.sh creates it). Without the symlink, spell it out as `towstrap mirror …` — identical behavior.
+
+A freshly created mirror starts its shell in the directory you ran the command from (visible in the `directory` column of `mirror ls`); attaching to an existing mirror never changes the directory inside it — you pick up the original workspace, not your attach-time directory.
+
+- While attached, press **`Ctrl-\`** to detach — only your attachment ends; the process keeps running, and the same name reattaches later
+- To make work land in a mirror by default (so you can pick it up remotely after walking away): `mirror setup --write` adds a hook to your shell rc (`~/.zshrc`/`~/.bashrc`) — **it only reminds, never auto-attaches**: new terminals show a one-line hint when a live mirror exists. Fill a name into `TOWSTRAP_MIRROR_AUTO=` in the block (or pre-fill with `mirror setup work --write`) to auto-attach that mirror. `mirror setup` without `--write` just prints the snippet; `export TOWSTRAP_NO_MIRROR=1` skips it temporarily, and deleting the `# >>> towstrap mirror >>>` block removes it for good
+- `mirror ls -q` is an existence probe: exit 0 when a live mirror exists, 1 otherwise, printing nothing — the rc hook and scripts use it to check "anything to relay to"
+- Multiple clients can attach to the same mirror at once (shared view); keystrokes from any of them feed the same terminal; the size follows whoever attached/resized last
+- Relay over SSH: `ssh -t host mirror work` (an `ssh -t` through the towstrap server works too) — relaying is a human feature: local console, direct sshd, or towstrap SSH all end up running the local `mirror` command
+- MCP doesn't participate: `terminal_open` opens session-scoped temporary terminals and cannot attach to a named mirror — an AI has no way to take over a terminal a human is using
+- Where it lives: `~/.towstrap/mirror.sock` (`/var/lib/towstrap/mirror.sock` for root installs), mode 0600 — only the agent's system user can connect, equivalent to "can open a shell as that user"
+- Idle kill: a mirror with no input/output for **72 hours** is killed automatically (attached-but-silent counts too; the audit log records `MIRROR-KILL via=idle`). Change the threshold with the `mirror_idle` config key or the `--mirror-idle` flag; `0`/`off` disables it
+- Boundary: TUIs live inside the agent process — restart the agent and they're gone (same as tmux); no `mirror` command on Windows, so no named mirrors on Windows machines
 
 ---
 
@@ -269,8 +295,8 @@ Commands that issue or expose tokens — `machine add`, `machine token`, `user t
 ### Password login
 
 ```bash
-ssh -p 2222 alice@server          # single-machine account
-ssh -p 2222 alice+office@server   # multi-machine accounts must name the machine
+ssh -p 7822 alice@server          # single-machine account
+ssh -p 7822 alice+office@server   # multi-machine accounts must name the machine
 ```
 
 Logging into a multi-machine account without a suffix prints the machine list (with online status) and fails.
@@ -325,14 +351,14 @@ Cloud firewalls (security groups) and these allowlists are two separate layers: 
 ## 6. Running commands & automation
 
 ```bash
-ssh -p 2222 alice@S 'uname -a'                 # run a command; stdout/stderr separate, real exit code
-ssh -p 2222 -T alice@S                         # non-interactive shell without PTY
-echo hello | ssh -p 2222 alice@S 'cat'         # stdin pipe; EOF reaches the subprocess
+ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # run a command; stdout/stderr separate, real exit code
+ssh -p 7822 -T alice@towstrap.vast-plan.com                         # non-interactive shell without PTY
+echo hello | ssh -p 7822 alice@towstrap.vast-plan.com 'cat'         # stdin pipe; EOF reaches the subprocess
 ```
 
 - Exit codes: the subprocess code is returned as-is; signal kills follow the shell convention 128+signal; "never started"/broken sessions return 255, and agent-side spawn failures appear on stderr with an `agent: ` prefix
 - Single command limit is 64KB; every command runs in a fresh shell — `cd` and environment variables don't carry over
-- **No scp/sftp**: transfer files with `cat`/heredoc (`ssh alice@S 'cat > f' < f`) or the MCP `read_file`/`write_file` tools
+- **No scp/sftp**: transfer files with `cat`/heredoc (`ssh alice@towstrap.vast-plan.com 'cat > f' < f`) or the MCP `read_file`/`write_file` tools
 - Terminal-capable AI assistants (Claude Code, Codex, …) can use it as a plain ssh host with zero adaptation; for custom programs, any SSH library + public key works
 - Every remote session gets a shell as **the OS user running the agent**
 
@@ -343,12 +369,12 @@ echo hello | ssh -p 2222 alice@S 'cat'         # stdin pipe; EOF reaches the sub
 Commands starting with `@` are executed by the server itself and never reach the agent. After SSH login, the account owner manages their machines:
 
 ```bash
-ssh alice@S -p 2222 '@machine list'                 # machines: ID, online/offline, agent allowlist (no tokens)
-ssh alice@S -p 2222 '@machine add build'            # add a machine; prints its token + install command
-ssh alice@S -p 2222 '@machine add build --agent-allow-ip 10.0.0.5'
-ssh alice@S -p 2222 '@machine remove build'         # delete; a connected agent drops immediately
-ssh alice@S -p 2222 '@machine token build'          # show this machine's token
-ssh alice@S -p 2222 '@machine help'                 # usage
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine list'                 # machines: ID, online/offline, agent allowlist (no tokens)
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build'            # add a machine; prints its token + install command
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10.0.0.5'
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # delete; a connected agent drops immediately
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # show this machine's token
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # usage
 ```
 
 Restrictions:
@@ -356,7 +382,7 @@ Restrictions:
 - **Password-class logins only**: public-key sessions are rejected (`MGMT-DENY reason=pubkey`) — keys are for automation, not management
 - **TOTP-bound accounts must enter a fresh code** (the one used at login can't be replayed); 3 wrong codes disconnect, each logged as `MGMT-DENY reason=totp` and counted by the login rate limiter
 - A `+machine` suffix in the login name is fine — it's handled by the account part
-- Token rotation doesn't live here — run `towstrap-agent token refresh` on the machine (next section)
+- Token rotation doesn't live here — run `towstrap token refresh` on the machine (next section)
 
 ---
 
@@ -366,9 +392,9 @@ Restrictions:
 
 ```bash
 # On one of alice's agent machines:
-towstrap-agent token refresh                  # this machine only
-towstrap-agent token refresh --machine build  # the "build" machine under the same account (must be online)
-towstrap-agent token refresh --all            # every machine under the account
+towstrap token refresh                  # this machine only
+towstrap token refresh --machine build  # the "build" machine under the same account (must be online)
+towstrap token refresh --all            # every machine under the account
 ```
 
 You'll be asked for the **account password** (plus a TOTP code if enrolled) — the authentication is twofold: the local agent token proves "you're on a registered machine", and password+TOTP proves "you're the account owner".
@@ -407,7 +433,9 @@ The old token dies immediately; afterwards write the new token into that machine
 
 ## 9. MCP: for LLMs
 
-LLMs get four MCP tools on controlled machines: `list_machines` (what machines exist), `run_command` (run a command; separate stdout/stderr/exit_code), `read_file`, `write_file`.
+LLMs get these MCP tools on controlled machines: `list_machines` (what machines exist), `run_command` (run a command; separate stdout/stderr/exit_code), `read_file`, `write_file`, plus a real-terminal family `terminal_open`/`terminal_write`/`terminal_read`/`terminal_resize`/`terminal_close`/`terminal_list` (a PTY for interactive programs like pi, vim, top).
+
+`terminal_open` opens a **session-scoped temporary terminal**: it belongs to the current MCP session, dies on `terminal_close` or when the session ends, and `terminal_list` only shows this session's terminals. It cannot attach to named mirrors (see §3 "named mirrors") — relayable terminals are for humans; the only entry point is the `towstrap mirror` command on the controlled machine (local console or via SSH).
 
 `run_command` starts a fresh shell per call by default (cd/export don't carry over); with `session` (e.g. `session: "work"`) it runs in a **persistent shell** — same-named calls share one remote shell process, so cd, environment variables, sourced environments, and background jobs persist across calls, like a local terminal. Boundaries: no `stdin`; `cwd` only applies when the session is created; a timeout or session teardown kills the **whole process group** — the shell's running foreground command and `&` background jobs die together (to keep a daemon alive past the session, start it with `setsid`, e.g. `setsid npm run dev >/tmp/dev.log 2>&1 &`; on Windows only the main process is killed); after `exit`/`exec` ends a session, the next same-named call starts a new shell (the result carries a `session_restarted` hint); programs needing a terminal don't work. Idle sessions are reaped after `session_idle` (default 30m); each MCP client session caps at `max_sessions` (default 8).
 
@@ -427,7 +455,7 @@ Both transports behave identically — the difference is where the MCP server ru
 Config defaults to `~/.config/towstrap/mcp.yaml` (`--config` overrides; `examples/mcp.yaml` is a fully-commented template):
 
 ```yaml
-server: ssh.example.com:2222        # the TowStrap server's SSH entry
+server: towstrap.vast-plan.com:7822   # the TowStrap server's SSH entry
 key: ~/.ssh/towstrap_bot            # passphrase-less private key (no way to type one)
 known_hosts: ~/.ssh/known_hosts     # or pin with host_key: SHA256:... (one of the two required)
 machines:
@@ -444,10 +472,10 @@ limits:
   max_file: 1048576                  # read_file/write_file size cap
   session_idle: 30m                  # idle time before a persistent shell is reaped
   max_sessions: 8                    # persistent shells per MCP client session
-approvals_dir: ~/.config/towstrap/approvals   # pending approvals land here (no popup support)
+approvals_dir: ~/.config/towstrap/approvals   # ask_via: local pending requests land here
 ```
 
-First register the public key with the account: `towstrap-server user set office --ssh-key-file ~/.ssh/towstrap_bot.pub`. If known_hosts lacks the server, run `ssh-keyscan -p 2222 server >> ~/.ssh/known_hosts`, or write `host_key: SHA256:...` in the yaml.
+First register the public key with the account: `towstrap-server user set office --ssh-key-file ~/.ssh/towstrap_bot.pub`. If known_hosts lacks the server, run `ssh-keyscan -p 7822 server >> ~/.ssh/known_hosts`, or write `host_key: SHA256:...` in the yaml.
 
 Claude Code `mcpServers` snippet (`command` must be absolute):
 
@@ -495,7 +523,7 @@ Clients (Claude Code etc.) only need URL + token (`mcp add` prints a ready-made 
   "mcpServers": {
     "towstrap": {
       "type": "http",
-      "url": "https://server:8080/mcp",
+      "url": "https://server:7880/mcp",
       "headers": { "Authorization": "Bearer tsm-..." }
     }
   }
@@ -514,34 +542,54 @@ Clients (Claude Code etc.) only need URL + token (`mcp add` prints a ready-made 
 | `mcp remove NAME` | delete; token dies |
 | `mcp token NAME [--regen]` | show/rotate token |
 | `mcp pending [--approvals-dir DIR] [--config server.yaml]` | list pending approvals |
-| `mcp approve <id>\|--all` / `mcp deny <id>\|--all` | approve/deny pending requests |
+| `mcp approve [--remember] <id>\|--all` / `mcp deny <id>\|--all` | approve/deny pending requests (--remember: don't ask again for the same command this session) |
 
 Approvals-dir lookup order: `--approvals-dir` > `mcp.approvals_dir` in server.yaml > `approvals/` next to the audit log.
 
 `--allow-ip` adds a per-client source allowlist (off-list sources are rejected even with a valid token — `MCP-AUTH-FAIL reason=client-allow-ip`).
 
-### 9.4 The three policy levels
+### 9.4 Policy lists
 
-Every `run_command` passes through the policy (`policy` section):
+Every `run_command` passes through the policy (`policy` section), evaluated in the order **deny > ask > allow > default**:
 
-- `deny` matches are **rejected outright** (root deletion, mkfs, shutdown, `curl|sh`, private keys/sudoers, `sudo`, touching the agent itself, …)
+- `deny` matches are **rejected outright** — no "just confirm it" path (root deletion, mkfs, `curl|sh` pipes, private keys/sudoers, touching the agent itself, …)
+- `ask` matches **need user confirmation first** — dangerous but legitimate operations: `rm`, `sudo`/`su`, `kill`/`pkill`, shutdown/reboot, `find -delete/-exec`, `git push/reset/clean/rebase`, `chmod`/`chown`, `dd`/`fdisk`, …
 - `allow` matches are read-only/low-risk commands that **run automatically** (`ls`, `cat`, `git status`, …); commands are split on `&&`, `||`, `;`, `|`, newlines, and **every segment** must match an allow rule; a segment containing backticks, `$(`, `>`, `<`, or `&` is never auto-allowed
-- everything else falls to `policy.default` (default `ask` = human approval)
+- everything else falls to `policy.default` (`ask` = confirm / `run` = execute / `deny` = reject; default `ask`)
+
+Note the ordering: ask beats allow — putting `rm` in `allow` does not override a built-in `ask` rule. To silence a category you must remove its `ask` rule (writing your own `ask:` list replaces the built-in one wholesale).
 
 `read_file` needs no approval but is bounded by `deny_paths` (private keys and credentials are denied by default); on connect, the agent also reports the paths of its own token file and config file, which stay unreadable/unwritable whatever their names or locations. `write_file` inside a machine's `roots` is auto-allowed, outside needs approval; `deny_paths` and the agent-reported list still apply first.
 
-The built-in lists live in `internal/mcpsrv/policy.go` (`DefaultAllow`/`DefaultDeny`/`DefaultDenyPaths`); setting a key in yaml **replaces the whole list**, it doesn't append.
+The built-in lists live in `internal/mcpsrv/policy.go` (`DefaultAllow`/`DefaultAsk`/`DefaultDeny`/`DefaultDenyPaths`); setting a key in yaml **replaces the whole list**, it doesn't append.
+
+**Per-machine approval bypass**: a machine belongs to its deployer, who sets its posture — write `mcp_policy: open` in agent.yaml (or `--mcp-policy`), and that machine's ask-rule hits (rm, sudo, …) and out-of-roots `write_file` **run without asking**; the `deny` list still applies. The server side can also set `machines.<name>.policy: open` (the way to posture older agents that don't report it; an explicit yaml value wins over the agent's report). Relaxed executions audit as `MCP-POLICY-OPEN` and return `approval=open` — distinguishable from a real human approval. stdio mode's mcp.yaml accepts `machines.<name>.policy` too.
 
 ⚠️ Policy is a filter, **not a sandbox**: shell syntax can always route around naive splitting. The real boundary is the agent's OS user. `roots` uses **textual prefix matching** without resolving remote symlinks — a `~/work/link -> /etc` symlink lets `write_file ~/work/link/x` escape the roots check. Don't put such links inside roots.
 
 ### 9.5 Human approval
 
-Two paths for approval-required actions:
+Which path an approval takes is decided by `policy.ask_via`; unset (auto) means: popup when the client supports it, local pending files otherwise — **approval requires a real person by default** and never silently downgrades to LLM self-confirmation:
 
-1. **Popup**: MCP clients supporting elicitation get an "allow execution" prompt, with a "don't ask again for this command in this session" checkbox
-2. **Local fallback**: without popup support, the pending request lands in `approvals_dir` (stdio mode also fires a desktop notification); a human runs `towstrap-mcp approve <id>` (stdio) or `towstrap-server mcp approve <id>` (embedded)
+1. **Popup** (auto + client supports elicitation): an "allow execution" prompt, with a "don't ask again for this command in this session" checkbox — the strongest path, the consent is a real person clicking
+2. **Local pending** (`ask_via: local`, or auto when the client can't pop): the pending request lands in `approvals_dir`; a human runs `towstrap-mcp approve <id>` (stdio) or `towstrap-server mcp approve <id>` (embedded) — add `--remember` to stop re-asking for the same command within the session. A real clickable **system dialog** pops too — three buttons: deny / allow / "allow and don't ask again" (macOS system dialog, zenity on Linux, desktop notification + `wall` broadcast to all logged-in terminals if neither works); stdio always pops, embedded mode pops by default as well (`mcp.local_notify` defaults on; on headless servers the channels quietly degrade, set `local_notify: false` to silence them). **While waiting, the calling MCP client gets a log notification** (id, machine, command, how to approve); the embedded server also writes the notice straight into **same-account interactive towstrap SSH terminals** — if you're SSH'd into the server, a line `[towstrap] waiting for approval ap-xxxx (machine: command)…` appears right in your terminal instead of leaving you guessing why the call is stuck
+3. **In-conversation confirmation** (`ask_via: llm`, explicit opt-in only): the first call **does not execute** — the tool returns instructions to the LLM, which relays the command and its risk to the user and retries with `confirmed=true` once the user agrees. Confirmations are tracked per "session + machine + command", are **one-time**, and expire after 10 minutes; `confirmed=true` cannot pre-authorize a command that was never asked about. If the user says "always allow this", the LLM may add `remember=true` to skip re-asking within the session. Note this is only the LLM's claim of consent — weaker than the two paths above, and never selected automatically
 
-Requests time out and are denied after `ask_timeout` (default 5 minutes).
+⚠️ An explicit `ask_via` **overrides client capability**: some clients (certain Cursor versions) claim elicitation support but never render the prompt, so the call just hangs until timeout — set `policy.ask_via: local` (the local dialog pops right away; `local_notify` is on by default in embedded mode too) or `llm` to route around them.
+
+Requests time out and are denied after `ask_timeout` (default 5 minutes); the 10-minute window for in-conversation confirmation is a separate deadline (waiting for the LLM's confirmed retry).
+
+⚠️ With in-conversation confirmation the server sees **the LLM claiming the user agreed** — it guards against mistakes and silent execution, but it is not an independently verified human approval; the audit log records it separately as `MCP-CONFIRMED` vs the popup's `MCP-APPROVED`. Deployments that need strong confirmation should use an elicitation-capable client or `ask_via: local`.
+
+### 9.6 Authorized-session records
+
+Ordinary commands leave no content-level record (audit events only); **anything that ran only because it was approved gets archived**, tying together "requested command → which approval → what actually ran → the result":
+
+- each approval request gets an authorization ID `ap-xxxx` (the same one shown to the approve command and in audit events); each actual execution gets an execution ID `ex-xxxx`
+- records land in `auth-records/` next to the approvals directory (mode 0600): plain commands record the full command, exit code, duration, stdout/stderr; `write_file` records path, byte count and a sha256 fingerprint of the content (not the content itself); PTY terminals opened under approval record their entire output (4MB cap per file, truncation noted in-file)
+- `remember`-approved repeat executions each get their own record, with `auth` pointing back to the original approval — you can always trace which consent a command ran on
+
+Audit trail: `MCP-ASK auth=ap-…` (confirmation requested) → `MCP-CONFIRMED`/`MCP-APPROVED auth=ap-…` (consent obtained) → `MCP-AUTH-EXEC auth=ap-… exec=ex-… record=path` (execution archived).
 
 ---
 
@@ -552,7 +600,7 @@ The repo ships a skill that teaches coding assistants how to use TowStrap safely
 ### Straight from the server (no towstrap-mcp needed)
 
 ```bash
-mkdir -p ~/.claude/skills/towstrap && curl -fsSL https://server:8080/skill -o ~/.claude/skills/towstrap/SKILL.md
+mkdir -p ~/.claude/skills/towstrap && curl -fsSL https://server:7880/skill -o ~/.claude/skills/towstrap/SKILL.md
 # other assistants: Cursor ~/.cursor/skills/, Codex/Grok share ~/.agents/skills/
 # add -k to curl if the server uses a self-signed certificate
 ```
@@ -578,7 +626,7 @@ Copy `skills/towstrap/` into any assistant's skills directory — same result.
 ### print-mcp: print per-client config snippets
 
 ```bash
-towstrap-mcp connect print-mcp --url https://server:8080/mcp --token tsm-...
+towstrap-mcp connect print-mcp --url https://server:7880/mcp --token tsm-...
 towstrap-mcp connect print-mcp --stdio [--config mcp.yaml]
 ```
 
@@ -590,17 +638,17 @@ Prints MCP config for Claude Code / Codex / Grok / Cursor / Gemini / OpenCode (w
 
 ```bash
 # Liveness: no auth
-curl https://server:8080/health        # ok
+curl https://server:7880/health        # ok
 
 # Who's online: two credential types
-curl -H "X-Admin-Token: <admin_token>" https://server:8080/status   # admin sees everything
-curl -H "X-Agent-Token: tsa-..."       https://server:8080/status   # a machine token sees only itself
+curl -H "X-Admin-Token: <admin_token>" https://server:7880/status   # admin sees everything
+curl -H "X-Agent-Token: tsa-..."       https://server:7880/status   # a machine token sees only itself
 ```
 
 `/status` returns:
 
 ```json
-{"ok":true,"http":":8080","ssh":":2222","users":[{"user":"alice","machine":"alice+default","online":true}]}
+{"ok":true,"http":":7880","ssh":":7822","users":[{"user":"alice","machine":"alice+default","online":true}]}
 ```
 
 The admin token lists every machine (`machine` is the full login name); a machine token sees only itself — ordinary users can't enumerate the fleet. With no machines online, `ok:false` and HTTP 503.
@@ -641,7 +689,11 @@ Both sides keep their own log in `<time> <event> k=v` format, rotating to `.1` a
 | `MCP-SESSION-CMD` | a command ran inside a persistent shell session: machine, session, cmd |
 | `MCP-AUTH-FAIL` | MCP auth failure: reason=allow-ip/token/client-allow-ip |
 | `MCP-POLICY-DENY` | policy deny/deny_paths hit: client, machine, kind, detail |
-| `MCP-ASK` / `MCP-APPROVED` / `MCP-DENIED` / `MCP-ASK-TIMEOUT` | approval flow: via=elicit/local, three outcomes |
+| `MCP-ASK` / `MCP-APPROVED` / `MCP-CONFIRMED` / `MCP-DENIED` / `MCP-ASK-TIMEOUT` | approval flow: via=elicit/local/llm, with authorization ID auth=ap-… |
+| `MCP-AUTH-EXEC` | approved execution archived: auth=ap-… exec=ex-… record=file path |
+| `MCP-TERMINAL-OPEN` / `MCP-TERMINAL-CLOSE` / `MCP-TERMINAL-END` | MCP PTY terminal lifecycle: machine, terminal, cmd, approval |
+
+On the agent side (`audit.log`) there are also `START`/`END` (mode=mirror for a local attachment) and `MIRROR-KILL` (name, via=local for a manual kill / via=idle for the automatic idle-timeout kill).
 
 ---
 
@@ -661,6 +713,7 @@ Both sides keep their own log in `<time> <event> k=v` format, rotating to `.1` a
 | `token refresh` gets 429 | too many bad passwords/TOTP codes; wait out the lockout (starts at 1 minute, doubles up to 1 hour) |
 | frequent `AGENT-REPLACE` | two agents with the same machine name keep displacing each other, or the token was copied elsewhere. Check for duplicate processes; rotate the token if you suspect a leak |
 | connections exhausted | look for `connection limit reached` rejections; tune `max_conns`/`max_conns_per_ip` |
+| `towstrap mirror` can't connect to the socket | the agent isn't running, or a stale socket file is in the way (the log says `mirror socket already in use`). The socket lives at `~/.towstrap/mirror.sock` (`/var/lib/towstrap/` for root installs); override with `--sock` or `TOWSTRAP_MIRROR_SOCK` |
 
 ---
 

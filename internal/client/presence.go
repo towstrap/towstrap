@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,11 +69,11 @@ func newPresence(cfg Config) *presence {
 }
 
 // fromRe 是 From 字段（「来源@IP/主机」）的白名单：
-// 用户名沿用 proto.ValidName 的字符集，另允许冒号——服务器内嵌 MCP 的
-// 来源形如「mcp:客户端名@IP」。主机允许 IPv4/IPv6/主机名。
+// 用户名允许 proto.ValidName 字符集加 +（机器 ID 是 账号+机器）和冒号——
+// 服务器内嵌 MCP 的来源形如「mcp:客户端名@IP」。主机允许 IPv4/IPv6/主机名。
 // agent 不盲信服务器下发的文本——格式对不上就脱敏，纵深防御，
 // 即使服务器被攻破也借不了通知渠道注入任意内容。
-var fromRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}@[0-9A-Za-z.:-]{1,75}$`)
+var fromRe = regexp.MustCompile(`^[A-Za-z0-9._+:-]{1,64}@[0-9A-Za-z.:-]{1,75}$`)
 
 func safeFrom(from string) string {
 	if fromRe.MatchString(from) {
@@ -94,6 +95,23 @@ func auditCmd(cmd string) string {
 	return cmd
 }
 
+// oneLine 把命令压成单行给通知/日志用：控制字符换成空格、按上限截断。
+func oneLine(s string, max int) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			b.WriteByte(' ')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	s = strings.Join(strings.Fields(b.String()), " ")
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
+}
+
 func (p *presence) sessionStart(id, from, mode, cmd string) {
 	from = safeFrom(from)
 	var fire bool
@@ -113,13 +131,16 @@ func (p *presence) sessionStart(id, from, mode, cmd string) {
 		p.lastNotify[from] = now
 		p.announced = true
 		if cmd != "" {
-			body = fmt.Sprintf("%s 正在通过 %s 在本机执行命令", from, p.server)
+			body = fmt.Sprintf("%s 正在通过 %s 在本机执行命令：%s", from, p.server, oneLine(cmd, 80))
 		} else {
 			body = fmt.Sprintf("%s 正在通过 %s 远程连入本机", from, p.server)
 		}
 	}
 	p.mu.Unlock()
 	p.audit.Log("START", "id", id, "from", from, "mode", mode, "cmd", auditCmd(cmd))
+	// 通知受冷却压住，但每条命令都在 agent 输出里留一行——quiet 也照打：
+	// 机器前的人把 agent 跑在终端里，就能实时看到远端在干什么。
+	slog.Info("远程会话开始", "id", id, "from", from, "mode", mode, "cmd", oneLine(cmd, 160))
 	if fire && p.notify != nil {
 		p.notify("towstrap 远程会话开始", body)
 	}

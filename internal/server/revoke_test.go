@@ -54,7 +54,7 @@ func TestTOTPAccountPasswordAttemptKeepsGuard(t *testing.T) {
 		t.Fatal("密码尝试不应清零 OTP 失败计数（高危 1 回归）")
 	}
 	// 锁定后连正确密码的 kbd 通道也进不来
-	if s.verifyPassword("alice", "alicepw123", addr, "test") {
+	if ok, _ := s.verifyPassword("alice", "alicepw123", addr, "test"); ok {
 		t.Fatal("锁定期内不应通过任何密码校验")
 	}
 }
@@ -112,7 +112,7 @@ func TestKbdTOTPWrongCodeCountsTowardLock(t *testing.T) {
 	addr := &net.TCPAddr{IP: net.ParseIP("1.2.3.4"), Port: 5555}
 
 	for i := 0; i < 5; i++ {
-		if !s.verifyPassword("alice", "alicepw123", addr, "kbd-interactive") {
+		if ok, _ := s.verifyPassword("alice", "alicepw123", addr, "kbd-interactive"); !ok {
 			t.Fatalf("第 %d 次：正确密码不应被拒", i+1)
 		}
 		if s.cfg.Users.VerifyTOTP("alice", "000000") {
@@ -123,7 +123,7 @@ func TestKbdTOTPWrongCodeCountsTowardLock(t *testing.T) {
 	if s.guard.allowed("alice", "1.2.3.4") {
 		t.Fatal("5 次验证码错误后应锁定")
 	}
-	if s.verifyPassword("alice", "alicepw123", addr, "kbd-interactive") {
+	if ok, _ := s.verifyPassword("alice", "alicepw123", addr, "kbd-interactive"); ok {
 		t.Fatal("锁定期内正确密码也不应通过")
 	}
 }
@@ -150,7 +150,7 @@ func TestAccountAllowIPRejectCountsAsFail(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		s.guard.fail("carol", "1.2.3.4")
 	}
-	if s.verifyPassword("carol", "carolpw123", addr, "password") {
+	if ok, _ := s.verifyPassword("carol", "carolpw123", addr, "password"); ok {
 		t.Fatal("白名单外来源不应通过")
 	}
 	if s.guard.allowed("carol", "1.2.3.4") {

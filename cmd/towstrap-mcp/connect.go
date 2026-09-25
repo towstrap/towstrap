@@ -19,7 +19,7 @@ const connectUsage = `towstrap-mcp connect —— 把随项目发布的 towstrap
   towstrap-mcp connect list                         列出支持的 harness、检测状态、安装状态
   towstrap-mcp connect uninstall [--path 目录] [--force] [--dry-run]
                                                   卸载本工具装过的 skill
-  towstrap-mcp connect print-mcp --url https://S:8080/mcp --token tsm-...
+  towstrap-mcp connect print-mcp --url https://S:7880/mcp --token tsm-...
   towstrap-mcp connect print-mcp --stdio [--config mcp.yaml]
                                                   打印各家 harness 的 MCP 配置片段（不写文件）
 

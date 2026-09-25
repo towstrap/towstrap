@@ -8,7 +8,7 @@ PLATFORMS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 win
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/towstrap-server ./cmd/towstrap-server
-	go build -ldflags "$(LDFLAGS)" -o bin/towstrap-agent ./cmd/towstrap-agent
+	go build -ldflags "$(LDFLAGS)" -o bin/towstrap ./cmd/towstrap
 	go build -ldflags "$(LDFLAGS)" -o bin/towstrap-mcp ./cmd/towstrap-mcp
 
 test:
@@ -22,14 +22,16 @@ release: clean
 		os=$${p%/*}; arch=$${p#*/}; \
 		ext=""; [ "$$os" = windows ] && ext=".exe"; \
 		echo "== $$os/$$arch"; \
-		for b in server agent mcp; do \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+			-o dist/towstrap-$$os-$$arch$$ext ./cmd/towstrap; \
+		for b in server mcp; do \
 			CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
 				-o dist/towstrap-$$b-$$os-$$arch$$ext ./cmd/towstrap-$$b; \
 		done; \
 	done
 	cd dist && shasum -a 256 * > SHA256SUMS
 	@if [ -n "$$MINISIGN_KEY_FILE" ]; then \
-		cd dist && minisign -H -Sm -s "$$MINISIGN_KEY_FILE" towstrap-server-* towstrap-agent-* towstrap-mcp-* SHA256SUMS; \
+		cd dist && minisign -H -Sm -s "$$MINISIGN_KEY_FILE" towstrap-* SHA256SUMS; \
 		echo "已用 minisign 签名"; \
 	else \
 		echo "提示：设 MINISIGN_KEY_FILE 可在发布时签名"; \

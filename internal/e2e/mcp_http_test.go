@@ -46,20 +46,34 @@ func startMCPHTTPProtect(t *testing.T, protect []string) (srv *server.Server, ht
 
 // startMCPHTTPShell 同上，可指定 agent 的 shell（zsh 的 NoExpand 测试用）。
 func startMCPHTTPShell(t *testing.T, protect []string, shell string) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
+	return startMCPHTTPRoots(t, protect, shell, nil)
+}
+
+func startMCPHTTPRoots(t *testing.T, protect []string, shell string, roots []string) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
+	return startMCPHTTPAskVia(t, protect, shell, roots, "")
+}
+
+// startMCPHTTPAskVia 同上，askVia 非空时设置 policy.ask_via（local 走
+// 老的待批文件流程）。
+func startMCPHTTPAskVia(t *testing.T, protect []string, shell string, roots []string, askVia string) (srv *server.Server, httpPort int, users *accounts.Store, audit, approvalsDir, rootsDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	audit = filepath.Join(dir, "server-audit.log")
 	approvalsDir = filepath.Join(dir, "approvals")
 	rootsDir = t.TempDir()
+	if roots == nil {
+		roots = []string{rootsDir}
+	}
 
 	mc := &mcpsrv.Config{
 		Machines: map[string]*mcpsrv.Machine{
-			"bot+default": {Description: "测试机", Roots: []string{rootsDir}},
+			"bot+default": {Description: "测试机", Roots: roots},
 		},
 		ApprovalsDir: approvalsDir,
 	}
 	mc.Policy.Default = "ask"
 	mc.Policy.AskTimeout = 5 * time.Second
+	mc.Policy.AskVia = askVia
 	mc.ApplyDefaults()
 	if err := mc.Validate(); err != nil {
 		t.Fatal(err)
@@ -290,10 +304,10 @@ func TestMCPHTTPTimeout(t *testing.T) {
 	}
 }
 
-// TestMCPHTTPCLIApproval 客户端不声明 elicitation：批准落到
-// approvals_dir，由 towstrap-server mcp approve 兜底。
+// TestMCPHTTPCLIApproval 客户端不声明 elicitation 且 ask_via=local：批准
+// 落到 approvals_dir，由 towstrap-server mcp approve 兜底。
 func TestMCPHTTPCLIApproval(t *testing.T) {
-	_, httpPort, users, _, approvalsDir, _ := startMCPHTTP(t)
+	_, httpPort, users, _, approvalsDir, _ := startMCPHTTPAskVia(t, nil, "/bin/bash", nil, "local")
 	_, tok, _ := users.MCPAdd("laptop", []string{"bot"}, nil)
 	cs, err := mcpHTTPConnect(t, httpPort, tok, nil) // 无 elicitation 能力
 	if err != nil {
@@ -327,7 +341,7 @@ func TestMCPHTTPCLIApproval(t *testing.T) {
 	if id == "" {
 		t.Fatal("批准文件没出现")
 	}
-	if _, err := mcpsrv.ApprovePending(approvalsDir, id, false); err != nil {
+	if _, err := mcpsrv.ApprovePending(approvalsDir, id, false, false); err != nil {
 		t.Fatal(err)
 	}
 	res := <-done
@@ -342,6 +356,52 @@ func TestMCPHTTPCLIApproval(t *testing.T) {
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("文件应已创建: %v", err)
 	}
+}
+
+// TestMCPHTTPLLMConfirm ask_via=llm：无弹窗能力的客户端拿到「需要
+// 用户确认」的指引报错；带 confirmed=true 重试才真正执行。
+func TestMCPHTTPLLMConfirm(t *testing.T) {
+	_, httpPort, users, audit, _, _ := startMCPHTTPAskVia(t, nil, "/bin/bash", nil, "llm")
+	_, tok, _ := users.MCPAdd("chat", []string{"bot"}, nil)
+	cs, err := mcpHTTPConnect(t, httpPort, tok, nil) // 无 elicitation 能力
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	target := filepath.Join(t.TempDir(), "llm-confirmed")
+	call := func(extra map[string]any) *mcp.CallToolResult {
+		args := map[string]any{"machine": "bot+default", "command": "touch " + target}
+		for k, v := range extra {
+			args[k] = v
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "run_command", Arguments: args})
+		if err != nil {
+			t.Fatalf("CallTool: %v", err)
+		}
+		return res
+	}
+
+	res := call(nil)
+	if !res.IsError || !strings.Contains(resultText(res), "需要用户确认") {
+		t.Fatalf("首次调用应返回确认指引: %s", resultText(res))
+	}
+	if _, err := os.Stat(target); err == nil {
+		t.Fatal("没确认就执行了")
+	}
+
+	res = call(map[string]any{"confirmed": true})
+	if res.IsError {
+		t.Fatalf("confirmed 重试应执行: %s", resultText(res))
+	}
+	var out runResult
+	decodeStructured(t, res, &out)
+	if out.Approval != "confirmed" {
+		t.Fatalf("approval 应为 confirmed: %+v", out)
+	}
+	waitAudit(t, audit, "MCP-CONFIRMED")
 }
 
 // TestMCPHTTPScope machines 不含 bot 的客户端：看不到也碰不了。
@@ -524,4 +584,141 @@ func TestMCPHTTPSessionZsh(t *testing.T) {
 	if res.IsError || !strings.Contains(out.Stdout, "alive-1") {
 		t.Fatalf("zsh 会话应活着且状态保留: %s %+v", resultText(res), out)
 	}
+}
+
+func TestMCPHTTPTildeRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "work", "含 空格"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, httpPort, users, _, _, _ := startMCPHTTPRoots(t, nil, "/bin/bash", []string{"~/work"})
+	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcpHTTPConnect(t, httpPort, tok, nil)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cs.Close()
+
+	p := "~/work/含 空格/单'引号.txt"
+	res := callTool(t, cs, "write_file", map[string]any{
+		"machine": "bot+default", "path": p, "content": "tilde-http\n"})
+	if res.IsError {
+		t.Fatalf("~/ roots 内 write_file 应放行: %s", resultText(res))
+	}
+	real := filepath.Join(home, "work", "含 空格", "单'引号.txt")
+	if b, err := os.ReadFile(real); err != nil || string(b) != "tilde-http\n" {
+		t.Fatalf("应写到 $HOME 下的真实文件: %q %v", b, err)
+	}
+	res = callTool(t, cs, "read_file", map[string]any{"machine": "bot+default", "path": p})
+	if res.IsError {
+		t.Fatalf("read_file: %s", resultText(res))
+	}
+	var ro struct {
+		Content string `json:"content"`
+	}
+	decodeStructured(t, res, &ro)
+	if ro.Content != "tilde-http\n" {
+		t.Fatalf("回读不一致: %q", ro.Content)
+	}
+	res = callTool(t, cs, "read_file", map[string]any{"machine": "bot+default", "path": "~/.ssh/config"})
+	if !res.IsError || !strings.Contains(resultText(res), "拒绝") {
+		t.Fatalf("读 ~/.ssh/config 应被拒: %v %s", res.IsError, resultText(res))
+	}
+}
+
+// TestMCPHTTPTerminalPTY 内嵌 /mcp → Hub.OpenShell(Pty=true) → agent 的
+// 完整 PTY 链路；同时确认终端 ID 只在本 MCP 会话里有效。
+func TestMCPHTTPTerminalPTY(t *testing.T) {
+	_, httpPort, users, audit, _, _ := startMCPHTTP(t)
+	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := &mcp.ClientOptions{ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
+	}}
+	cs, err := mcpHTTPConnect(t, httpPort, tok, opts)
+	if err != nil {
+		t.Fatalf("连接失败: %v", err)
+	}
+	defer cs.Close()
+
+	res := callTool(t, cs, "terminal_open", map[string]any{
+		"machine": "bot+default", "command": "/bin/sh -c 'tty; exec cat'",
+		"cols": 100, "rows": 30,
+	})
+	if res.IsError {
+		t.Fatalf("terminal_open: %s", resultText(res))
+	}
+	var opened terminalOpenResult
+	decodeStructured(t, res, &opened)
+	if opened.TerminalID == "" || opened.Approval != "approved" {
+		t.Fatalf("打开结果不对: %+v", opened)
+	}
+	initial := readTerminalContains(t, cs, opened.TerminalID, "/dev/")
+	if initial.Closed {
+		t.Fatalf("终端不应提前结束: %+v", initial)
+	}
+	res = callTool(t, cs, "terminal_write", map[string]any{
+		"terminal_id": opened.TerminalID, "input": "pty-http-ok\n",
+	})
+	if res.IsError {
+		t.Fatalf("terminal_write: %s", resultText(res))
+	}
+	echo := readTerminalContains(t, cs, opened.TerminalID, "pty-http-ok")
+	if echo.Closed {
+		t.Fatalf("cat 还在跑时不应结束: %+v", echo)
+	}
+	res = callTool(t, cs, "terminal_resize", map[string]any{
+		"terminal_id": opened.TerminalID, "cols": 120, "rows": 40,
+	})
+	if res.IsError {
+		t.Fatalf("terminal_resize: %s", resultText(res))
+	}
+
+	_, tok2, err := users.MCPAdd("other", []string{"bot"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs2, err := mcpHTTPConnect(t, httpPort, tok2, opts)
+	if err != nil {
+		t.Fatalf("第二个客户端连接失败: %v", err)
+	}
+	defer cs2.Close()
+	res = callTool(t, cs2, "terminal_read", map[string]any{
+		"terminal_id": opened.TerminalID, "timeout_seconds": 0,
+	})
+	if !res.IsError || !strings.Contains(resultText(res), "不存在") {
+		t.Fatalf("别的 MCP 会话不应读得到这个终端: %v %s", res.IsError, resultText(res))
+	}
+
+	// 撤掉 laptop 对 bot 的授权：旧 MCP 会话里的既有终端也必须立刻不可
+	// 再操作并被关掉，不能只挡住下一次 terminal_open。
+	machines := []string{"nobody"}
+	if err := users.MCPSet("laptop", &machines, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	res = callTool(t, cs, "terminal_read", map[string]any{
+		"terminal_id": opened.TerminalID, "timeout_seconds": 0,
+	})
+	if !res.IsError || !strings.Contains(resultText(res), "无权访问") {
+		t.Fatalf("撤权后 terminal_read 应失败: %v %s", res.IsError, resultText(res))
+	}
+	res = callTool(t, cs, "terminal_open", map[string]any{
+		"machine": "bot+default", "command": "cat",
+	})
+	if !res.IsError || !strings.Contains(resultText(res), "无权访问") {
+		t.Fatalf("撤权后 terminal_open 应失败: %v %s", res.IsError, resultText(res))
+	}
+	res = callTool(t, cs, "list_machines", map[string]any{})
+	if res.IsError || strings.Contains(resultText(res), "bot+default") {
+		t.Fatalf("撤权后 list_machines 不应再看到 bot: %v %s", res.IsError, resultText(res))
+	}
+	waitAudit(t, audit, "MCP-TERMINAL-OPEN")
+	waitAudit(t, audit, "mode=mcp-pty")
+	waitAudit(t, audit, "MCP-TERMINAL-END")
 }

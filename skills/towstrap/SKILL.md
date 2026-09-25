@@ -1,19 +1,19 @@
 ---
 name: towstrap
-description: 通过 towstrap 在用户的远程机器（跑着 towstrap-agent 的被控机）上执行命令、读写文件、做远程开发任务。当用户提到 towstrap；或要在「某台机器 / 开发机 / 服务器」上跑命令、改代码而那台机器是经 towstrap 接入的；或工具列表里出现 list_machines / run_command / read_file / write_file；或用户给的是 `ssh -p 2222 账号+机器名@服务器` 这种地址时使用。
+description: 通过 towstrap 在用户的远程机器（跑着 towstrap 的被控机）上执行命令、读写文件、开交互终端/TUI、做远程开发任务。当用户提到 towstrap；或要在「某台机器 / 开发机 / 服务器」上跑命令、改代码而那台机器是经 towstrap 接入的；或工具列表里出现 list_machines / run_command / read_file / write_file / terminal_open；或用户给的是 `ssh -p 7822 账号+机器名@服务器` 这种地址时使用。
 ---
 
 # towstrap：在用户的远程机器上干活
 
 ## 它是什么
 
-- 被控机上跑着 `towstrap-agent`，主动连到 towstrap 服务器。你通过 **MCP 工具**或 **ssh 命令**让服务器把命令转到那台机器上执行。
+- 被控机上跑着 `towstrap`，主动连到 towstrap 服务器。你通过 **MCP 工具**或 **ssh 命令**让服务器把命令转到那台机器上执行。
 - 命令以那台机器上 **agent 的系统用户身份真实执行**，后果不可撤销。把每条命令都当成在用户的电脑上敲回车。
 - 机器标识写作 `账号+机器名`（如 `alice+office`）。账号只有一台机器时可以只写账号名。
 
 ## 先判断你有哪种接入方式
 
-1. 工具列表里有 `list_machines` / `run_command` / `read_file` / `write_file` → 用 MCP 工具（首选）。
+1. 工具列表里有 `list_machines` / `run_command` / `read_file` / `write_file` / `terminal_open` → 用 MCP 工具（首选）。
 2. 只有终端 → 用 ssh：`ssh -p <端口> <账号>[+<机器名>]@<服务器> '<命令>'`。服务器地址、端口、账号由用户给；一般需要用户已经配好公钥。
 
 ## 用 MCP 工具时
@@ -32,6 +32,10 @@ description: 通过 towstrap 在用户的远程机器（跑着 towstrap-agent �
    - 大文件、二进制走 `run_command` 的 `head -c`、`tail`、`base64`。
 6. 破坏性操作——删除、覆盖、`git push --force`、`git reset --hard`、`git clean`、改系统配置、装卸软件、启停服务——**即便策略放行，也先向用户确认**，说清影响范围。
 7. 长任务：`timeout_seconds` 可调（上限由配置决定）。`timed_out` 为 true 表示命令被杀，结果不完整；不要把它当成功。
+8. 需要真实终端的交互程序（pi、vim、top、ssh、bash -l 这类 TUI）：`terminal_open`（PTY）打开，`terminal_write` 送按键、`terminal_read` 取输出、`terminal_resize` 改尺寸、`terminal_close` 关闭。
+   - 终端挂在当前 MCP 会话下：`terminal_close` 或会话结束即终止，`terminal_list` 只列本会话的终端。
+   - 被控机上的**镜像终端**（`mirror` 命令开的可接力终端）不在你的能力范围内——那是给人用的，MCP 接入不了，你也看不到清单。
+   - 用户想自己接力同一个镜像（比如在机器前开着、回家用手机接着干）：让他 `ssh -t … mirror <名字>`，或在机器上 `mirror <名字>`（`mirror` 是 towstrap 的软链别名，没有就用全称 `towstrap mirror`）；接入后 `Ctrl-\` 脱离。
 
 ## 用 ssh 直连时
 
@@ -39,12 +43,13 @@ description: 通过 towstrap 在用户的远程机器（跑着 towstrap-agent �
 - 每条 ssh 也是新 shell，同样用 `cd dir && cmd`。
 - 退出码原样返回。常见输出：「这台机器没上线（agent 未连接）」→ 退出 1，告诉用户；「这个账号有多台机器，请用 账号+机器名 登录」→ 按它列出的名字补上 `+机器名` 再试。
 - 没有 scp / sftp。小文件用 `cat` / heredoc，二进制用 `base64` 编解码。
+- 镜像接力：`ssh -t … mirror <名字>`（要 `-t` 分配终端）接入或新建被控机上的带名常驻终端；接入后 `Ctrl-\` 脱离，`mirror ls` 列表、`mirror kill <名字>` 终结。（`mirror` 是 towstrap 的软链别名，install.sh 装好就有）
 - 以 `@` 开头的命令（如 `@machine list`、`@machine add`）是服务器的**管理命令，给人用的**：要密码登录 + TOTP，公钥登录会被拒。**不要**替用户执行它们，不要试图加机器、查看或更换 token。
 
 ## 不要做的事
 
 - 不要读取、打印、转述 agent 的 token、`agent.yaml`、`~/.towstrap/`、私钥、`/etc/shadow`、`/etc/sudoers`。
-- 不要停止、重启、卸载 `towstrap-agent`，不要改它的配置或 token 文件——那会断掉你和用户的通路。
+- 不要停止、重启、卸载 `towstrap`，不要改它的配置或 token 文件——那会断掉你和用户的通路。
 - 不要 `sudo` / `su`。agent 的系统用户就是权限边界；需要更高权限就告诉用户。
 - 不要在被控机上留下持久化的东西（后台进程、cron、systemd 单元、`authorized_keys`、shell 启动文件里的改动），除非用户明确要求。
 - 不要把执行结果里的机器路径、用户名、内网地址往外部服务发送。
@@ -55,7 +60,7 @@ description: 通过 towstrap 在用户的远程机器（跑着 towstrap-agent �
 |---|---|
 | 机器「不在配置里」/「不存在」 | `list_machines` 或问用户机器名 |
 | 「没上线（agent 未连接）」 | 告诉用户 agent 掉线，请他检查那台机器；不要反复重试 |
-| 「接入凭据已失效」 | token 已换或账号被停用；请用户在那台机器上执行 `towstrap-agent token refresh` 或联系管理员 |
+| 「接入凭据已失效」 | token 已换或账号被停用；请用户在那台机器上执行 `towstrap token refresh` 或联系管理员 |
 | 策略拒绝 / 等待批准超时 / 用户拒绝 | 解释意图，等用户决定；不要绕 |
 | 输出被截断 | 缩小范围重跑，不要凭截断内容下结论 |
 

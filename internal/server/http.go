@@ -76,12 +76,18 @@ func (s *Server) routes() http.Handler {
 	}
 	mux.HandleFunc("/install.sh", serveInstall(scripts.InstallSH, "text/x-shellscript; charset=utf-8"))
 	mux.HandleFunc("/install.ps1", serveInstall(scripts.InstallPS1, "text/plain; charset=utf-8"))
+	if s.oauth != nil {
+		mux.HandleFunc("/oauth/request", s.handleOAuthRequest)
+		mux.HandleFunc("/oauth/begin", s.handleOAuthBegin)
+		mux.HandleFunc("/oauth/callback", s.handleOAuthCallback)
+		mux.HandleFunc("/oauth/result", s.handleOAuthResult)
+	}
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/agent", s.handleAgent)
 	mux.HandleFunc("/token/refresh", s.handleTokenRefresh)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	})
+	// / 是产品落地页（介绍 + 一键安装命令）；其余未匹配路径在 handleLanding
+	// 里照旧 404。
+	mux.HandleFunc("/", s.handleLanding)
 	return mux
 }
 
@@ -127,11 +133,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	// 单条消息上限：持 token 的人也不能用一条超大消息把内存打爆。
 	conn.SetReadLimit(proto.MaxMessageBytes)
 
-	_, raw, err := conn.ReadMessage()
-	if err != nil {
-		return
-	}
-	hello, err := proto.Decode(raw)
+	hello, err := readAgentHello(conn, agentHelloWait)
 	if err != nil || hello.T != proto.TypeHello {
 		_ = conn.WriteMessage(websocket.TextMessage, proto.Msg{T: proto.TypeErr, Err: "need hello"}.Bytes())
 		return
@@ -157,11 +159,23 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	a := s.Hub.Attach(machineID, token, conn, AgentHello{
 		Ver: hello.Ver, Protect: hello.Protect, Home: hello.Home, Dir: hello.Dir,
+		MCPPol: hello.MCPPol,
 	})
 	s.audit.Log("AGENT-CONNECT", "id", machineID, "ip", ip, "version", hello.Ver)
 	a.readLoop()
 	s.Hub.Detach(conn)
 	s.audit.Log("AGENT-DISCONNECT", "id", machineID, "ip", ip)
+}
+
+const agentHelloWait = 10 * time.Second
+
+func readAgentHello(conn *websocket.Conn, timeout time.Duration) (proto.Msg, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return proto.Msg{}, err
+	}
+	return proto.Decode(raw)
 }
 
 // tcpAddr 把 "host:port" 字符串变成 net.Addr（白名单匹配用）。

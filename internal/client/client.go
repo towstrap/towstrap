@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,10 +39,15 @@ type Config struct {
 	Quiet bool
 	// AuditLog 审计日志路径；空 = DefaultAuditPath()。
 	AuditLog string
+	// MirrorIdle 镜像终端闲置多久终结（按最后一次输入/输出算）；<=0 不启用。
+	MirrorIdle time.Duration
 	// ProtectPaths 是 agent 要服务器帮忙挡住的文件（token 文件、agent
 	// 配置文件），hello 时上报；服务器把它们加进 MCP read_file/
 	// write_file 的拒名单。只写文件路径，目录不支持。
 	ProtectPaths []string
+	// MCPPolicy 是这台机器对 MCP 批准环节的姿态，hello 时上报：
+	// "open" = 免批准（deny 保底）；空 = 跟服务端策略走。
+	MCPPolicy string
 }
 
 func DefaultID() string {
@@ -61,6 +67,13 @@ func prepare(cfg Config) (Config, error) {
 	}
 	if cfg.Shell == "" {
 		cfg.Shell = defaultShell()
+	}
+	switch cfg.MCPPolicy {
+	case "", "server":
+		cfg.MCPPolicy = ""
+	case "open":
+	default:
+		return cfg, fmt.Errorf("mcp_policy 只能是 server/open，现在是 %q", cfg.MCPPolicy)
 	}
 	return cfg, nil
 }
@@ -112,6 +125,15 @@ func (t *tokenState) reloadFrom(path string) bool {
 	return true
 }
 
+// newMirrors 装配镜像终端登记处：闲置终结阈值和审计都跟着 cfg/presence 走。
+func newMirrors(cfg Config, p *presence) *mirrorManager {
+	m := newMirrorManager(cfg.Shell)
+	m.idleTTL = cfg.MirrorIdle
+	m.audit = p.audit
+	m.startIdleSweep()
+	return m
+}
+
 func ConnectOnce(cfg Config) error {
 	warnIfRoot()
 	cfg, err := prepare(cfg)
@@ -120,6 +142,7 @@ func ConnectOnce(cfg Config) error {
 	}
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
+	serveMirrorSock(newMirrors(cfg, p), p)
 	return dialOnce(cfg, p, &tokenState{cur: cfg.AgentToken})
 }
 
@@ -132,6 +155,9 @@ func Run(cfg Config) error {
 	}
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
+	//镜像终端登记处和本机 socket 都建在连接循环外：服务器断线期间
+	//镜像和本机接入照常活着。
+	serveMirrorSock(newMirrors(cfg, p), p)
 	slog.Info("towstrap agent 运行中（远程访问，本机可感知）",
 		"server", cfg.Server, "shell", cfg.Shell, "insecure", cfg.Insecure,
 		"audit_log", p.path, "notify", !cfg.Quiet)
@@ -173,7 +199,7 @@ type agent struct {
 	conn     *websocket.Conn
 	writeMu  sync.Mutex
 	sessMu   sync.Mutex
-	sess     map[string]io.Closer
+	sess     map[string]*sessionEntry
 	presence *presence
 	tokens   *tokenState
 }
@@ -198,21 +224,44 @@ func (a *agent) keepalive() {
 	}
 }
 
-func (a *agent) setSession(id string, c io.Closer) {
-	a.sessMu.Lock()
-	defer a.sessMu.Unlock()
-	a.sess[id] = c
+type inputItem struct {
+	data []byte
+	eof  bool
 }
 
-func (a *agent) takeSession(id string) io.Closer {
+const sessionInputLen = 64
+
+type sessionEntry struct {
+	proc io.Closer
+	w    io.Writer
+	pty  bool
+	in   chan inputItem
+	done chan struct{}
+	once sync.Once
+}
+
+func (e *sessionEntry) Close() error {
+	e.once.Do(func() {
+		close(e.done)
+	})
+	return e.proc.Close()
+}
+
+func (a *agent) setSession(id string, e *sessionEntry) {
 	a.sessMu.Lock()
 	defer a.sessMu.Unlock()
-	c := a.sess[id]
+	a.sess[id] = e
+}
+
+func (a *agent) takeSession(id string) *sessionEntry {
+	a.sessMu.Lock()
+	defer a.sessMu.Unlock()
+	e := a.sess[id]
 	delete(a.sess, id)
-	return c
+	return e
 }
 
-func (a *agent) getSession(id string) io.Closer {
+func (a *agent) getSession(id string) *sessionEntry {
 	a.sessMu.Lock()
 	defer a.sessMu.Unlock()
 	return a.sess[id]
@@ -241,7 +290,9 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 	default:
 		return fmt.Errorf("server 应为 ws:// 或 wss://")
 	}
-	u.Path = "/agent"
+	// --server 里的路径当前缀：wss://host → /agent，wss://host/ts → /ts/agent。
+	// 部署在反代子路径下（nginx 按路径分发）就靠这个区分端点。
+	u.Path = path.Join(u.Path, "/agent")
 	u.RawQuery = ""
 
 	hdr := http.Header{}
@@ -264,7 +315,7 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 	}
 	defer conn.Close()
 
-	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]io.Closer), presence: p, tokens: tokens}
+	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]*sessionEntry), presence: p, tokens: tokens}
 	defer a.closeAll()
 
 	// Home/Dir 随 hello 上报：服务器拿它们把 MCP 文件工具收到的 ~/
@@ -272,7 +323,7 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 	home, _ := os.UserHomeDir()
 	wd, _ := os.Getwd()
 	if err := a.send(proto.Msg{T: proto.TypeHello, Name: cfg.ID, Ver: version.String(),
-		Protect: cfg.ProtectPaths, Home: home, Dir: wd}); err != nil {
+		Protect: cfg.ProtectPaths, Home: home, Dir: wd, MCPPol: cfg.MCPPolicy}); err != nil {
 		return err
 	}
 	slog.Info("connected", "id", cfg.ID, "server", u.String())
@@ -389,7 +440,10 @@ func (p *execProc) Close() error {
 func childEnv() []string {
 	env := make([]string, 0, 32)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "TOWSTRAP_AGENT_TOKEN=") || strings.HasPrefix(kv, "TERM=") {
+		// TOWSTRAP_MIRROR 是镜像的套娃标记，只能由起进程的调用方显式给——
+		// 继承到的不算数（agent 自己在镜像里跑时，子进程不该假装在镜像里）。
+		if strings.HasPrefix(kv, "TOWSTRAP_AGENT_TOKEN=") || strings.HasPrefix(kv, "TERM=") ||
+			strings.HasPrefix(kv, "TOWSTRAP_MIRROR=") {
 			continue
 		}
 		env = append(env, kv)
@@ -411,12 +465,14 @@ func (a *agent) openShell(msg proto.Msg) {
 // openPty PTY 模式：交互终端，或客户端带命令的 PTY 会话（ssh -t host cmd）。
 // 输入输出走伪终端，退出码随 close 带回。
 func (a *agent) openPty(msg proto.Msg) {
-	p, err := startPty(a.cfg.Shell, msg.Cmd, uint32(msg.Cols), uint32(msg.Rows))
+	p, err := startPty(a.cfg.Shell, msg.Cmd, msg.Cwd, uint32(msg.Cols), uint32(msg.Rows))
 	if err != nil {
 		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
 		return
 	}
-	a.setSession(msg.ID, p)
+	e := &sessionEntry{proc: p, w: p, pty: true, in: make(chan inputItem, sessionInputLen), done: make(chan struct{})}
+	a.setSession(msg.ID, e)
+	go a.pumpInput(e)
 	if a.presence != nil {
 		a.presence.sessionStart(msg.ID, msg.From, "pty", msg.Cmd)
 	}
@@ -491,6 +547,9 @@ func (a *agent) openExec(msg proto.Msg) {
 	}
 	setPgid(cmd)
 	cmd.Env = childEnv()
+	if msg.Cwd != "" {
+		cmd.Dir = expandHome(msg.Cwd)
+	}
 	cmd.Stdout = &streamWriter{a: a, id: msg.ID}
 	cmd.Stderr = &streamWriter{a: a, id: msg.ID, stream: "e"}
 	stdin, err := cmd.StdinPipe()
@@ -502,7 +561,9 @@ func (a *agent) openExec(msg proto.Msg) {
 		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
 		return
 	}
-	a.setSession(msg.ID, &execProc{cmd: cmd, stdin: stdin})
+	e := &sessionEntry{proc: &execProc{cmd: cmd, stdin: stdin}, w: stdin, in: make(chan inputItem, sessionInputLen), done: make(chan struct{})}
+	a.setSession(msg.ID, e)
+	go a.pumpInput(e)
 	if a.presence != nil {
 		a.presence.sessionStart(msg.ID, msg.From, "exec", msg.Cmd)
 	}
@@ -540,33 +601,84 @@ func exitCode(err error) int {
 	return 255
 }
 
+func (a *agent) pumpInput(e *sessionEntry) {
+	for {
+		select {
+		case it := <-e.in:
+			if it.eof {
+				if !e.pty {
+					if c, ok := e.w.(io.Closer); ok {
+						_ = c.Close()
+					}
+				}
+				continue
+			}
+			for len(it.data) > 0 {
+				n, err := e.w.Write(it.data)
+				it.data = it.data[n:]
+				if err != nil {
+					return
+				}
+			}
+		case <-e.done:
+			return
+		}
+	}
+}
+
+func (a *agent) pushInput(id string, it inputItem) {
+	e := a.getSession(id)
+	if e == nil {
+		return
+	}
+	select {
+	case e.in <- it:
+	case <-e.done:
+	default:
+		if dead := a.takeSession(id); dead != nil {
+			_ = dead.Close()
+			_ = a.send(proto.Msg{T: proto.TypeErr, ID: id, Err: "stdin 输入堆积超限：子进程不读取，已终止该会话"})
+		}
+	}
+}
+
 func (a *agent) onData(msg proto.Msg) {
 	payload, err := msg.Payload()
 	if err != nil || len(payload) == 0 {
 		return
 	}
-	switch c := a.getSession(msg.ID).(type) {
-	case *ptyFile:
-		_, _ = c.Write(payload)
-	case *execProc:
-		// 客户端 → agent 只有 stdin 一条流，msg.S 用不上
-		_, _ = c.stdin.Write(payload)
-	}
+	// 客户端 → agent 只有 stdin 一条流，msg.S 用不上
+	a.pushInput(msg.ID, inputItem{data: payload})
 }
 
 // onEOF 客户端关了 stdin：无 PTY 会话把它传给子进程（cat 这类程序靠 EOF
 // 收尾）；PTY 会话忽略——终端语义下 Ctrl-D 本来就是 data 里的一个字符。
 func (a *agent) onEOF(msg proto.Msg) {
-	if c, ok := a.getSession(msg.ID).(*execProc); ok && c.stdin != nil {
-		_ = c.stdin.Close()
-	}
+	a.pushInput(msg.ID, inputItem{eof: true})
 }
 
 func (a *agent) onResize(msg proto.Msg) {
-	c := a.getSession(msg.ID)
-	p, ok := c.(*ptyFile)
-	if !ok || msg.Cols <= 0 || msg.Rows <= 0 {
+	e := a.getSession(msg.ID)
+	if e == nil || msg.Cols <= 0 || msg.Rows <= 0 {
+		return
+	}
+	p, ok := e.proc.(*ptyFile)
+	if !ok {
 		return
 	}
 	_ = p.resize(uint32(msg.Cols), uint32(msg.Rows))
+}
+
+func expandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
 }

@@ -22,11 +22,58 @@ func TestSplitMachineID(t *testing.T) {
 		// 因为用户名和机器名都不许带 +）
 		{"alice+o+x", "alice", "o+x"},
 		{"+x", "", "x"},
+		// / 是输入别名：和 + 等价
+		{"alice/office", "alice", "office"},
+		{"alice/*", "alice", "*"},
+		{"alice/o+x", "alice", "o+x"}, // 拆完机器名带 + 下游会拒
 	} {
 		u, m := SplitMachineID(tc.in)
 		if u != tc.user || m != tc.machine {
 			t.Fatalf("SplitMachineID(%q) = (%q,%q), want (%q,%q)", tc.in, u, m, tc.user, tc.machine)
 		}
+	}
+}
+
+func TestNormalizeMachineID(t *testing.T) {
+	for in, want := range map[string]string{
+		"alice":        "alice",
+		"alice+office": "alice+office",
+		"alice/office": "alice+office",
+		"alice/*":      "alice+*",
+	} {
+		if got := NormalizeMachineID(in); got != want {
+			t.Fatalf("NormalizeMachineID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestMachineByName 裸机器名解析：唯一命中才返回，跨账号重名返回 false。
+func TestMachineByName(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Add("alice", "password12", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add("bob", "password34", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddMachine("alice", "office", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddMachine("bob", "office", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddMachine("alice", "laptop", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if m, ok := s.MachineByName("laptop"); !ok || m.ID() != "alice+laptop" {
+		t.Fatalf("唯一机器名应解析成 alice+laptop: %+v %v", m, ok)
+	}
+	if _, ok := s.MachineByName("office"); ok {
+		t.Fatal("跨账号重名的机器名应返回 false")
+	}
+	if _, ok := s.MachineByName("nosuch"); ok {
+		t.Fatal("不存在的机器名应返回 false")
 	}
 }
 

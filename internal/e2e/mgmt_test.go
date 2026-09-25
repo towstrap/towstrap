@@ -242,7 +242,7 @@ func TestMgmtTokenRegen(t *testing.T) {
 		t.Fatalf("--regen 应退出 2: code=%d", code)
 	}
 	if !strings.Contains(se, "token refresh") {
-		t.Fatalf("stderr 应指向 towstrap-agent token refresh: %q", se)
+		t.Fatalf("stderr 应指向 towstrap token refresh: %q", se)
 	}
 	m, _ := users.GetMachine("alice", "build")
 	if m.Token != build.Token {

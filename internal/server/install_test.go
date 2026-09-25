@@ -46,6 +46,9 @@ func TestInstallEndpoints(t *testing.T) {
 		if strings.Contains(body, "__TOWSTRAP_DEFAULT_SERVER__") {
 			t.Fatal("占位符没被替换")
 		}
+		if strings.Contains(body, "__TOWSTRAP_DEFAULT_VERSION__") {
+			t.Fatal("版本占位符没被替换")
+		}
 		if !strings.Contains(body, "--token") {
 			t.Fatal("脚本不像 install.sh")
 		}

@@ -25,10 +25,25 @@ type MCPClient struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Grants 报告这个客户端能不能碰名为 machine 的账号。
+// Grants 报告这个客户端能不能碰名为 machine 的目标。machines 条目支持
+// "*"（全部）、"alice" / "alice+*"（账号下全部机器）和 "alice+office"
+// （指定一台）。
 func (c MCPClient) Grants(machine string) bool {
+	targetUser, targetMachine := SplitMachineID(machine)
 	for _, m := range c.Machines {
 		if m == "*" || m == machine {
+			return true
+		}
+		specUser, specMachine := SplitMachineID(m)
+		if specUser != targetUser {
+			continue
+		}
+		if specMachine == "" || specMachine == "*" {
+			return true
+		}
+		// spec 是单台机器时按拆好的两段比：demo+local 的规则同样
+		// 命中 demo/local 这种别名写法。
+		if targetMachine != "" && specMachine == targetMachine {
 			return true
 		}
 	}
@@ -71,9 +86,9 @@ func validMachines(machines []string) error {
 		}
 		u, mn := SplitMachineID(m)
 		switch {
-		case !proto.ValidName(u):
+		case u == "." || u == ".." || !proto.ValidName(u):
 			return fmt.Errorf("机器 %q 的账号部分不合法（应为 towstrap 账号名或 '*'）", m)
-		case mn != "" && mn != "*" && !proto.ValidName(mn):
+		case mn == "." || mn == ".." || (mn != "" && mn != "*" && !proto.ValidName(mn)):
 			return fmt.Errorf("机器 %q 的机器名部分不合法", m)
 		}
 	}

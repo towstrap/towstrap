@@ -32,7 +32,7 @@ func (s *Server) startSSH() error {
 	srv := &glssh.Server{
 		Addr: s.cfg.SSHAddr,
 		PasswordHandler: func(ctx glssh.Context, password string) bool {
-			return s.sshAuthOK(ctx.User(), password, ctx.RemoteAddr())
+			return s.sshAuthOK(s.canonicalLogin(ctx.User()), password, ctx.RemoteAddr())
 		},
 		PublicKeyHandler:           s.handlePublicKey,
 		KeyboardInteractiveHandler: s.handleKbdInteractive,
@@ -61,6 +61,29 @@ func splitUser(u string) (account, machine string) {
 	return accounts.SplitMachineID(u)
 }
 
+// canonicalLogin 把登录名规范成 账号+机器 的规范形式：
+//   - alice/office 当 alice+office 用（/ 是输入别名，内部统一 +）；
+//   - 没带分隔符又不是账号名时，当裸机器名在全部账号里找唯一同名的
+//     （ssh local@host 等价于 ssh demo+local@host）；是账号名、或机器名
+//     跨账号重名/不存在时原样返回，走后面的正常失败路径。
+//
+// 所有认证回调和会话入口先用它归一，下游（审计、from、Hub 查找）
+// 见到的就都是规范格式。
+func (s *Server) canonicalLogin(user string) string {
+	user = accounts.NormalizeMachineID(user)
+	account, machine := splitUser(user)
+	if machine != "" {
+		return user
+	}
+	if _, ok := s.cfg.Users.Get(account); ok {
+		return user // 是账号名：保留「整账号登录」的原有语义
+	}
+	if m, ok := s.cfg.Users.MachineByName(account); ok {
+		return m.ID()
+	}
+	return user
+}
+
 // sshAuthOK 是纯密码路径：全局白名单 → 限速器 → 账号密码 → 账号白名单。
 // 绑了 TOTP 的账号在这里直接拒绝，而且**不碰限速器**：TOTP 账号的密码校验
 // 和失败计数统一走 keyboard-interactive 通道。失败计数的清零只在整个登录
@@ -72,32 +95,68 @@ func splitUser(u string) (account, machine string) {
 func (s *Server) sshAuthOK(user, password string, remote net.Addr) bool {
 	account, _ := splitUser(user)
 	if acct, ok := s.cfg.Users.Get(account); ok && acct.TOTPEnabled {
+		// TOTP 账号的账号密码只走 kbd-interactive；但 OAuth 换来的
+		// 一次性凭据本身已是外部强认证，这里直接放行。
+		if strings.HasPrefix(password, "tso-") {
+			ok, viaGrant := s.verifyPassword(user, password, remote, "password")
+			if ok && viaGrant {
+				ip := hostOnly(remote.String())
+				s.guard.pass(account, ip)
+				s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "password", "via", "oauth")
+				return true
+			}
+		}
 		// 不看密码也要烧一次 bcrypt：直接拒比密码错快得多，快慢一比就能
 		// 筛出「存在且绑了 TOTP」的账号。
 		s.cfg.Users.BurnPassword(password)
 		return false
 	}
-	if !s.verifyPassword(user, password, remote, "password") {
+	ok, viaGrant := s.verifyPassword(user, password, remote, "password")
+	if !ok {
 		return false
 	}
-	s.guard.pass(account, hostOnly(remote.String()))
-	s.audit.Log("AUTH-OK", "user", user, "ip", hostOnly(remote.String()), "method", "password")
+	ip := hostOnly(remote.String())
+	s.guard.pass(account, ip)
+	if viaGrant {
+		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "password", "via", "oauth")
+	} else {
+		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "password")
+	}
 	return true
 }
 
-// verifyPassword 校验密码并联动限速器：全局白名单 → 锁定检查 → 密码 →
-// 账号状态 → 账号自己的白名单。任何一步不过都计一次失败；这里**不**清零
-// 计数——清零只在整个登录流程（含 TOTP）全部通过后由调用方做，否则
-// 「密码对 + 验证码错」每轮都会把计数归零，限速形同虚设。结果写审计日志。
-func (s *Server) verifyPassword(user, password string, remote net.Addr, method string) bool {
-	account, _ := splitUser(user)
+// verifyPassword 校验密码并联动限速器：全局白名单 → 锁定检查 → OAuth 凭据
+// （tso- 前缀的一次性密码）→ oauth_only 拦截 → 账号密码 → 账号状态 →
+// 账号白名单。第二个返回值表示「这次是靠 OAuth 凭据过的」——调用方用它
+// 跳过 TOTP（OAuth 授权本身就是强认证）。任何一步不过都计一次失败；这里
+// **不**清零计数——清零只在整个登录流程（含 TOTP）全部通过后由调用方做。
+func (s *Server) verifyPassword(user, password string, remote net.Addr, method string) (bool, bool) {
+	account, machineName := splitUser(user)
 	ip := hostOnly(remote.String())
 	if !s.cfg.AllowIPs.AllowsAddr(remote) {
-		return false
+		return false, false
 	}
 	if !s.guard.allowed(account, ip) {
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "locked")
-		return false
+		return false, false
+	}
+	// OAuth 凭据是按完整机器名发的；登录名没带 +机器名 且账号只有一台
+	// 机器时按那台解析（和 handleSSH 的路由一致）。
+	if strings.HasPrefix(password, "tso-") {
+		if machineName == "" {
+			if ms := s.cfg.Users.Machines(account); len(ms) == 1 {
+				machineName = ms[0].Name
+			}
+		}
+		if machineName != "" && s.cfg.Users.UseSSHGrant(account+"+"+machineName, password) {
+			s.audit.Log("OAUTH-GRANT-USE", "user", user, "ip", ip, "method", method)
+			return true, true
+		}
+	}
+	if s.sshOAuthOnly(account, machineName) {
+		s.guard.fail(account, ip)
+		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "oauth-required")
+		return false, false
 	}
 	pwOK := s.cfg.Users.Verify(account, password)
 	acct, ok := s.cfg.Users.Get(account)
@@ -116,15 +175,33 @@ func (s *Server) verifyPassword(user, password string, remote net.Addr, method s
 	if reason != "" {
 		s.guard.fail(account, ip)
 		s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", reason)
-		return false
+		return false, false
 	}
-	return true
+	return true, false
+}
+
+// sshOAuthOnly 判断这次登录名指向的目标是否被标「只收 OAuth 凭据」：
+// 账号级标记罩住名下所有机器；机器级只管那一台。登录名没带 +机器名 时
+// 按「账号唯一机器」解析；多台机器时裸账号反正过不了路由，这里不拦。
+func (s *Server) sshOAuthOnly(account, machineName string) bool {
+	if acct, ok := s.cfg.Users.Get(account); ok && acct.OAuthOnly {
+		return true
+	}
+	if machineName == "" {
+		ms := s.cfg.Users.Machines(account)
+		if len(ms) != 1 {
+			return false
+		}
+		machineName = ms[0].Name
+	}
+	m, ok := s.cfg.Users.GetMachine(account, machineName)
+	return ok && m.OAuthOnly
 }
 
 // handleKbdInteractive 键盘交互登录：先问密码，账号绑了 TOTP 再问验证码。
 // 验证码错误也计入限速器——6 位码空间小，不能留不限速的爆破面。
 func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.KeyboardInteractiveChallenge) bool {
-	user := ctx.User()
+	user := s.canonicalLogin(ctx.User())
 	account, _ := splitUser(user)
 	remote := ctx.RemoteAddr()
 	ip := hostOnly(remote.String())
@@ -135,14 +212,19 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	if err != nil || len(answers) == 0 {
 		return false
 	}
-	if !s.verifyPassword(user, answers[0], remote, "kbd-interactive") {
+	ok, viaGrant := s.verifyPassword(user, answers[0], remote, "kbd-interactive")
+	if !ok {
 		return false
 	}
-	acct, ok := s.cfg.Users.Get(account)
-	if !ok || !acct.TOTPEnabled {
+	acct, exists := s.cfg.Users.Get(account)
+	if !exists || !acct.TOTPEnabled || viaGrant {
 		s.guard.pass(account, ip)
-		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
-		return true // 没绑 TOTP：密码对了就行
+		if viaGrant {
+			s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive", "via", "oauth")
+		} else {
+			s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
+		}
+		return true // 没绑 TOTP、或 OAuth 凭据本身已是强认证：密码对了就行
 	}
 	answers, err = challenger("towstrap login", "This account has TOTP enabled", []string{"TOTP code: "}, []bool{false})
 	if err != nil || len(answers) == 0 {
@@ -167,7 +249,7 @@ type authMethodKey struct{}
 // 也不写每次拒绝的审计（同样原因），只记成功。公钥登录不要求 TOTP——
 // 它就是给自动化用的第二种凭据，和 OpenSSH 的默认行为一致。
 func (s *Server) handlePublicKey(ctx glssh.Context, key glssh.PublicKey) bool {
-	user := ctx.User()
+	user := s.canonicalLogin(ctx.User())
 	remote := ctx.RemoteAddr()
 	if !s.cfg.AllowIPs.AllowsAddr(remote) {
 		return false
@@ -184,7 +266,11 @@ func (s *Server) handlePublicKey(ctx glssh.Context, key glssh.PublicKey) bool {
 // sshPubKeyOK 是 handlePublicKey 去掉 gliderlabs Context 的核心，方便单测：
 // 账号存在未停用、这把钥匙登记过、账号自己的白名单放行。
 func (s *Server) sshPubKeyOK(user string, key gossh.PublicKey, remote net.Addr) bool {
-	account, _ := splitUser(user)
+	account, machineName := splitUser(user)
+	// oauth_only 的账号/机器不认公钥——只收 OAuth 换来的凭据。
+	if s.sshOAuthOnly(account, machineName) {
+		return false
+	}
 	if !s.cfg.Users.VerifySSHKey(account, key) {
 		return false
 	}
@@ -236,7 +322,7 @@ func (s *Server) revokeStaleAgents() []string {
 // 的 agent 上。支持两种用法：申请 PTY 的交互终端，和无 PTY 的命令执行
 // （ssh host '命令'、ssh -T）——后者 stdout/stderr 分开、退出码原样带回。
 func (s *Server) handleSSH(sess glssh.Session) {
-	username := sess.User()
+	username := s.canonicalLogin(sess.User())
 	from := username + "@" + hostOnly(sess.RemoteAddr().String())
 	ptyReq, winCh, isPty := sess.Pty()
 	cmd := sess.RawCommand()
@@ -277,7 +363,7 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		default:
 			s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "ambiguous")
 			var b strings.Builder
-			fmt.Fprintf(&b, "这个账号有多台机器，请用 账号+机器名 登录：\n")
+			fmt.Fprintf(&b, "这个账号有多台机器，请用 账号+机器名（或 账号/机器名）登录：\n")
 			for _, m := range machines {
 				state := "离线"
 				if s.Hub.Has(m.ID()) {
@@ -329,14 +415,17 @@ func (s *Server) handleSSH(sess glssh.Session) {
 	// agent 据此给 zsh 启动加 +o nomatch +o banghist（普通 SSH 会话
 	// 不带这个标记，行为不变；标记只让 shell 更「字面量」，没有放权）。
 	noExpand := false
+	mcpCwd := ""
 	for _, e := range sess.Environ() {
 		if e == "TOWSTRAP_MCP_SHELL=1" {
 			noExpand = true
-			break
+		}
+		if v, ok := strings.CutPrefix(e, "TOWSTRAP_MCP_CWD="); ok {
+			mcpCwd = v
 		}
 	}
 
-	sh, err := s.Hub.OpenShell(agent, OpenReq{Cols: cols, Rows: rows, Pty: isPty, Cmd: cmd, NoExpand: noExpand, From: from})
+	sh, err := s.Hub.OpenShell(agent, OpenReq{Cols: cols, Rows: rows, Pty: isPty, Cmd: cmd, NoExpand: noExpand, Cwd: mcpCwd, From: from})
 	if err != nil {
 		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "open")
 		_, _ = sess.Write([]byte(err.Error() + "\n"))
@@ -348,6 +437,13 @@ func (s *Server) handleSSH(sess glssh.Session) {
 	defer func() {
 		s.audit.Log("SESSION-END", "user", username, "from", from, "id", sh.id, "code", fmt.Sprintf("%d", sh.exitCode()))
 	}()
+
+	// 交互终端登记进广播表：之后 MCP 有待批请求时往这里写提示行——
+	// 人正登在服务器上时立刻看得见（exec 会话不登记，不污染脚本输出）。
+	if isPty {
+		s.registerSSH(sess, account)
+		defer s.unregisterSSH(sess)
+	}
 
 	if isPty {
 		go func() {
@@ -375,6 +471,37 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		_, _ = fmt.Fprintln(sess.Stderr(), "agent: "+m)
 	}
 	_ = sess.Exit(sh.exitCode())
+}
+
+// registerSSH/unregisterSSH 维护活跃交互 SSH 会话表；broadcastSSH 把
+// 「有 MCP 请求在等人批准」写进同账号的每个终端——人正登在服务器上时
+// 立刻看得见，不用猜调用为什么挂着。按账号过滤：命令内容不跨账号泄；
+// machine 解析不出账号（不该有）时发给所有会话兜底。
+func (s *Server) registerSSH(sess glssh.Session, account string) {
+	s.sshMu.Lock()
+	defer s.sshMu.Unlock()
+	if s.sshSess == nil {
+		s.sshSess = map[glssh.Session]string{}
+	}
+	s.sshSess[sess] = account
+}
+
+func (s *Server) unregisterSSH(sess glssh.Session) {
+	s.sshMu.Lock()
+	defer s.sshMu.Unlock()
+	delete(s.sshSess, sess)
+}
+
+func (s *Server) broadcastSSH(machine, text string) {
+	account, _ := accounts.SplitMachineID(machine)
+	line := fmt.Sprintf("\r\n\x1b[1;33m[towstrap] %s\x1b[0m\r\n", text)
+	s.sshMu.Lock()
+	defer s.sshMu.Unlock()
+	for sess, acct := range s.sshSess {
+		if account == "" || acct == account {
+			_, _ = io.WriteString(sess, line)
+		}
+	}
 }
 
 // idleGate 包住 SSH 会话的输入流：距上次敲键超过 limit 后，新到的第一笔输入

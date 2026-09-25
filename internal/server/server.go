@@ -5,12 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	glssh "github.com/gliderlabs/ssh"
 
 	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/allow"
 	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
+	"github.com/towstrap/towstrap/internal/monitor"
 )
 
 type Config struct {
@@ -62,16 +66,36 @@ type Config struct {
 	MCP               *mcpsrv.Config
 	MCPPath           string
 	MCPAllowPlainHTTP bool
+
+	// Monitor 是旁路监控推送目标（monitor: 配置节）：URL 空 = 关闭。
+	// 开启后审计事件流会实时复制推给外部接收端，另带周期指标快照；
+	// 推送失败只丢帧计数，绝不影响主流程。
+	Monitor           monitor.Config
+	MonitorAllowPlain bool
+
+	// OAuth 非空时挂 /oauth/* 端点：agent 可以替机器前的用户发起 OIDC
+	// 授权，通过后下发短时效 SSH 凭据（见 oauth.go）。
+	OAuth *OAuthConfig
 }
 
 type Server struct {
-	cfg   Config
-	Hub   *Hub
-	guard *authGuard
-	audit *auditlog.Writer
+	cfg     Config
+	Hub     *Hub
+	guard   *authGuard
+	audit   *auditSink
+	mon     *monitor.Monitor
+	started time.Time
+
+	authOK   atomic.Int64
+	authFail atomic.Int64
 
 	mcpMu      sync.Mutex
 	mcpAuditAt map[string]time.Time // MCP-SESSION 审计去重窗口
+
+	sshMu   sync.Mutex
+	sshSess map[glssh.Session]string // 活跃交互 SSH 会话 → 账号（待批提示广播用）
+
+	oauth *oauthFlow // nil = 未配置 OAuth
 }
 
 // DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/towstrap，
@@ -88,13 +112,32 @@ func DefaultAuditPath() string {
 }
 
 func New(cfg Config) *Server {
-	return &Server{
-		cfg:   cfg,
-		Hub:   NewHub(cfg.MaxSessions),
-		guard: newAuthGuard(),
-		audit: auditlog.Open(cfg.AuditLog, 0),
+	mon := monitor.New(cfg.Monitor)
+	s := &Server{
+		cfg:     cfg,
+		Hub:     NewHub(cfg.MaxSessions),
+		guard:   newAuthGuard(),
+		mon:     mon,
+		started: time.Now(),
 	}
+	s.audit = &auditSink{
+		w:    auditlog.Open(cfg.AuditLog, 0),
+		m:    mon,
+		ok:   &s.authOK,
+		fail: &s.authFail,
+	}
+	if mon != nil {
+		mon.SetSnapshot(s.metricsSnapshot)
+	}
+	if cfg.OAuth != nil {
+		s.oauth = newOAuthFlow(s)
+	}
+	return s
 }
+
+// MonitorDropped 是旁路监控累计丢帧数（接收端不在/队列满时增长）。
+// 未开启监控时恒为 0。
+func (s *Server) MonitorDropped() int64 { return s.mon.Dropped() }
 
 func (s *Server) Run() error {
 	// Bearer token 不能走明文出公网：起监听之前先拦。
@@ -102,6 +145,16 @@ func (s *Server) Run() error {
 		if err := mcpPlainHTTPAllowed(s.cfg.HTTPAddr, s.cfg.TLS, s.cfg.MCPAllowPlainHTTP); err != nil {
 			return err
 		}
+	}
+	// 监控事件同理：ws:// 明文只允许回环，否则要显式确认。
+	if s.mon != nil {
+		if err := monitorURLAllowed(s.cfg.Monitor.URL, s.cfg.MonitorAllowPlain); err != nil {
+			return err
+		}
+		s.mon.Start()
+		defer s.mon.Close()
+		slog.Info("monitor 推送已开启", "url", s.cfg.Monitor.URL,
+			"interval", s.cfg.Monitor.Interval)
 	}
 	errCh := make(chan error, 2)
 	go func() { errCh <- s.startHTTP() }()

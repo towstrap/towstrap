@@ -19,7 +19,7 @@ const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执�
   @machine add <名字> [--agent-allow-ip 地址]...    加一台机器并打印 agent token
   @machine remove <名字>                            删一台机器，在线 agent 立刻断开
   @machine token <名字>                             看这台机器的 token
-                                                    （换 token 在 agent 机器上跑 towstrap-agent token refresh）
+                                                    （换 token 在 agent 机器上跑 towstrap token refresh）
   @machine help                                     本说明
 `
 
@@ -186,14 +186,14 @@ func (s *Server) mgmtMachine(sess glssh.Session, account string, args []string, 
 	case "token":
 		fs := flag.NewFlagSet("@machine token", flag.ContinueOnError)
 		fs.SetOutput(sess.Stderr())
-		regen := fs.Bool("regen", false, "（已停用）换 token 请在那台机器上执行 towstrap-agent token refresh")
+		regen := fs.Bool("regen", false, "（已停用）换 token 请在那台机器上执行 towstrap token refresh")
 		pos, err := mgmtArgs(fs, args[1:])
 		if err != nil {
 			_ = sess.Exit(2)
 			return
 		}
 		if *regen {
-			_, _ = fmt.Fprintln(sess.Stderr(), "换 token 请在那台机器上执行 towstrap-agent token refresh（新 token 会直接写进它的 token 文件，不换断连接）")
+			_, _ = fmt.Fprintln(sess.Stderr(), "换 token 请在那台机器上执行 towstrap token refresh（新 token 会直接写进它的 token 文件，不换断连接）")
 			_ = sess.Exit(2)
 			return
 		}

@@ -30,6 +30,13 @@ const (
 	TypeToken  = "token"
 )
 
+// OfficialServer 是官方服务器的对外地址：agent 的 --server、install 脚本
+// 的默认地址、文档示例都以它为准——改域名只改这一处（安装脚本里的字面
+// 值由 scripts 包测试对齐）。对外只暴露 443，HTTP/WS 服务靠路径区分
+// （/agent、/mcp、/install.sh…），nginx 反向代理；SSH 是裸协议没有路径，
+// 仍走独立端口。
+const OfficialServer = "wss://towstrap.vast-plan.com"
+
 // 连接保活与消息上限，服务器和 agent 两侧共用同一套值。
 const (
 	// MaxMessageBytes 单条 WebSocket 消息上限。数据分片是 32KB，base64 后约
@@ -61,11 +68,17 @@ type Msg struct {
 	Protect []string `json:"protect,omitempty"`
 	Home    string   `json:"home,omitempty"`
 	Dir     string   `json:"dir,omitempty"`
-	From    string   `json:"from,omitempty"` // open 时服务器带上「登录账号@来源 IP」，agent 拿它告知被控机用户
-	D       string   `json:"d,omitempty"`
-	Cols    int      `json:"cols,omitempty"`
-	Rows    int      `json:"rows,omitempty"`
-	Cmd     string   `json:"cmd,omitempty"` // open 时要执行的命令；空 = 交互 shell
+	// MCPPol 是 agent 自报的 MCP 批准姿态（"open" = 这台机器免批准，
+	// deny 名单保底不动）。和 Protect 一样是「自报」语义——只能放宽
+	// 这台 agent 自己的管制，机器本来就是部署者的；deny 由服务端名单
+	// 兜着，agent 说了不算。
+	MCPPol string `json:"mcpol,omitempty"`
+	From   string `json:"from,omitempty"` // open 时服务器带上「登录账号@来源 IP」，agent 拿它告知被控机用户
+	D      string `json:"d,omitempty"`
+	Cols   int    `json:"cols,omitempty"`
+	Rows   int    `json:"rows,omitempty"`
+	Cmd    string `json:"cmd,omitempty"` // open 时要执行的命令；空 = 交互 shell
+	Cwd    string `json:"cwd,omitempty"`
 	// MCP 常驻 shell 时为 true：agent 对 zsh 加 `+o nomatch +o banghist`
 	// 启动旗标，让这两个会杀掉会话/改写字面量的展开在读第一条命令前就
 	// 关掉（stdin 里写初始化行来不及——zsh 读入阶段就 abort 了）。

@@ -29,24 +29,36 @@ type Machine struct {
 	Token         string    `json:"token"`
 	AgentAllowIPs []string  `json:"agent_allow_ips,omitempty"`
 	AgentLastIP   string    `json:"agent_last_ip,omitempty"`
+	OAuthOnly     bool      `json:"oauth_only,omitempty"` // 这台机器 SSH 只收 OAuth 凭据
 	CreatedAt     time.Time `json:"created_at"`
 }
 
 // ID 是机器的完整标识：账号+机器名。
 func (m Machine) ID() string { return m.Username + "+" + m.Name }
 
-// SplitMachineID 把 "alice+office" 拆成 ("alice","office")；没有 + 时
-// machine 为空（表示「整个账号」而不是某一台）。
+// SplitMachineID 把 "alice+office"（或别名写法 "alice/office"）拆成
+// ("alice","office")；没有分隔符时 machine 为空（表示「整个账号」）。
+// + 和 / 都不在名字的合法字符集里，拆开不会有歧义。
 func SplitMachineID(id string) (username, machine string) {
 	for i := 0; i < len(id); i++ {
-		if id[i] == '+' {
+		if id[i] == '+' || id[i] == '/' {
 			return id[:i], id[i+1:]
 		}
 	}
 	return id, ""
 }
 
-const machineCols = `username, name, token_enc, agent_allow_ips, agent_last_ip, created_at`
+// NormalizeMachineID 把别名写法归一到规范形式：alice/office → alice+office。
+// 内部存储和展示统一用 +；/ 只在输入边界接受。
+func NormalizeMachineID(id string) string {
+	u, m := SplitMachineID(id)
+	if m == "" {
+		return u
+	}
+	return u + "+" + m
+}
+
+const machineCols = `username, name, token_enc, agent_allow_ips, agent_last_ip, oauth_only, created_at`
 
 func scanMachine(s *Store, r rowScanner) (Machine, error) {
 	var (
@@ -54,9 +66,10 @@ func scanMachine(s *Store, r rowScanner) (Machine, error) {
 		tEnc           []byte
 		allowBlob      string
 		lastIP         string
+		oauthOnly      int
 		createdAt      string
 	)
-	if err := r.Scan(&username, &name, &tEnc, &allowBlob, &lastIP, &createdAt); err != nil {
+	if err := r.Scan(&username, &name, &tEnc, &allowBlob, &lastIP, &oauthOnly, &createdAt); err != nil {
 		return Machine{}, err
 	}
 	tok, err := s.decToken(tEnc)
@@ -72,6 +85,7 @@ func scanMachine(s *Store, r rowScanner) (Machine, error) {
 		Token:         tok,
 		AgentAllowIPs: ips,
 		AgentLastIP:   lastIP,
+		OAuthOnly:     oauthOnly != 0,
 		CreatedAt:     created,
 	}, nil
 }
@@ -184,6 +198,30 @@ func (s *Store) GetMachine(username, name string) (Machine, bool) {
 		return Machine{}, false
 	}
 	return m, true
+}
+
+// MachineByName 在全部账号下按机器名找：唯一命中才返回 true——裸机器名
+// 登录（ssh local@host）靠它把 local 解析成 账号+机器；跨账号重名时
+// 返回 false，让调用方走正常失败路径。
+func (s *Store) MachineByName(name string) (Machine, bool) {
+	rows, err := s.db.Query(`SELECT `+machineCols+` FROM machines WHERE name = ?`, name)
+	if err != nil {
+		return Machine{}, false
+	}
+	defer rows.Close()
+	var found Machine
+	n := 0
+	for rows.Next() {
+		m, err := scanMachine(s, rows)
+		if err != nil {
+			continue
+		}
+		n++
+		if n == 1 {
+			found = m
+		}
+	}
+	return found, n == 1
 }
 
 // MachineByToken 用 agent token 查机器；token 无效、机器不存在或所属
