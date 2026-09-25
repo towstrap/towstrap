@@ -17,6 +17,12 @@ server:
   #   quiet: false            # 关掉会话开始/结束的通知
   #   mcp_policy: "server"    # 这台机器对 MCP 审批的姿态（server/open）
 
+  # register：开 /register 自助注册——被控机上 `towstrap register` 交互建
+  # 账号+拿 token，不用管理员预先建号。同一机器指纹只许注册一个账号，
+  # 每来源 IP 每小时限 8 个。配 register_invite 则注册要带邀请码。
+  # register: true
+  # register_invite: ""       # 可选：邀请码；空 = 不验
+
   # tls: true                  # 网页口走 HTTPS/WSS；不给 cert/key 会自动生成自签证书
   # cert: /etc/towstrap/cert.pem # 正式证书（Let's Encrypt 等）配在这里
   # key: /etc/towstrap/key.pem

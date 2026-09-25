@@ -1,0 +1,26 @@
+# towstrap-server 的 systemd 单元。scripts/install-server.sh 会自动写
+# 这个单元（手工部署时照抄）。
+#
+# 服务端不像 agent 那样要把 shell 交出去——它只做 SSH 终结和转发，
+# 以 root 跑没问题；users_db（bcrypt 哈希+加密 token）0600 归 root。
+#
+#   sudo cp towstrap-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now towstrap-server
+
+[Unit]
+Description=towstrap server（SSH + HTTP + MCP 入口）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/towstrap-server --config /etc/towstrap/server.yaml
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+# ProtectSystem=true 只锁 /usr 和 /boot，/etc/towstrap 下的 users.db
+# 照常可写；要更严可换 strict + ReadWritePaths=/etc/towstrap。
+ProtectSystem=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

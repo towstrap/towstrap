@@ -184,6 +184,44 @@ func TestInstallEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("install-server.sh 原样下发", func(t *testing.T) {
+		s := New(Config{Users: users})
+		ts := httptest.NewServer(s.routes())
+		defer ts.Close()
+
+		code, body := get(t, ts.URL, "/install-server.sh")
+		if code != 200 {
+			t.Fatalf("GET /install-server.sh = %d", code)
+		}
+		raw, err := os.ReadFile("../../scripts/install-server.sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body != string(raw) {
+			t.Fatal("服务端安装脚本该原样下发（自包含、无占位符）")
+		}
+		if !strings.Contains(body, "towstrap-server-") || !strings.Contains(body, "server.yaml") {
+			t.Fatal("内容不像服务端安装脚本")
+		}
+		// 真跑一遍 --check：下发的字节可执行且解析正常。
+		if runtime.GOOS != "windows" {
+			sh := filepath.Join(t.TempDir(), "install-server.sh")
+			if err := os.WriteFile(sh, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out, err := exec.Command("sh", sh, "--check", "--prefix", "/tmp/x", "--confdir", "/tmp/y").Output()
+			if err != nil {
+				t.Fatalf("install-server.sh --check 跑挂了: %v", err)
+			}
+			s := string(out)
+			for _, want := range []string{"version=", "os=", "arch=", "prefix=/tmp/x", "confdir=/tmp/y"} {
+				if !strings.Contains(s, want) {
+					t.Fatalf("--check 缺 %s:\n%s", want, s)
+				}
+			}
+		}
+	})
+
 	t.Run("非 GET/HEAD 405", func(t *testing.T) {
 		s := New(Config{Users: users})
 		ts := httptest.NewServer(s.routes())

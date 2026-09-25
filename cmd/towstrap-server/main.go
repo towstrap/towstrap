@@ -34,6 +34,8 @@ func main() {
 	switch os.Args[1] {
 	case "server": // 容忍旧的子命令写法（towstrap-server server --config ...）
 		os.Exit(runServer(os.Args[2:]))
+	case "init": // 装完后的交互式初始化向导（改配置也能反复跑）
+		os.Exit(runInit(os.Args[2:]))
 	case "user":
 		os.Exit(runUser(os.Args[2:]))
 	case "machine":
@@ -53,6 +55,7 @@ func usage() {
 
 用法:
   towstrap-server [--config 文件.yaml] [选项]        跑服务器
+  towstrap-server init [选项]                        装完后的初始化向导（对外地址/自助注册/建号）
   towstrap-server user    add|list|set|remove|token|totp [选项] 用户名
   towstrap-server machine add|list|set|remove|token [选项] 账号 机器名
   towstrap-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
@@ -352,7 +355,8 @@ func runServer(args []string) int {
 		"max_conns", cfg.MaxConns, "max_conns_per_ip", cfg.MaxConnsPerIP,
 		"ssh_idle_timeout", sshIdle.String(), "ssh_max_timeout", sshMax.String(),
 		"audit_log", auditPath, "mcp", mcpState, "monitor", monState,
-		"oauth", oauthState, "agent_defaults", len(agentDefaults) > 0)
+		"oauth", oauthState, "agent_defaults", len(agentDefaults) > 0,
+		"register", cfg.Register, "register_invite", cfg.RegisterInvite != "")
 	s := server.New(server.Config{
 		HTTPAddr:          cfg.HTTP,
 		SSHAddr:           cfg.SSH,
@@ -368,6 +372,8 @@ func runServer(args []string) int {
 		MinAgentVersion:   minAgent,
 		PublicURL:         cfg.PublicURL,
 		AgentDefaults:     string(agentDefaults),
+		Register:          cfg.Register,
+		RegisterInvite:    cfg.RegisterInvite,
 		MaxSessions:       cfg.MaxSessions,
 		MaxConns:          cfg.MaxConns,
 		MaxConnsPerIP:     cfg.MaxConnsPerIP,

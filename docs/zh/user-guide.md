@@ -59,6 +59,31 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 minisign -Vm towstrap-linux-amd64   # 有签名文件时
 ```
 
+### 一键安装脚本（服务端）
+
+服务端也有一行装法——下二进制、校验 `SHA256SUMS`、写最小 `server.yaml`（0600）、Linux+root 自动装并启动 systemd 服务（`--no-systemd` 只装文件，macOS 同理）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh
+# --version vX.Y.Z 钉版本，--confdir/--prefix 换位置，--check 干跑看解析结果
+# （官方域名 /install-server.sh 挂的是同一份字节——但装第一台服务器时
+# 还没有自己的服务器，GitHub raw 才是正道）
+```
+
+已有 `server.yaml` 不会被覆盖（升级重装安全）；单元文件样例见 `examples/towstrap-server.service`。
+
+装完跑**初始化向导**把三件事一次配掉（对外地址、自助注册、第一个账号），之后改配置也能反复跑：
+
+```bash
+sudo towstrap-server init
+# 对外地址 → 写 server.yaml 的 public_url（下发安装命令/落地页用它）
+# 自助注册 → register: true（+可选邀请码）；不开则引导用 user add 建号
+# 第一个账号 → 内联建号，打印 SSH 登录名和这台机器的 agent token
+# 写完若 towstrap-server 的 systemd 服务在跑会自动重启生效
+```
+
+向导用 Node 级改写回写 yaml：注释、无关字段原样保留，同值重跑不重复写。脚本模式下全部走旗标（`--yes` + `--public-url`/`--register`/`--register-invite`/`--account`/`--password-stdin`/`--no-restart`），`--register-invite ""` 显式清掉邀请码。
+
 ### 一键安装脚本（agent 推荐）
 
 服务器直接吐安装脚本——从哪台服务器下载，就默认连回哪台，不用手填地址：
@@ -131,6 +156,8 @@ towstrap-server --users-db ~/.towstrap/users.db &
 | `ssh_idle_timeout` | `0`（关） | SSH 空闲超时；能治未认证连接挂死，但会断开空闲的交互会话，慎开 |
 | `ssh_max_timeout` | `24h` | SSH 连接绝对寿命（`0` 不限） |
 | `agent_defaults` | 空 | 管理员预设的 agent 工作配置：服务器下发的 `install.sh`/`install.ps1` 会把这些写进装好的 `agent.yaml`（只影响新装）。字段名同 agent.yaml；`server`/`agent_token*` 身份字段写了会被忽略（地址由脚本生成、token 一机一份） |
+| `register` | `false` | 开 `POST /register` 自助建号：被控机 `towstrap register` 交互建账号+拿 token。同指纹一账号、每 IP 每小时限 8 个、全程审计（只走 yaml，没旗标）。已有账号加机器的 `POST /register/machine` 不受此开关管 |
+| `register_invite` | 空 | 注册邀请码；设了注册时要带 `--invite`。空 = 不验 |
 | `mcp` | 关 | 内嵌 MCP 小节，见 [9.2](#92-方式二服务器内嵌-httpmcp) |
 
 对应的命令行旗标：`--config --http --ssh --host-key --users-db --users-key --admin-token --public-url --tls --cert --key --allow-ip --idle-verify --min-agent-version --audit-log --max-sessions --max-conns --max-conns-per-ip --ssh-idle-timeout --ssh-max-timeout`（`--allow-ip` 可重复）。
@@ -166,6 +193,28 @@ towstrap --server wss://towstrap.vast-plan.com --agent-token-file ~/.towstrap-to
 ```
 
 `--server` 接受 `ws://`、`wss://`（也认 `http://`/`https://`，自动换算）。断线自动重连：2 秒起步、指数退避封顶 30 秒、带随机抖动；连接稳定超过 1 分钟后退避重置。
+
+### 自助接入（`towstrap register`）
+
+agent 装完不需要管理员给 token——它是首次接入入口，交互模式先问你有没有账号：
+
+```bash
+towstrap register                    # 先问"已有账号？"，按回答走分支
+towstrap register --login            # 跳过提问：登录已有账号，这台机器挂到名下
+towstrap register --account alice --machine work --server wss://S:7880
+echo '密码' | towstrap register --account alice --password-stdin   # 脚本化
+```
+
+两条分支：
+
+- **没有账号** → 自助建号（服务器需开 `register: true`）：设密码（两次确认）、建账号+机器、拿 token
+- **已有账号** → 登录加机（不受 `register:` 开关管，和 SSH 的 `@machine add` 等价）：账号+密码验证后把机器挂到名下；同名机器视为重装换新 token（旧的作废）
+
+做的事：上报机器指纹（原始 ID 在本机内做 SHA256 哈希后才上传，硬件 ID 不出本机）→ 拿回 token 写进配置目录的 `agent-token`（0600）并生成最小 `agent.yaml` → 打印 SSH 登录命令 → **交互模式还会问要不要顺手绑 TOTP**（终端出二维码、验证器扫完输码确认才生效；`--skip-totp` 或脚本模式跳过，事后再绑用 `towstrap totp`），接下来直接 `towstrap` 跑即可。
+
+约束：**一台机器的指纹只许绑一个账号**——指纹已被别的账号占用会提示既有账号名（那账号的密码走 `--login`，或管理员 `user del` 释放指纹）。服务器设了 `register_invite` 时建号要带 `--invite 码`；每来源 IP 每小时限 8 次；服务器没开 `register:` 时建号走 `user add` + `--token` 的传统流程（已有账号加机器不受影响）。
+
+指纹的边界要说清：原始硬件 ID 只在机器内参与 SHA256（带来源标签），服务器存的是哈希——**脱敏是到位的**；优先取主板固件级 ID（macOS `IOPlatformUUID`+序列号、Linux `product_uuid`、Windows SMBIOS UUID——重装系统不变），取不到才回落 OS 级 `machine-id`/`MachineGuid`。但"一机一号"仍是**防误刷护栏、不是反欺诈**——有 root 或改了客户端的人照样能发自报指纹；VM 克隆则方向相反（撞指纹被误拒）。
 
 ### token 的四种给法（按推荐排序）
 
@@ -365,9 +414,9 @@ echo hello | ssh -p 7822 alice@towstrap.vast-plan.com 'cat'         # stdin 管�
 
 ---
 
-## 7. 账号本人自助管理（@machine）
+## 7. 账号本人自助管理（@machine / @totp）
 
-`@` 开头的命令由服务器自己执行，不发给 agent。账号本人 SSH 登录后直接管名下机器：
+`@` 开头的命令由服务器自己执行，不发给 agent。账号本人 SSH 登录后直接管名下机器和自己的二因素：
 
 ```bash
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine list'                 # 列机器：ID、在线/离线、agent 白名单（不显示 token）
@@ -376,7 +425,11 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # 删机器，在线 agent 立刻断开
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # 看这台的 token
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # 用法说明
+ssh -t alice@towstrap.vast-plan.com -p 7822 '@totp'                      # 自助绑/换绑 TOTP（出二维码输码确认）
+ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # 解绑 TOTP
 ```
+
+TOTP 也可以直接在被管的机器上管——SSH 进机器后在 shell 里敲 `towstrap totp`（绑/换绑）或 `towstrap totp remove`（解绑）。效果和 `@totp` 完全一样，鉴权是本机 agent token + 账号密码（已绑的换绑/解绑还要当前动态码），对已经登进机器的人来说少记一种写法；`@totp` 留给手边没这台机器的场合（比如机器不在身边、从别的设备上收）。
 
 限制：
 

@@ -43,6 +43,12 @@ type Server struct {
 	// token 一机一份。
 	AgentDefaults Agent `yaml:"agent_defaults"`
 
+	// Register 开 /register 自助注册：agent 跑 `towstrap register` 建账号+
+	// 机器+拿 token。同一机器指纹只许注册一个账号；可选 register_invite
+	// 要求邀请码。默认关。
+	Register       bool   `yaml:"register"`
+	RegisterInvite string `yaml:"register_invite"`
+
 	// MCP 是服务器内嵌 MCP（HTTP /mcp）的开关和策略；nil = 不开。
 	MCP *MCP `yaml:"mcp"`
 	// Monitor 是旁路监控推送目标（服务器主动推，接收端被动收）；
@@ -133,6 +139,8 @@ type file struct {
 	MirrorIdle      string     `yaml:"mirror_idle"`
 	MinAgentVersion string     `yaml:"min_agent_version"`
 	AgentDefaults   Agent      `yaml:"agent_defaults"`
+	Register        bool       `yaml:"register"`
+	RegisterInvite  string     `yaml:"register_invite"`
 	MCP             *MCP       `yaml:"mcp"`
 	Monitor         MonitorCfg `yaml:"monitor"`
 	OAuth           *OAuthCfg  `yaml:"oauth"`
@@ -184,6 +192,8 @@ func LoadServer(path string) (Server, error) {
 		AuditLog:        f.AuditLog,
 		MinAgentVersion: f.MinAgentVersion,
 		AgentDefaults:   f.AgentDefaults,
+		Register:        f.Register,
+		RegisterInvite:  f.RegisterInvite,
 		MCP:             f.MCP,
 		Monitor:         f.Monitor,
 		OAuth:           f.OAuth,
@@ -335,8 +345,11 @@ func MergeServer(file Server, set map[string]string) Server {
 	if v, ok := set["min-agent-version"]; ok {
 		out.MinAgentVersion = v
 	}
-	// mcp:/monitor:/oauth:/agent_defaults: 小节没有对应命令行旗标，yaml 里写了就透传。
+	// mcp:/monitor:/oauth:/agent_defaults:/register: 小节没有对应命令行旗标，
+	// yaml 里写了就透传。
 	out.AgentDefaults = file.AgentDefaults
+	out.Register = file.Register
+	out.RegisterInvite = file.RegisterInvite
 	out.MCP = file.MCP
 	out.Monitor = file.Monitor
 	out.OAuth = file.OAuth

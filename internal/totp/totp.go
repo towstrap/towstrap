@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,11 @@ func Generate(issuer, account string) (secret []byte, uri string) {
 
 // SecretString 返回手动录入验证器用的 base32 串。
 func SecretString(secret []byte) string { return b32.EncodeToString(secret) }
+
+// ParseSecret 把 SecretString 的 base32 串解回秘钥字节。
+func ParseSecret(s string) ([]byte, error) {
+	return b32.DecodeString(strings.ToUpper(strings.TrimSpace(s)))
+}
 
 // Code 算出 t 时刻的 6 位码（导出给测试和绑定确认用）。
 func Code(secret []byte, t time.Time) string {

@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	glssh "github.com/gliderlabs/ssh"
 
 	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/qrcode"
+	"github.com/towstrap/towstrap/internal/totp"
 )
 
 const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执行，不发给 agent）：
@@ -21,6 +24,8 @@ const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执�
   @machine token <名字>                             看这台机器的 token
                                                     （换 token 在 agent 机器上跑 towstrap token refresh）
   @machine help                                     本说明
+  @totp                                             绑定/换绑 TOTP 二因素（出二维码，输码确认）
+  @totp remove                                      解绑 TOTP
 `
 
 // stringFlags 是可重复的字符串旗标（--agent-allow-ip 可以写多次）。
@@ -55,12 +60,59 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 	}
 
 	fields := strings.Fields(rawCmd)
-	if len(fields) == 0 || fields[0] != "@machine" {
+	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@totp") {
 		_, _ = fmt.Fprintln(sess.Stderr(), "未知管理命令，可用：@machine help")
 		_ = sess.Exit(2)
 		return
 	}
+	if fields[0] == "@totp" {
+		s.mgmtTOTP(sess, account, fields[1:], from)
+		return
+	}
 	s.mgmtMachine(sess, account, fields[1:], from)
+}
+
+// mgmtTOTP 是 SSH 里的 TOTP 自助：enroll 出二维码+输码确认（已绑过的走
+// 上面那道 TOTP 重验，等于换绑）；remove 解绑。失败都记 MGMT-DENY。
+func (s *Server) mgmtTOTP(sess glssh.Session, account string, args []string, from string) {
+	if len(args) > 0 && args[0] == "remove" {
+		if err := s.cfg.Users.RemoveTOTP(account); err != nil {
+			_, _ = fmt.Fprintln(sess.Stderr(), err)
+			_ = sess.Exit(1)
+			return
+		}
+		s.audit.Log("TOTP-REMOVE", "user", sess.User(), "from", from)
+		_, _ = fmt.Fprintln(sess, "TOTP 已解绑——之后登录只要密码。SSH 面薄了，建议尽快绑回来")
+		_ = sess.Exit(0)
+		return
+	}
+	secret, uri := totp.Generate("towstrap", account)
+	_, _ = fmt.Fprintln(sess, "在验证器（Google Authenticator / 1Password / Aegis 等）里添加：")
+	if qr, err := qrcode.Terminal(uri); err == nil {
+		_, _ = fmt.Fprint(sess, qr)
+	}
+	_, _ = fmt.Fprintf(sess, "  %s\n手动录入秘钥: %s\n", uri, totp.SecretString(secret))
+	_, _ = fmt.Fprint(sess, "输入验证器上现在的 6 位码确认绑定: ")
+	line, err := readLine(sess)
+	if err != nil {
+		_ = sess.Exit(1)
+		return
+	}
+	step, ok := totp.Verify(secret, strings.TrimSpace(line), 0, time.Now())
+	if !ok {
+		s.audit.Log("MGMT-DENY", "user", sess.User(), "from", from, "reason", "totp-enroll")
+		_, _ = fmt.Fprintln(sess.Stderr(), "验证码不对，未绑定")
+		_ = sess.Exit(1)
+		return
+	}
+	if err := s.cfg.Users.EnrollTOTP(account, secret, step); err != nil {
+		_, _ = fmt.Fprintln(sess.Stderr(), err)
+		_ = sess.Exit(1)
+		return
+	}
+	s.audit.Log("TOTP-ENROLL", "user", sess.User(), "from", from)
+	_, _ = fmt.Fprintln(sess, "TOTP 已绑定——之后登录是 密码 + 6 位动态码 两道")
+	_ = sess.Exit(0)
 }
 
 // mgmtReverifyTOTP 向会话要一个新的 TOTP 验证码：最多 3 次，每次错记一次

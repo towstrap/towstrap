@@ -59,6 +59,32 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 minisign -Vm towstrap-linux-amd64   # when a signature file exists
 ```
 
+### One-line install script (server)
+
+The server side has a one-liner too — downloads the binary, verifies `SHA256SUMS`, writes a minimal `server.yaml` (0600), and on Linux as root installs + starts a systemd unit (`--no-systemd` installs files only; same on macOS):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh
+# --version vX.Y.Z pins a release, --confdir/--prefix relocate,
+# --check dry-runs the resolved values. (The official domain serves the same
+# bytes at /install-server.sh — but with no server of your own yet, GitHub raw
+# is the real entry point.)
+```
+
+An existing `server.yaml` is never overwritten (safe to re-run for upgrades); the unit file is at `examples/towstrap-server.service`.
+
+Then run the **init wizard** to set up the three essentials in one pass (public address, self-signup, first account) — re-runnable later for config changes:
+
+```bash
+sudo towstrap-server init
+# public address → writes server.yaml public_url (used in install hints/landing page)
+# self-signup → register: true (+optional invite); off → guided toward user add
+# first account → creates it inline, prints SSH login name and the machine agent token
+# if the towstrap-server systemd unit is running it gets restarted to apply changes
+```
+
+The wizard edits the YAML at node level — comments and unrelated fields are preserved, and re-running with unchanged values doesn't rewrite. In script mode everything goes through flags (`--yes` + `--public-url`/`--register`/`--register-invite`/`--account`/`--password-stdin`/`--no-restart`); `--register-invite ""` explicitly clears the invite.
+
 ### One-line install script (recommended for agents)
 
 The server serves the install script itself — whichever server you download it from becomes the default `server`, no address to type:
@@ -131,6 +157,8 @@ Precedence: **explicit CLI flags > yaml > built-in defaults** (flags are the yam
 | `ssh_idle_timeout` | `0` (off) | SSH idle timeout; kills hung unauthenticated connections but also idle interactive sessions — enable with care |
 | `ssh_max_timeout` | `24h` | absolute SSH connection lifetime (`0` = unlimited) |
 | `agent_defaults` | empty | admin-defined preset agent working config: the server's `install.sh`/`install.ps1` bake these into the installed `agent.yaml` (new installs only). Field names match agent.yaml; `server`/`agent_token*` identity fields are ignored (the script generates the address; tokens are per-machine) |
+| `register` | `false` | enables `POST /register` self-signup: `towstrap register` on the controlled machine creates an account and gets a token interactively. One account per machine fingerprint, 8 requests/IP/hour, fully audited (yaml only, no flag). `POST /register/machine` for existing accounts is not gated by this |
+| `register_invite` | empty | registration invite code; when set, `--invite` is required to register |
 | `mcp` | off | embedded MCP section, see [9.2](#92-option-2-server-embedded-http-mcp) |
 
 Corresponding flags: `--config --http --ssh --host-key --users-db --users-key --admin-token --public-url --tls --cert --key --allow-ip --idle-verify --min-agent-version --audit-log --max-sessions --max-conns --max-conns-per-ip --ssh-idle-timeout --ssh-max-timeout` (`--allow-ip` is repeatable).
@@ -166,6 +194,28 @@ towstrap --server wss://towstrap.vast-plan.com --agent-token-file ~/.towstrap-to
 ```
 
 `--server` accepts `ws://` and `wss://` (`http://`/`https://` are also understood and converted). On disconnect it retries with exponential backoff: starts at 2s, caps at 30s, with random jitter; a connection that stayed up for over a minute resets the backoff.
+
+### Self-service onboarding (`towstrap register`)
+
+The agent doesn't need an admin-issued token — `register` is the first-time onboarding entry, and interactively asks whether you already have an account:
+
+```bash
+towstrap register                    # asks "have an account?" and branches
+towstrap register --login            # skip the question: log in and attach this machine
+towstrap register --account alice --machine work --server wss://S:7880
+echo 'password' | towstrap register --account alice --password-stdin   # scripted
+```
+
+Two branches:
+
+- **No account** → self-service signup (requires `register: true` on the server): set a password (confirm twice), creates account + machine, returns a token
+- **Existing account** → login & enroll (not gated by `register:` — equivalent to SSH `@machine add`): after password verification the machine is attached to your account; a duplicate machine name means reinstall → the token is rotated (the old one stops working)
+
+What it does: reports the machine fingerprint (SHA-256 hash — the raw hardware ID never leaves the box) → writes the token to `agent-token` (0600) plus a minimal `agent.yaml` → prints the SSH login command → **in interactive mode it also offers to bind TOTP** (terminal QR code, confirmed with a live code before it takes effect; skipped by `--skip-totp` or scripted mode — `towstrap totp` binds later); then just run `towstrap`.
+
+Constraints: **one machine fingerprint binds to only one account** — a fingerprint owned by another account reports that account's name (use `--login` with that account's password, or have an admin `user del` to release the fingerprint). If `register_invite` is set, signup needs `--invite CODE`; each source IP gets 8 requests per hour; with `register:` off, account creation uses the classic `user add` + `--token` flow (adding machines to existing accounts is unaffected).
+
+Fingerprint boundaries, honestly: the raw hardware ID only ever participates in a source-tagged SHA-256 hash on the machine itself and the server stores just the hash — **the desensitization is solid**. The strongest available source is preferred: board/firmware IDs (macOS `IOPlatformUUID`+serial, Linux `product_uuid`, Windows SMBIOS UUID — all survive OS reinstalls), falling back to OS-level `machine-id`/`MachineGuid` when the firmware ID isn't readable. Still, "one account per machine" is an **anti-duplication guardrail, not anti-fraud** — anyone with root or a modified client can send a self-reported fingerprint; cloned VMs fail the other way (colliding fingerprint wrongly rejected).
 
 ### Four ways to supply the token (in order of preference)
 
@@ -365,9 +415,9 @@ echo hello | ssh -p 7822 alice@towstrap.vast-plan.com 'cat'         # stdin pipe
 
 ---
 
-## 7. Self-service machine management (@machine)
+## 7. Self-service management (@machine / @totp)
 
-Commands starting with `@` are executed by the server itself and never reach the agent. After SSH login, the account owner manages their machines:
+Commands starting with `@` are executed by the server itself and never reach the agent. After SSH login, the account owner manages their machines and their own second factor:
 
 ```bash
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine list'                 # machines: ID, online/offline, agent allowlist (no tokens)
@@ -376,7 +426,11 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # delete; a connected agent drops immediately
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # show this machine's token
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # usage
+ssh -t alice@towstrap.vast-plan.com -p 7822 '@totp'                      # bind/rebind TOTP yourself (QR + code confirm)
+ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # unbind TOTP
 ```
+
+TOTP can also be managed right on the machine — after SSHing in, run `towstrap totp` (bind/rebind) or `towstrap totp remove` (unbind) in the shell. Same effect as `@totp`, authenticated with the local agent token + account password (rebind/remove on a bound account also asks for the current code). `@totp` is for when the machine isn't at hand.
 
 Restrictions:
 

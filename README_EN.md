@@ -53,7 +53,7 @@ The one-sentence difference from ShellHub, Teleport, or RevoShell: **the same sy
 - **Brute-force defense**: rate limiting on both account×IP and account dimensions with exponential backoff lockout — distributed attacks rotating IPs are still caught
 - **Multiple machines per account**: each machine gets its own token; revocation of one machine takes effect immediately without touching the others
 - **Machine-initiated token rotation**: `towstrap token refresh` — the server pushes the new token over the live connection, the agent writes it atomically, and the old token is retired only after acknowledgement
-- **Self-service for account owners**: after `ssh` login, `@machine list/add/remove/token` manages your machines (fresh TOTP check required; public-key logins are rejected)
+- **Self-service for account owners**: after `ssh` login, `@machine list/add/remove/token` manages your machines and `@totp` binds/unbinds the second factor (fresh TOTP check required; public-key logins are rejected) — `towstrap totp` does the same right on the machine
 - **exec mode**: `ssh host 'command'` returns separate stdout/stderr and the real exit code — ready for automation
 - **Relayable terminals (named mirrors)**: tmux-style persistent terminals built into the agent, no tmux needed — a mirror started at the machine can be picked up from a phone or another computer via `ssh -t host mirror <name>`: shared multi-client view, `Ctrl-\` detaches without killing, new mirrors start in the directory you ran the command from, and idle mirrors are killed automatically (`mirror_idle`, default 72h, tunable or off). `mirror` is a symlink alias of the agent. This is a human feature, not exposed over MCP
 - **MCP in two modes**: server-embedded HTTP (`/mcp`, Bearer token) or local stdio (`towstrap-mcp`) — file/command/terminal tools, three policy levels, approval prompts
@@ -84,15 +84,19 @@ The one-sentence difference from ShellHub, Teleport, or RevoShell: **the same sy
 
 ## Quick Start
 
-On the official server (after an admin hands you an account and an agent token, two commands):
+On the official server (self-register, no admin needed):
 
 ```bash
 # On the controlled machine, one command (the official server address is baked into the script)
-curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
-# It downloads the right binary, verifies SHA256, and writes the token file
-# plus a minimal config; add --systemd to install a service. Manual way:
-# download towstrap, then
-#   towstrap --agent-token-file ~/.towstrap-token   (--server defaults to the official one)
+curl -fsSL https://towstrap.vast-plan.com/install.sh | sh
+# It downloads the right binary and verifies SHA256; add --systemd to install a service
+
+# Then onboard: it asks whether you have an account — no → sign up,
+# yes → log in and attach this machine (one account, many machines)
+towstrap register
+# One machine fingerprint binds to only one account. If the official server
+# has register: off, sign-up is unavailable — install with --token tsa-…
+# instead (ask an admin).
 
 # On your laptop
 ssh -p 7822 alice@towstrap.vast-plan.com                            # land in that machine's shell
@@ -100,12 +104,16 @@ ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # or run a c
 ssh -t -p 7822 alice@towstrap.vast-plan.com 'mirror work'           # pick up the machine's persistent terminal (Ctrl-\ detaches)
 ```
 
-Or self-host everything (on your own server S):
+Or self-host everything (on your own server S) — one line installs the binary + config + systemd service:
 
 ```bash
-go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
-towstrap-server user add alice    # prints a random password and the first machine's agent token
-towstrap-server &                 # SSH :7822, HTTP :7880
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh
+# binary comes from GitHub Releases (SHA256SUMS verified); on Linux as root it
+# installs and starts a systemd unit (--no-systemd installs binary+config only,
+# which is also the macOS path)
+
+sudo towstrap-server init         # post-install wizard: public URL / self-signup / first account
+# No wizard? Edit server.yaml (register: true) or: towstrap-server user add alice → token
 
 # Install the agent — the script connects back to whichever server served it
 curl -fsSL http://S:7880/install.sh | sh -s -- --token tsa-…

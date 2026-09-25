@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/towstrap/towstrap/internal/proto"
 	"github.com/towstrap/towstrap/internal/version"
 	"github.com/towstrap/towstrap/scripts"
 )
@@ -58,6 +59,17 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 			`<pre>` + html.EscapeString(d) + `</pre></details>`
 	}
 
+	// 开了自助注册：安装命令不带 --token，下面多一步 register；没开则
+	// 保持管理员发 token 的传统流程。
+	intro := `向管理员要到 agent token（<code>tsa-…</code>）后选一条：`
+	shTok, psTok, regStep := " --token tsa-…", " -Token tsa-…", ""
+	if s.cfg.Register {
+		intro = "这台服务器开了自助注册——装好二进制后跑 <code>towstrap register</code> 建账号拿 token，不用找管理员："
+		shTok, psTok = "", ""
+		regStep = `<pre><span class="c"># 装完注册：交互问账号名和密码，写 token 和配置；一台机器只许注册一个账号</span>
+towstrap register` + html.EscapeString(regServerArg(server)) + `</pre>`
+	}
+
 	page := strings.NewReplacer(
 		"{{BASE}}", base,
 		"{{SERVER}}", server,
@@ -66,9 +78,22 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		"{{VERSION}}", version.String(),
 		"{{VERARG}}", verArg,
 		"{{AGENTCONF_BLOCK}}", confBlock,
+		"{{INTRO}}", intro,
+		"{{SH_TOKEN_ARG}}", shTok,
+		"{{PS_TOKEN_ARG}}", psTok,
+		"{{REGISTER_STEP}}", regStep,
 	).Replace(string(landingHTML))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache") // 地址随请求推导，别缓存
 	_, _ = w.Write([]byte(page))
+}
+
+// regServerArg：register 默认连官方服务器；页面所属服务器不是官方时
+// 给一行 --server。
+func regServerArg(server string) string {
+	if server == proto.OfficialServer {
+		return ""
+	}
+	return " --server " + server
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -189,7 +190,7 @@ func sshEchoAuth(t *testing.T, sshPort int, cfg *gossh.ClientConfig, cmd string)
 				out.Write(buf[:n])
 				got := out.String()
 				mu.Unlock()
-				if strings.Contains(got, "\n"+marker) {
+				if strings.Contains(normTermOut(got), "\n"+marker) {
 					select {
 					case seen <- got:
 					default:
@@ -213,6 +214,16 @@ func sshEchoAuth(t *testing.T, sshPort int, cfg *gossh.ClientConfig, cmd string)
 		t.Fatalf("did not see echo output: %q", got)
 		return ""
 	}
+}
+
+// normTermOut 归一化终端输出再匹配：剥 CSI 转义序列（各发行版 bash 的
+// bracketed-paste \x1b[?2004h/l 会把回显和输出隔开），\r\n/\r 统一成 \n，
+// 不然行首 marker 在开了 bracketed-paste 的机器上永远匹配不上。
+var csiRe = regexp.MustCompile("\x1b\\[[0-9;:?>]*[ -/]*[@-~]")
+
+func normTermOut(s string) string {
+	s = csiRe.ReplaceAllString(s, "")
+	return strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(s)
 }
 
 // kbdAuth 构造 keyboard-interactive 认证：问密码答密码，问验证码现算。

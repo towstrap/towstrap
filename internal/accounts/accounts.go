@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS ssh_grants (
 	created_at  TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_grants_pub ON ssh_grants(pub_id);
+
+-- register_fps 是自助注册的机器指纹绑定：一台机器（指纹）只许注册一个
+-- 账号。删账号时对应行一并释放。
+CREATE TABLE IF NOT EXISTS register_fps (
+	fingerprint TEXT    PRIMARY KEY,
+	username    TEXT    NOT NULL,
+	created_at  TEXT    NOT NULL
+);
 `
 
 // DefaultKeyPath 由数据库路径推出密钥文件路径：users.db -> users.key。
@@ -425,6 +433,10 @@ func (s *Store) Remove(username string) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM machines WHERE username = ?`, username); err != nil {
+		return err
+	}
+	// 账号没了，它占的机器指纹一并释放，那台机器以后还能再注册
+	if _, err := tx.Exec(`DELETE FROM register_fps WHERE username = ?`, username); err != nil {
 		return err
 	}
 	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, username)

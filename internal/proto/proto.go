@@ -96,6 +96,68 @@ func ValidName(s string) bool {
 	return nameRe.MatchString(s)
 }
 
+// RegisterReq/RegisterResp 是 POST /register 自助注册的 JSON 体形。
+// 服务器开了 register: 才受理；fingerprint 是机器指纹（sha256 hex），
+// 同一台机器只许注册一个账号。
+type RegisterReq struct {
+	Account     string `json:"account"`
+	Password    string `json:"password"`
+	Machine     string `json:"machine,omitempty"`     // 空 = 服务器的 DefaultMachine
+	Fingerprint string `json:"fingerprint,omitempty"` // 机器指纹，注册去重
+	Invite      string `json:"invite,omitempty"`      // 服务器配了 register_invite 时必填
+}
+
+type RegisterResp struct {
+	Token   string `json:"token"`
+	Account string `json:"account"`
+	Machine string `json:"machine"`  // 完整机器名 账号+机器名
+	SSHPort string `json:"ssh_port"` // 服务器配置的 SSH 端口（给登录提示用）
+	Err     string `json:"err,omitempty"`
+	// Owner 是"指纹已注册"冲突时填的既有账号名——找回提示用（用当时
+	// 设的密码 SSH 登录就能接着用）。
+	Owner string `json:"owner,omitempty"`
+}
+
+// TOTPBeginReq/Resp、TOTPConfirmReq/Resp、TOTPRemoveReq/Resp 是自助
+// TOTP 管理（/totp/*）的体形：begin 拿秘钥+otpauth URI（不落库），
+// confirm 拿验证码换落库，remove 解绑。鉴权和 /token/refresh 同款：
+// X-Agent-Token 头反查账号 + 请求体密码；已绑账号换绑/解绑还要当前
+// 动态码（对齐 SSH 管理命令的重验门槛）。
+type TOTPBeginReq struct {
+	Password string `json:"password"`
+}
+
+type TOTPBeginResp struct {
+	Secret  string `json:"secret"` // base32 秘钥（手动录入用）
+	URI     string `json:"uri"`    // otpauth:// URI（渲染二维码用）
+	Bound   bool   `json:"bound"`  // 账号已经绑过 TOTP（再绑要旧码、会覆盖）
+	Account string `json:"account,omitempty"`
+	Err     string `json:"err,omitempty"`
+}
+
+type TOTPConfirmReq struct {
+	Password string `json:"password"`
+	Secret   string `json:"secret"`             // begin 发下来的 base32 秘钥
+	Code     string `json:"code"`               // 新验证器当前 6 位码
+	OldCode  string `json:"old_code,omitempty"` // 已绑账号换绑时的当前码（验身份）
+}
+
+type TOTPConfirmResp struct {
+	OK  bool   `json:"ok"`
+	Err string `json:"err,omitempty"`
+}
+
+type TOTPRemoveReq struct {
+	Password string `json:"password"`
+	Code     string `json:"code,omitempty"` // 已绑账号要当前动态码
+}
+
+type TOTPRemoveResp struct {
+	OK       bool   `json:"ok"`
+	NeedCode bool   `json:"need_code,omitempty"` // 已绑账号没给码时的提示位
+	Err      string `json:"err,omitempty"`
+}
+
 func SanitizeName(s string) string {
 	s = strings.TrimSpace(s)
 	if ValidName(s) {

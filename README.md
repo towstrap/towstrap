@@ -53,7 +53,7 @@ TowStrap 解决一个常见问题：要访问的机器躲在 NAT / 防火墙后�
 - **防爆破**：账号×IP 与账号双维度限速、指数退避锁定，换 IP 分布式爆破也挡得住
 - **一个账号多台机器**：每台机器独立 token，互不影响，单个撤权立即生效
 - **本机发起的 token 换发**：`towstrap token refresh`，服务器下推、agent 原子写文件、确认后才作废旧 token——连接不断
-- **账号本人自助**：`ssh` 登录后 `@machine list/add/remove/token` 管理名下机器（要 TOTP 再验，公钥不行）
+- **账号本人自助**：`ssh` 登录后 `@machine list/add/remove/token` 管理名下机器、`@totp` 绑/解绑二因素（要 TOTP 再验，公钥不行）；机器上也可直接 `towstrap totp`
 - **exec 执行模式**：`ssh 机器 '命令'` 拿回分开的 stdout/stderr 和真实退出码，自动化可直接用
 - **可接力终端（镜像终端）**：agent 内置 tmux 式常驻终端，不依赖 tmux——机器前开的镜像，换手机/别的电脑 `ssh -t 机器 mirror 名字` 接着操作：多端同屏、`Ctrl-\` 脱离不杀进程、新建落在你敲命令的目录、闲置自动终结（`mirror_idle` 默认 72h，可调可关）；`mirror` 是 agent 的软链别名。这是给人用的功能，MCP 不开放
 - **MCP 双模式**：服务器内嵌 HTTP（`/mcp`，Bearer token）或本机 stdio（`towstrap-mcp`），文件/命令/终端三类工具、三档策略、弹窗批准
@@ -83,14 +83,17 @@ TowStrap 解决一个常见问题：要访问的机器躲在 NAT / 防火墙后�
 
 ## 快速开始
 
-用官方服务器（向管理员要到账号和 agent token 后，两条命令）：
+用官方服务器（自助注册，不用找管理员）：
 
 ```bash
 # 被控机上一条命令装好（官方服务器地址已内置在脚本里）
-curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
-# 它会下载对应平台的二进制、校验 SHA256、写 token 文件和最小配置；
-# 加 --systemd 顺带装成服务。手动方式：下载 towstrap 后直接
-#   towstrap --agent-token-file ~/.towstrap-token   （--server 默认就是官方）
+curl -fsSL https://towstrap.vast-plan.com/install.sh | sh
+# 它会下载对应平台的二进制、校验 SHA256；加 --systemd 顺带装成服务
+
+# 装完接入：先问有没有账号——没有就建号，有就登录把机器挂到名下
+towstrap register
+# 一台机器只能绑一个账号；官方服务器没开 register: 时建不了号，
+# 改成 --token tsa-… 安装（向管理员要 token）
 
 # 你的电脑上
 ssh -p 7822 alice@towstrap.vast-plan.com                            # 进那台机器的 shell
@@ -98,12 +101,15 @@ ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # 或直接�
 ssh -t -p 7822 alice@towstrap.vast-plan.com 'mirror work'           # 接力机器上的常驻终端（Ctrl-\ 脱离）
 ```
 
-或者自己跑一套（自建服务器 S 上）：
+或者自己跑一套（自建服务器 S 上）——一行装好二进制 + 配置 + systemd 服务：
 
 ```bash
-go install github.com/towstrap/towstrap/cmd/towstrap-server@latest
-towstrap-server user add alice    # 建号；打印随机密码和第一台机器的 agent token
-towstrap-server &                 # SSH :7822，HTTP :7880
+curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh
+# 二进制从 GitHub Releases 下（SHA256SUMS 校验）；Linux+root 自动装并启动
+# systemd 服务（--no-systemd 只装二进制+配置，macOS 也走这条）
+
+sudo towstrap-server init         # 装完跑这个向导：对外地址 / 自助注册 / 建第一个号
+# 不爱交互就手工：server.yaml 里 register: true，或 towstrap-server user add alice 建号拿 token
 
 # 被控机装 agent——脚本从哪台服务器拉就默认连回哪台
 curl -fsSL http://S:7880/install.sh | sh -s -- --token tsa-…

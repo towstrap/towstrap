@@ -1,4 +1,6 @@
 /towstrap
+/towstrap.exe
+/towstrap-server.exe
 dist/
 *.tar.gz
 ssh_host_key

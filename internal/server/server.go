@@ -63,6 +63,11 @@ type Config struct {
 	// 预设片段（config.Agent.InstallDefaults 的产物），/install.sh 下发
 	// 时烤进装好的配置。空 = 无预设。
 	AgentDefaults string
+	// Register 开 /register 自助注册端点：agent 跑 `towstrap register`
+	// 建账号拿 token。同一机器指纹只许注册一个账号，每 IP 限速。
+	// RegisterInvite 非空时注册要带邀请码。
+	Register       bool
+	RegisterInvite string
 
 	// MCP 非 nil 时在 HTTP 口挂 Streamable HTTP 的 MCP 服务（路径 MCPPath，
 	// 默认 /mcp）。MCP.Machines 在这里只当元数据用（说明、roots）；实际
@@ -100,6 +105,8 @@ type Server struct {
 	sshSess map[glssh.Session]string // 活跃交互 SSH 会话 → 账号（待批提示广播用）
 
 	oauth *oauthFlow // nil = 未配置 OAuth
+
+	regRL registerRL // /register 每 IP 限速器
 }
 
 // DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/towstrap，

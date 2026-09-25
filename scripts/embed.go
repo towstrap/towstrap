@@ -11,7 +11,7 @@ import (
 	"github.com/towstrap/towstrap/internal/version"
 )
 
-//go:embed install.sh install.ps1
+//go:embed install.sh install.ps1 install-server.sh
 var FS embed.FS
 
 // marker 是脚本里服务器地址的占位符：下发时被替换成这台服务器的 ws(s)
@@ -75,4 +75,11 @@ func InstallSH(serverURL, agentConf, sshPort string) []byte {
 // InstallPS1 返回 Windows 安装脚本。
 func InstallPS1(serverURL, agentConf, sshPort string) []byte {
 	return render("install.ps1", serverURL, agentConf, sshPort)
+}
+
+// InstallServerSH 返回服务端安装脚本。它完全自包含（版本默认 latest、
+// 地址不需要下发——装的是服务器自己），所以不做任何占位符替换，
+// 官方服务器下发的和 GitHub raw 拉的是同一份字节。
+func InstallServerSH() []byte {
+	return mustRead("install-server.sh")
 }

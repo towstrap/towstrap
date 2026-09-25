@@ -44,6 +44,10 @@ func main() {
 		os.Exit(runTokenRefresh(args[3:]))
 	case "oauth":
 		os.Exit(runOAuth(args[2:]))
+	case "register":
+		os.Exit(runRegister(args[2:]))
+	case "totp":
+		os.Exit(runTOTP(args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -67,6 +71,8 @@ func usage() {
 用法:
   towstrap [--config 文件.yaml] [选项]
   towstrap oauth [--wait 5m] [选项]   发起 OIDC 授权，拿到短时效 SSH 凭据
+  towstrap register [选项]            首次接入：没账号建号（服务器开 register:）、有账号登录加机
+  towstrap totp [remove] [选项]       绑/换绑/解绑账号的 TOTP 二因素（SSH 里也能用 @totp）
   towstrap mirror [ls|kill|<名字> [命令]]   本机的可接力终端（Ctrl-\ 脱离）
                                        （install.sh 会把它软链成 mirror，直接敲 mirror work）
   towstrap version

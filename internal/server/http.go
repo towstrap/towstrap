@@ -76,6 +76,21 @@ func (s *Server) routes() http.Handler {
 	}
 	mux.HandleFunc("/install.sh", serveInstall(scripts.InstallSH, "text/x-shellscript; charset=utf-8"))
 	mux.HandleFunc("/install.ps1", serveInstall(scripts.InstallPS1, "text/plain; charset=utf-8"))
+	// /install-server.sh 是服务端自己的一键安装——自包含脚本原样下发
+	// （想自建的人从这拉，和 GitHub raw 是同一字节）。
+	mux.HandleFunc("/install-server.sh", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+		_, _ = w.Write(scripts.InstallServerSH())
+	})
+	// /register 是 agent 的自助建号口：server.yaml register: true 才受理，
+	// 关了也挂路由——返回的 403 文案比连接失败更能告诉用户怎么回事。
+	// /register/machine 是已有账号的登录加机口（等价 SSH @machine add），
+	// 不靠 register 开关，任何时候都受理。
+	mux.HandleFunc("/register", s.handleRegister)
+	mux.HandleFunc("/register/machine", s.handleMachineRegister)
+	mux.HandleFunc("/totp/begin", s.handleTOTPBegin)
+	mux.HandleFunc("/totp/confirm", s.handleTOTPConfirm)
+	mux.HandleFunc("/totp/remove", s.handleTOTPRemove)
 	if s.oauth != nil {
 		mux.HandleFunc("/oauth/request", s.handleOAuthRequest)
 		mux.HandleFunc("/oauth/begin", s.handleOAuthBegin)
