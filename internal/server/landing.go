@@ -2,6 +2,7 @@ package server
 
 import (
 	_ "embed"
+	"html"
 	"net"
 	"net/http"
 	"strings"
@@ -40,16 +41,21 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	sshPort := s.cfg.SSHAddr
-	if _, p, err := net.SplitHostPort(s.cfg.SSHAddr); err == nil {
-		sshPort = p
-	}
+	sshPort := s.sshPort()
 
 	// 安装命令和这台服务器版本关联：明示 --version，让人知道装的是哪个
 	// 版本；dev 版本不算 release，不加参数（脚本自己回落 latest）。
 	verArg := ""
 	if t := scripts.ReleaseTag(); t != "latest" {
 		verArg = " --version " + t
+	}
+
+	// 管理员在 server.yaml 配的 agent_defaults 会烤进装好的 agent.yaml，
+	// 页面上展示出来，装之前就能看到会写入什么。
+	confBlock := ""
+	if d := strings.TrimSpace(s.cfg.AgentDefaults); d != "" {
+		confBlock = `<details class="conf"><summary>本服务器预设的 agent 工作配置（装完自动写进 agent.yaml）</summary>` +
+			`<pre>` + html.EscapeString(d) + `</pre></details>`
 	}
 
 	page := strings.NewReplacer(
@@ -59,6 +65,7 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		"{{SSHPORT}}", sshPort,
 		"{{VERSION}}", version.String(),
 		"{{VERARG}}", verArg,
+		"{{AGENTCONF_BLOCK}}", confBlock,
 	).Replace(string(landingHTML))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -19,9 +19,20 @@ function Die($msg) { Write-Host "install.ps1: $msg" -ForegroundColor Red; exit 1
 # 占位符由服务器端下发时替换成那台服务器的地址；从 GitHub 拉的保持原样，
 # 落到这里的官方默认。
 $OfficialServer = "wss://towstrap.vast-plan.com"
-if ($Server -like "*__TOWSTRAP_DEFAULT_SERVER__*") { $Server = $OfficialServer }
+# 注意：占位符是全文件替换，检测只能看 "__TOWSTRAP" 前缀，写完整占位符
+# 名会让模式也被换掉、把注入的真值误判成"未替换"然后重置掉。
+if ($Server -like "*__TOWSTRAP*") { $Server = $OfficialServer }
 # 版本占位符：服务器下发时填成那台的 release tag；GitHub 直拉回落 latest。
-if ($Version -like "*__TOWSTRAP_DEFAULT_VERSION__*") { $Version = "latest" }
+if ($Version -like "*__TOWSTRAP*") { $Version = "latest" }
+# agent.yaml 预设：服务器下发时填 server.yaml 里 agent_defaults: 的内容；
+# GitHub 直拉的按无预设处理。
+# 注意：占位符是全文件替换，检测只能看 "__TOWSTRAP" 前缀，写完整占位符
+# 名会让模式也被换掉、把注入的值误判成未替换。
+$AgentConf = "__TOWSTRAP_AGENT_CONFIG__"
+if ($AgentConf -like "*__TOWSTRAP*") { $AgentConf = "" }
+# SSH 端口：服务器下发时填那台配置的 SSH 口；GitHub 直拉回落默认 7822。
+$SshPort = "__TOWSTRAP_SSH_PORT__"
+if ($SshPort -like "*__TOWSTRAP*") { $SshPort = "7822" }
 if ($Server -eq "") {
     Die "没有服务器地址：加 -Server wss://主机:端口，或设 TOWSTRAP_SERVER（从服务器 /install.ps1 拉的脚本会自动带上）"
 }
@@ -70,14 +81,26 @@ if (-not (Test-Path $tokenfile)) {
 
 $agentyaml = Join-Path $Prefix "agent.yaml"
 if (-not (Test-Path $agentyaml)) {
-    Set-Content -Path $agentyaml -Value "server: $Server`nagent_token_file: $tokenfile" -Encoding utf8
+    $cfg = "server: $Server`nagent_token_file: $tokenfile"
+    if ($AgentConf) {
+        $cfg += "`n" + $AgentConf
+        Write-Host ">> 附带服务器预设的 agent 配置"
+    }
+    Set-Content -Path $agentyaml -Value $cfg -Encoding utf8
     Write-Host ">> 配置写入 $agentyaml"
 } else {
     Write-Host ">> $agentyaml 已存在，没动它"
 }
+
+# SSH 登录提示：主机从 -Server 推导，端口是下发服务器配置的 SSH 口。
+$sshhost = ([uri]$Server).Host
 
 Write-Host ""
 Write-Host "完成。跑起来："
 Write-Host "  & `"$exe`" --config `"$agentyaml`""
 Write-Host "要开机自启可以注册计划任务（示例，按需调整）："
 Write-Host "  schtasks /create /tn towstrap /sc onlogon /rl limited /tr `"`"$exe`" --config `"`"$agentyaml`"`"`""
+Write-Host ""
+Write-Host "远程进这台机器（标准 SSH 直连）："
+Write-Host "  ssh -p $SshPort <账号名>@$sshhost"
+Write-Host "（账号名 = 管理员给你发 token 的账号）"

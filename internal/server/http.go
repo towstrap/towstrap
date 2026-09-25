@@ -62,7 +62,7 @@ func (s *Server) routes() http.Handler {
 	// /install.sh、/install.ps1 下发一键安装脚本：地址占位符换成这台
 	// 服务器自己的地址（public_url 优先，否则按请求 Host + 是否 TLS
 	// 推导）——从哪台下载就默认连回哪台。公开内容，没有秘密。
-	serveInstall := func(render func(string) []byte, ct string) http.HandlerFunc {
+	serveInstall := func(render func(string, string, string) []byte, ct string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				w.Header().Set("Allow", "GET, HEAD")
@@ -71,7 +71,7 @@ func (s *Server) routes() http.Handler {
 			}
 			w.Header().Set("Content-Type", ct)
 			w.Header().Set("Cache-Control", "no-cache") // 地址随请求推导，别缓存
-			w.Write(render(s.installServerURL(r)))
+			w.Write(render(s.installServerURL(r), s.cfg.AgentDefaults, s.sshPort()))
 		}
 	}
 	mux.HandleFunc("/install.sh", serveInstall(scripts.InstallSH, "text/x-shellscript; charset=utf-8"))
@@ -103,6 +103,15 @@ func (s *Server) installServerURL(r *http.Request) string {
 		scheme = "wss"
 	}
 	return scheme + "://" + r.Host
+}
+
+// sshPort 从配置的 SSH 监听地址里取端口号，给落地页和安装脚本结尾的
+// SSH 提示用。取不到时返回整个 SSHAddr（调用方原样显示，便于发现错配）。
+func (s *Server) sshPort() string {
+	if _, p, err := net.SplitHostPort(s.cfg.SSHAddr); err == nil {
+		return p
+	}
+	return s.cfg.SSHAddr
 }
 
 // handleAgent 是 agent 连入的地方：token 对上哪个账号，机器就挂到那个用户名下。

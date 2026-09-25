@@ -335,6 +335,13 @@ func runServer(args []string) int {
 	if cfg.AdminToken != "" {
 		adminTokenState = "已设置"
 	}
+	// agent_defaults 渲染成写进 agent.yaml 的片段：server/agent_token*
+	// 身份字段进不了预设（地址由脚本生成、token 一机一份），写了就提醒。
+	agentDefaults, ignored := cfg.AgentDefaults.InstallDefaults()
+	if len(ignored) > 0 {
+		slog.Warn("agent_defaults 忽略身份字段（地址/token 由安装脚本按机器生成）",
+			"keys", strings.Join(ignored, ","))
+	}
 	slog.Info("生效配置（旗标显式给过的项覆盖 yaml）",
 		"http", cfg.HTTP, "ssh", cfg.SSH, "tls", cfg.TLS,
 		"users_db", cfg.UsersDB, "admin_token", adminTokenState,
@@ -345,7 +352,7 @@ func runServer(args []string) int {
 		"max_conns", cfg.MaxConns, "max_conns_per_ip", cfg.MaxConnsPerIP,
 		"ssh_idle_timeout", sshIdle.String(), "ssh_max_timeout", sshMax.String(),
 		"audit_log", auditPath, "mcp", mcpState, "monitor", monState,
-		"oauth", oauthState)
+		"oauth", oauthState, "agent_defaults", len(agentDefaults) > 0)
 	s := server.New(server.Config{
 		HTTPAddr:          cfg.HTTP,
 		SSHAddr:           cfg.SSH,
@@ -360,6 +367,7 @@ func runServer(args []string) int {
 		AuditLog:          auditPath,
 		MinAgentVersion:   minAgent,
 		PublicURL:         cfg.PublicURL,
+		AgentDefaults:     string(agentDefaults),
 		MaxSessions:       cfg.MaxSessions,
 		MaxConns:          cfg.MaxConns,
 		MaxConnsPerIP:     cfg.MaxConnsPerIP,

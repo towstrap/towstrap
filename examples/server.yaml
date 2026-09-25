@@ -7,6 +7,16 @@ server:
   audit_log: /var/lib/towstrap/server-audit.log  # 服务器审计：认证/agent/会话事件（16MB 轮转；/dev/null 关）
   public_url: wss://towstrap.vast-plan.com # 写进 user add 生成的安装命令
   # admin_token: 查 /status 用的管理口令（可选；账号 token 也能查）
+
+  # agent_defaults：本服务器下发的安装脚本会把这些写进装好的 agent.yaml
+  #（只影响新装的机器；server/agent_token* 会被忽略——地址由脚本生成、
+  # token 一机一份）。字段名就是 agent.yaml 的字段。
+  # agent_defaults:
+  #   shell: "/bin/zsh"       # agent 上 PTY 会话用哪个 shell
+  #   mirror_idle: "48h"      # 镜像终端闲置多久自动终结（0/off 不启用）
+  #   quiet: false            # 关掉会话开始/结束的通知
+  #   mcp_policy: "server"    # 这台机器对 MCP 审批的姿态（server/open）
+
   # tls: true                  # 网页口走 HTTPS/WSS；不给 cert/key 会自动生成自签证书
   # cert: /etc/towstrap/cert.pem # 正式证书（Let's Encrypt 等）配在这里
   # key: /etc/towstrap/key.pem

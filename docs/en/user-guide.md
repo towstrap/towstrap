@@ -71,7 +71,7 @@ curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
 ```
 
-What the script does: downloads the `towstrap` binary for your OS/arch from GitHub Releases, verifies it against `SHA256SUMS`, installs to `/usr/local/bin` (falling back to `~/.local/bin`), writes a `0600` token file and a minimal `agent.yaml` (under `/etc/towstrap` when root, `~/.config/towstrap` otherwise). **A script served by a server installs the same version as that server** (`--version vX.Y.Z` overrides); a script pulled from GitHub defaults to latest. With `--systemd` it also installs a service: as root it creates a dedicated `towstrap` user plus a system unit and starts it; as a regular user it writes a `~/.config/systemd/user` unit.
+What the script does: downloads the `towstrap` binary for your OS/arch from GitHub Releases, verifies it against `SHA256SUMS`, installs to `/usr/local/bin` (falling back to `~/.local/bin`), writes a `0600` token file and an `agent.yaml` (under `/etc/towstrap` when root, `~/.config/towstrap` otherwise). **A script served by a server installs the same version as that server** (`--version vX.Y.Z` overrides) and bakes the server's `agent_defaults:` preset working config (`shell`, `mirror_idle`, `mcp_policy`, …) into `agent.yaml`; a script pulled from GitHub defaults to latest with no preset. At the end the script prints the machine's SSH login address (host derived from `--server`, port from the server's configured SSH port). With `--systemd` it also installs a service: as root it creates a dedicated `towstrap` user plus a system unit and starts it; as a regular user it writes a `~/.config/systemd/user` unit.
 
 You can also pull the script straight from GitHub (defaults to the official server; add `--server wss://…` only for self-hosted):
 
@@ -130,6 +130,7 @@ Precedence: **explicit CLI flags > yaml > built-in defaults** (flags are the yam
 | `max_conns_per_ip` | `64` | per-source-IP SSH connection cap (SSH only; `0` = unlimited) |
 | `ssh_idle_timeout` | `0` (off) | SSH idle timeout; kills hung unauthenticated connections but also idle interactive sessions — enable with care |
 | `ssh_max_timeout` | `24h` | absolute SSH connection lifetime (`0` = unlimited) |
+| `agent_defaults` | empty | admin-defined preset agent working config: the server's `install.sh`/`install.ps1` bake these into the installed `agent.yaml` (new installs only). Field names match agent.yaml; `server`/`agent_token*` identity fields are ignored (the script generates the address; tokens are per-machine) |
 | `mcp` | off | embedded MCP section, see [9.2](#92-option-2-server-embedded-http-mcp) |
 
 Corresponding flags: `--config --http --ssh --host-key --users-db --users-key --admin-token --public-url --tls --cert --key --allow-ip --idle-verify --min-agent-version --audit-log --max-sessions --max-conns --max-conns-per-ip --ssh-idle-timeout --ssh-max-timeout` (`--allow-ip` is repeatable).

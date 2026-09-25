@@ -59,6 +59,10 @@ type Config struct {
 	// PublicURL 是服务器对外的 wss:// 地址，用于给新加的机器生成 agent
 	// 安装命令（SSH @machine add 等自助命令用到）。空 = 提示里放占位符。
 	PublicURL string
+	// AgentDefaults 是 server.yaml agent_defaults: 渲染出的 agent.yaml
+	// 预设片段（config.Agent.InstallDefaults 的产物），/install.sh 下发
+	// 时烤进装好的配置。空 = 无预设。
+	AgentDefaults string
 
 	// MCP 非 nil 时在 HTTP 口挂 Streamable HTTP 的 MCP 服务（路径 MCPPath，
 	// 默认 /mcp）。MCP.Machines 在这里只当元数据用（说明、roots）；实际

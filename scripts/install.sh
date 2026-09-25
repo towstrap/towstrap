@@ -16,10 +16,19 @@ OFFICIAL_SERVER="wss://towstrap.vast-plan.com"
 # 版本占位符：服务器下发时填成那台的 release tag（装同版本 agent）；
 # GitHub 直拉的保持原样，运行时回落 latest。--version 可覆盖。
 VERSION="__TOWSTRAP_DEFAULT_VERSION__"
+
+# agent.yaml 预设占位符：服务器下发时填 server.yaml 里 agent_defaults:
+# 的内容（烤进新装的 agent.yaml）；GitHub 直拉的保持原样，按无预设处理。
+AGENT_CONF="__TOWSTRAP_AGENT_CONFIG__"
+
+# SSH 端口占位符：服务器下发时填那台配置的 SSH 端口；GitHub 直拉的
+# 保持原样，回落默认 7822。
+SSH_PORT="__TOWSTRAP_SSH_PORT__"
 PREFIX=""
 TOKEN="${TOWSTRAP_AGENT_TOKEN:-}"
 SERVER="${TOWSTRAP_SERVER:-$DEFAULT_SERVER}"
 SYSTEMD=0
+CHECK=0
 
 usage() {
 	cat <<'EOF'
@@ -30,6 +39,7 @@ usage() {
   --prefix 目录      安装目录，默认 /usr/local/bin（可写）或 ~/.local/bin
   --systemd          装 systemd 服务：root 跑建 towstrap 用户 + 系统单元并启动；
                      普通用户建 ~/.config/systemd/user 单元（需自己 enable）
+  --check            干跑：打印解析出的服务器/版本/SSH 地址后退出（不安装）
   -h, --help
 EOF
 }
@@ -43,16 +53,39 @@ while [ $# -gt 0 ]; do
 	--version) VERSION="${2:-}"; shift 2 ;;
 	--prefix) PREFIX="${2:-}"; shift 2 ;;
 	--systemd) SYSTEMD=1; shift ;;
+	--check) CHECK=1; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) die "未知参数 $1（--help 看用法）" ;;
 	esac
 done
 
+# 注意：服务器下发时占位符是全文件替换——下面几个检测只能匹配
+# "__TOWSTRAP" 前缀本身，不能写完整占位符名（否则模式也被换掉，
+# 会把注入的真值误判成"未替换"然后重置掉）。
 case "$SERVER" in
-*__TOWSTRAP_DEFAULT_SERVER__*) SERVER="$OFFICIAL_SERVER" ;;
+*__TOWSTRAP*) SERVER="$OFFICIAL_SERVER" ;;
 "") die "没有服务器地址：加 --server wss://主机:端口，或设 TOWSTRAP_SERVER（从服务器 /install.sh 拉取的脚本会自动带上）" ;;
 esac
-case "$VERSION" in *__TOWSTRAP_DEFAULT_VERSION__*) VERSION=latest ;; esac
+case "$VERSION" in *__TOWSTRAP*) VERSION=latest ;; esac
+case "$AGENT_CONF" in *__TOWSTRAP*) AGENT_CONF="" ;; esac
+case "$SSH_PORT" in *__TOWSTRAP*) SSH_PORT=7822 ;; esac
+
+# SSH 提示用的主机名从 $SERVER 推导：跟 --server/环境变量覆盖走，
+# 服务器下发和 GitHub 直拉两条路都正确。IPv6 用方括号形式。
+sshhost=${SERVER#wss://}
+sshhost=${sshhost#ws://}
+sshhost=${sshhost%%/*}
+case "$sshhost" in
+\[*\]*) sshhost="${sshhost#\[}"; sshhost="${sshhost%%\]*}" ;;
+*) sshhost="${sshhost%%:*}" ;;
+esac
+
+# --check 干跑：只打印解析结果，不下载不安装（回归测试和管理员调试用）
+if [ "$CHECK" = 1 ]; then
+	printf 'server=%s\nversion=%s\nssh_port=%s\nssh_host=%s\nagent_conf=%s\n' \
+		"$SERVER" "$VERSION" "$SSH_PORT" "$sshhost" "$AGENT_CONF"
+	exit 0
+fi
 [ -n "$TOKEN" ] || die "没有 agent token：加 --token tsa-xxx，或设 TOWSTRAP_AGENT_TOKEN"
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -170,6 +203,10 @@ if [ ! -f "$agentyaml" ]; then
 server: $SERVER
 agent_token_file: $tokenfile
 EOF
+	if [ -n "$AGENT_CONF" ]; then
+		printf '%s\n' "$AGENT_CONF" >>"$agentyaml"
+		echo ">> 附带服务器预设的 agent 配置"
+	fi
 	chmod 600 "$agentyaml"
 	echo ">> 配置写入 $agentyaml"
 else
@@ -246,3 +283,7 @@ echo "完成。没装服务的话这样跑："
 echo "  towstrap --config $agentyaml"
 echo "或直接用旗标："
 echo "  towstrap --server $SERVER --agent-token-file $tokenfile"
+echo ""
+echo "远程进这台机器（标准 SSH 直连）："
+echo "  ssh -p $SSH_PORT <账号名>@$sshhost"
+echo "（账号名 = 管理员给你发 token 的账号；进可接力终端：ssh -t -p $SSH_PORT <账号名>@$sshhost 'mirror 名字'）"

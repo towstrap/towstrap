@@ -71,7 +71,7 @@ curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
 ```
 
-脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和最小 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）；GitHub 直拉的脚本默认 latest。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。
+脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。
 
 也可以从 GitHub 直接拉脚本（默认指向官方服务器；自建才加 `--server wss://…`）：
 
@@ -130,6 +130,7 @@ towstrap-server --users-db ~/.towstrap/users.db &
 | `max_conns_per_ip` | `64` | SSH 每来源 IP 并发上限（只管 SSH；`0` 不限） |
 | `ssh_idle_timeout` | `0`（关） | SSH 空闲超时；能治未认证连接挂死，但会断开空闲的交互会话，慎开 |
 | `ssh_max_timeout` | `24h` | SSH 连接绝对寿命（`0` 不限） |
+| `agent_defaults` | 空 | 管理员预设的 agent 工作配置：服务器下发的 `install.sh`/`install.ps1` 会把这些写进装好的 `agent.yaml`（只影响新装）。字段名同 agent.yaml；`server`/`agent_token*` 身份字段写了会被忽略（地址由脚本生成、token 一机一份） |
 | `mcp` | 关 | 内嵌 MCP 小节，见 [9.2](#92-方式二服务器内嵌-httpmcp) |
 
 对应的命令行旗标：`--config --http --ssh --host-key --users-db --users-key --admin-token --public-url --tls --cert --key --allow-ip --idle-verify --min-agent-version --audit-log --max-sessions --max-conns --max-conns-per-ip --ssh-idle-timeout --ssh-max-timeout`（`--allow-ip` 可重复）。

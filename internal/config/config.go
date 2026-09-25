@@ -37,6 +37,12 @@ type Server struct {
 	// MinAgentVersion：agent 自报版本低于此值拒绝接入（版本淘汰用；空 = 不限）
 	MinAgentVersion string `yaml:"min_agent_version"`
 
+	// AgentDefaults 是这台服务器下发的安装脚本要烤进 agent.yaml 的预设
+	// 工作配置（shell/mirror_idle/quiet 等 agent.yaml 字段写法）。只影响
+	// 新装的机器；server/agent_token* 身份字段会被忽略——地址由脚本生成、
+	// token 一机一份。
+	AgentDefaults Agent `yaml:"agent_defaults"`
+
 	// MCP 是服务器内嵌 MCP（HTTP /mcp）的开关和策略；nil = 不开。
 	MCP *MCP `yaml:"mcp"`
 	// Monitor 是旁路监控推送目标（服务器主动推，接收端被动收）；
@@ -126,6 +132,7 @@ type file struct {
 	AuditLog        string     `yaml:"audit_log"`
 	MirrorIdle      string     `yaml:"mirror_idle"`
 	MinAgentVersion string     `yaml:"min_agent_version"`
+	AgentDefaults   Agent      `yaml:"agent_defaults"`
 	MCP             *MCP       `yaml:"mcp"`
 	Monitor         MonitorCfg `yaml:"monitor"`
 	OAuth           *OAuthCfg  `yaml:"oauth"`
@@ -176,6 +183,7 @@ func LoadServer(path string) (Server, error) {
 		SSHMaxTimeout:   f.SSHMaxTimeout,
 		AuditLog:        f.AuditLog,
 		MinAgentVersion: f.MinAgentVersion,
+		AgentDefaults:   f.AgentDefaults,
 		MCP:             f.MCP,
 		Monitor:         f.Monitor,
 		OAuth:           f.OAuth,
@@ -327,7 +335,8 @@ func MergeServer(file Server, set map[string]string) Server {
 	if v, ok := set["min-agent-version"]; ok {
 		out.MinAgentVersion = v
 	}
-	// mcp:/monitor:/oauth: 小节没有对应命令行旗标，yaml 里写了就透传。
+	// mcp:/monitor:/oauth:/agent_defaults: 小节没有对应命令行旗标，yaml 里写了就透传。
+	out.AgentDefaults = file.AgentDefaults
 	out.MCP = file.MCP
 	out.Monitor = file.Monitor
 	out.OAuth = file.OAuth
@@ -373,6 +382,51 @@ func MergeAgent(file Agent, set map[string]string) Agent {
 		out.MCPPolicy = v
 	}
 	return out
+}
+
+// InstallDefaults 把 server.yaml 里 agent_defaults: 节渲染成写进 agent.yaml
+// 的 YAML 片段：只放行工作配置字段（shell/insecure/quiet/audit_log/
+// mirror_idle/mcp_policy），server/agent_token* 身份字段剔除——地址由安装
+// 脚本生成、token 一机一份。第二个返回值是被忽略的身份字段名（供启动时
+// warn）。没写预设返回 nil。
+func (a Agent) InstallDefaults() ([]byte, []string) {
+	var ignored []string
+	for _, kv := range [][2]string{
+		{"server", a.Server},
+		{"agent_token", a.AgentToken},
+		{"agent_token_file", a.AgentTokenFile},
+	} {
+		if kv[1] != "" {
+			ignored = append(ignored, kv[0])
+		}
+	}
+	m := map[string]any{}
+	if a.Shell != "" {
+		m["shell"] = a.Shell
+	}
+	if a.Insecure {
+		m["insecure"] = true
+	}
+	if a.Quiet {
+		m["quiet"] = true
+	}
+	if a.AuditLog != "" {
+		m["audit_log"] = a.AuditLog
+	}
+	if a.MirrorIdle != "" {
+		m["mirror_idle"] = a.MirrorIdle
+	}
+	if a.MCPPolicy != "" {
+		m["mcp_policy"] = a.MCPPolicy
+	}
+	if len(m) == 0 {
+		return nil, ignored
+	}
+	b, err := yaml.Marshal(m)
+	if err != nil {
+		return nil, ignored
+	}
+	return b, ignored
 }
 
 // AgentInstallHint 生成把 agent 装到目标机上的提示文案。有 public_url

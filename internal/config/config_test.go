@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -140,5 +141,46 @@ func TestMergeServerLimits(t *testing.T) {
 	out = MergeServer(Server{}, map[string]string{"max-sessions": "0"})
 	if out.MaxSessions != 0 {
 		t.Fatalf("旗标显式给 0 应关掉上限: %+v", out)
+	}
+}
+
+func TestAgentDefaults(t *testing.T) {
+	// yaml 解析进 Agent 字段 + MergeServer 透传
+	s, err := LoadServer(write(t, `server:
+  agent_defaults:
+    shell: /bin/zsh
+    mirror_idle: 48h
+    quiet: true
+    server: "wss://evil.example.com"
+    agent_token: tsa-leak
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := MergeServer(s, nil)
+	if out.AgentDefaults.Shell != "/bin/zsh" || !out.AgentDefaults.Quiet {
+		t.Fatalf("agent_defaults 没解析进配置: %+v", out.AgentDefaults)
+	}
+
+	frag, ignored := out.AgentDefaults.InstallDefaults()
+	if len(ignored) != 2 {
+		t.Fatalf("server/agent_token 该列进忽略名单: %v", ignored)
+	}
+	y := string(frag)
+	for _, want := range []string{"shell: /bin/zsh", "mirror_idle: 48h", "quiet: true"} {
+		if !strings.Contains(y, want) {
+			t.Fatalf("片段缺 %s:\n%s", want, y)
+		}
+	}
+	for _, bad := range []string{"server:", "agent_token", "wss://evil", "tsa-leak"} {
+		if strings.Contains(y, bad) {
+			t.Fatalf("身份字段混进了片段:\n%s", y)
+		}
+	}
+
+	// 空预设返回 nil，agent.yaml 保持原样
+	frag2, ignored2 := Agent{}.InstallDefaults()
+	if frag2 != nil || len(ignored2) != 0 {
+		t.Fatal("空 agent_defaults 应返回 nil")
 	}
 }
