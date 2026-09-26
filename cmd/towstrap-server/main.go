@@ -207,6 +207,12 @@ func runServer(args []string) int {
 	var allowIPs stringList
 	fs.Var(&allowIPs, "allow-ip", "")
 	_ = fs.Parse(args)
+	// 位置参数没有意义——拼错的子命令（如 updte）会落到这里，
+	// 不拦就悄悄把服务器跑起来了，报错比误解安全。
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "未知参数 %q——是不是想打某个子命令？（init/user/machine/mcp/update/version）\n", fs.Args())
+		return 2
+	}
 
 	var file config.Server
 	if *configPath != "" {

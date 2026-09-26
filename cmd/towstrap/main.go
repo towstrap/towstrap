@@ -139,6 +139,12 @@ func runAgent(args []string) int {
 	fs.String("mirror-idle", "", "")
 	fs.String("mcp-policy", "", "")
 	_ = fs.Parse(args)
+	// 位置参数没有意义——拼错的子命令会落到这里，不拦就当成启动
+	// agent 跑起来了，报错比误解安全。
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "未知参数 %q——是不是想打某个子命令？（oauth/register/totp/mirror/update/version）\n", fs.Args())
+		return 2
+	}
 
 	var file config.Agent
 	if *configPath != "" {
