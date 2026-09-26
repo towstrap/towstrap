@@ -16,8 +16,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -227,6 +229,9 @@ func runRegister(args []string) int {
 		fmt.Printf(">> 注册成功：账号 %s，机器 %s\n", res.Account, res.Machine)
 	}
 	fmt.Printf(">> token 写入 %s（0600），配置 %s\n", tokenfile, agentyaml)
+	// 安装时已写了服务但没启（没 token）的话，现在凭据齐了顺手拉起，
+	// 让「默认常驻」在自助注册这条路上也不断档。
+	tryStartPendingService()
 	fmt.Println(">> 跑起来：towstrap --config", agentyaml)
 	fmt.Println()
 	fmt.Println("远程进这台机器（标准 SSH 直连）：")
@@ -239,6 +244,74 @@ func runRegister(args []string) int {
 		fmt.Fprintln(os.Stderr, "提示：脚本模式跳过了 TOTP 绑定——之后想绑跑 towstrap totp（或 SSH 登录后 @totp）")
 	}
 	return 0
+}
+
+// tryStartPendingService 把「装好了但没启动」的常驻服务拉起来：
+// 无 token 安装时 install.sh 只写 unit/plist 不启动，register 拿到 token
+// 后这里是把那条路接完的时机。尽力而为，失败只提示不影响注册结果。
+func tryStartPendingService() {
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := exec.LookPath("systemctl"); err != nil {
+			return
+		}
+		if os.Geteuid() == 0 {
+			if _, err := os.Stat("/etc/systemd/system/towstrap.service"); err != nil {
+				return
+			}
+			if exec.Command("systemctl", "is-active", "--quiet", "towstrap").Run() == nil {
+				return // 已在跑
+			}
+			if exec.Command("systemctl", "enable", "--now", "towstrap").Run() == nil {
+				fmt.Println(">> systemd 服务 towstrap 已启用并启动")
+			}
+			return
+		}
+		unit := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", "towstrap.service")
+		if _, err := os.Stat(unit); err != nil {
+			return
+		}
+		if exec.Command("systemctl", "--user", "is-active", "--quiet", "towstrap").Run() == nil {
+			return
+		}
+		if exec.Command("systemctl", "--user", "enable", "--now", "towstrap").Run() == nil {
+			fmt.Println(">> systemd 用户服务 towstrap 已启用并启动")
+		}
+	case "darwin":
+		label := "com.towstrap.agent"
+		if os.Geteuid() == 0 {
+			plist := "/Library/LaunchDaemons/" + label + ".plist"
+			if _, err := os.Stat(plist); err != nil {
+				return
+			}
+			if exec.Command("launchctl", "print", "system/"+label).Run() == nil {
+				return
+			}
+			if exec.Command("launchctl", "bootstrap", "system", plist).Run() == nil {
+				fmt.Println(">> launchd 守护已加载启动")
+			}
+			return
+		}
+		plist := filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", label+".plist")
+		if _, err := os.Stat(plist); err != nil {
+			return
+		}
+		domain := fmt.Sprintf("gui/%d", os.Getuid())
+		if exec.Command("launchctl", "print", domain+"/"+label).Run() == nil {
+			return
+		}
+		if exec.Command("launchctl", "bootstrap", domain, plist).Run() == nil {
+			fmt.Println(">> launchd 服务已加载启动")
+		}
+	case "windows":
+		// 计划任务只能「登录时」触发；装的时候已建好但进程没在跑的，现在拉一次。
+		if exec.Command("schtasks", "/query", "/tn", "towstrap").Run() != nil {
+			return
+		}
+		if exec.Command("schtasks", "/run", "/tn", "towstrap").Run() == nil {
+			fmt.Println(">> 计划任务 towstrap 已拉起")
+		}
+	}
 }
 
 // totpPost 是自助管理端点（/totp/*、/passwd）共用的请求封装：JSON body +

@@ -254,10 +254,11 @@ func (s *sockSink) SendExit(code int) {
 }
 
 // QueryStatus 向本机 mirror.sock 发 status 查询。三个返回值分三种情况：
-//   info 非空    —— agent 在跑且应答了实时状态
-//   errReply 非空 —— socket 活着但 op 被拒（旧版本 agent 不认识 status，
-//                   或受限对端）——进程在跑，只是拿不到详情
-//   err 非空     —— 传输层失败（socket 不存在/连不上），agent 多半没在跑
+//
+//	info 非空    —— agent 在跑且应答了实时状态
+//	errReply 非空 —— socket 活着但 op 被拒（旧版本 agent 不认识 status，
+//	                或受限对端）——进程在跑，只是拿不到详情
+//	err 非空     —— 传输层失败（socket 不存在/连不上），agent 多半没在跑
 func QueryStatus(path string) (info *StatusInfo, errReply string, err error) {
 	c, err := net.DialTimeout("unix", path, 3*time.Second)
 	if err != nil {

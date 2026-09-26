@@ -111,7 +111,7 @@ curl -fsSL https://towstrap.vast-plan.com/install.sh | sh            # 官方服
 curl -fsSL http://S:7880/install.sh | sh -s -- --token tsa-…        # 自建服务器
 ```
 
-可选参数：`--systemd` 注册 systemd 服务（Linux）；`--launchd` 注册 launchd 服务（macOS）；`--token tsa-…` 直接提供凭据（亦可装后执行 `towstrap register` 自助建号）。装完直接 `towstrap` 即会按默认位置加载 `agent.yaml`；`towstrap status` 查看运行与连接状态。
+常驻服务默认注册：Linux 有 `systemctl` 建 systemd 单元、macOS 建 launchd 项、Windows 建「登录自起」计划任务（`--no-service` 退出，`-NoService` for PowerShell）。可选参数：`--token tsa-…` 直接提供凭据（亦可装后执行 `towstrap register` 自助建号）。装完直接 `towstrap` 即会按默认位置加载 `agent.yaml`；`towstrap status` 查看运行与连接状态。
 
 服务端：
 

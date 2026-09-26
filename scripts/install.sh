@@ -29,6 +29,7 @@ TOKEN="${TOWSTRAP_AGENT_TOKEN:-}"
 SERVER="${TOWSTRAP_SERVER:-$DEFAULT_SERVER}"
 SYSTEMD=0
 LAUNCHD=0
+SERVICE=1
 CHECK=0
 NOVERIFY=0
 
@@ -40,10 +41,10 @@ usage() {
   --server wss://..  服务器地址（也可用 TOWSTRAP_SERVER；默认官方服务器）
   --version vX.Y.Z   版本，默认与下发服务器同版本（GitHub 直拉时 latest）
   --prefix 目录      安装目录，默认 /usr/local/bin（可写）或 ~/.local/bin
-  --systemd          装 systemd 服务（Linux）：root 跑建 towstrap 用户 + 系统单元并启动；
-                     普通用户建 ~/.config/systemd/user 单元（需自己 enable）
-  --launchd          装 launchd 服务（macOS）：root 写 LaunchDaemon 常驻并加载；
-                     普通用户写 ~/Library/LaunchAgents 并加载
+  --no-service       不装常驻服务，只放二进制+配置（临时用/容器场景；之后手动 towstrap 跑）
+  --systemd/--launchd 装服务常驻——默认即开（Linux 有 systemctl 建 systemd 单元，
+                     macOS 建 launchd 项；root 走系统级、普通用户走用户级），
+                     这两个旗标只是兼容保留，不用再显式给
   --check            干跑：打印解析出的服务器/版本/SSH 地址后退出（不安装）
   --no-verify        跳过 SHA256 校验（不推荐；只在校验确实拉不动时用）
   -h, --help
@@ -60,6 +61,7 @@ while [ $# -gt 0 ]; do
 	--prefix) PREFIX="${2:-}"; shift 2 ;;
 	--systemd) SYSTEMD=1; shift ;;
 	--launchd) LAUNCHD=1; shift ;;
+	--no-service) SERVICE=0; shift ;;
 	--check) CHECK=1; shift ;;
 	--no-verify) NOVERIFY=1; shift ;;
 	-h|--help) usage; exit 0 ;;
@@ -88,6 +90,24 @@ case "$sshhost" in
 *) sshhost="${sshhost%%:*}" ;;
 esac
 
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$os" in linux | darwin) ;; *) die "不支持的系统 $os（Windows 用 install.ps1）" ;; esac
+
+# 常驻服务默认装：Linux 有 systemctl 建 systemd 单元，macOS 建 launchd 项；
+# --no-service 退出。显式旗标用错平台要报错（帮用户发现抄错），默认路径静默选对。
+[ "$SYSTEMD" != 1 ] || [ "$os" = linux ] || die "--systemd 只在 Linux 上用（macOS 默认装 launchd，不用加旗标）"
+[ "$LAUNCHD" != 1 ] || [ "$os" = darwin ] || die "--launchd 只在 macOS 上用（Linux 默认装 systemd，不用加旗标）"
+want_systemd=0
+want_launchd=0
+if [ "$SERVICE" = 1 ]; then
+	if [ "$os" = linux ] && command -v systemctl >/dev/null 2>&1; then want_systemd=1; fi
+	if [ "$os" = darwin ]; then want_launchd=1; fi
+fi
+# 显式 --systemd 但系统没 systemctl 是硬错；默认路径则静默跳过。
+if [ "$SYSTEMD" = 1 ] && ! command -v systemctl >/dev/null 2>&1; then
+	die "--systemd 需要 systemctl（这台 Linux 没有；不加旗标的默认安装会自动跳过服务注册）"
+fi
+
 # --check 干跑：只打印解析结果，不下载不安装（回归测试和管理员调试用）
 if [ "$CHECK" = 1 ]; then
 	printf 'server=%s\nversion=%s\nssh_port=%s\nssh_host=%s\nagent_conf=%s\n' \
@@ -98,8 +118,6 @@ fi
 # --token——装完跑 towstrap register 交互建号，token 由它写进同一位置。
 if [ -n "$TOKEN" ]; then have_token=1; else have_token=0; fi
 
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
-case "$os" in linux | darwin) ;; *) die "不支持的系统 $os（Windows 用 install.ps1）" ;; esac
 case "$(uname -m)" in
 x86_64 | amd64) arch=amd64 ;;
 arm64 | aarch64) arch=arm64 ;;
@@ -162,9 +180,9 @@ echo ">> 已装到 $PREFIX/towstrap"
 # 旧版本叫 towstrap-agent，可能还留着：是个普通文件就提醒一下
 if [ -e "$PREFIX/towstrap-agent" ] && [ ! -L "$PREFIX/towstrap-agent" ]; then
 	echo ">> 提示：$PREFIX/towstrap-agent 是旧名二进制，新名是 towstrap；确认没引用后可删"
-	if [ "$SYSTEMD" != 1 ] && command -v systemctl >/dev/null 2>&1 &&
+	if [ "$want_systemd" != 1 ] && command -v systemctl >/dev/null 2>&1 &&
 		{ systemctl is-active --quiet towstrap-agent 2>/dev/null || systemctl --user is-active --quiet towstrap-agent 2>/dev/null; }; then
-		echo ">> 注意：旧服务 towstrap-agent 还在跑旧二进制；加 --systemd 重跑本脚本会换成新服务 towstrap"
+		echo ">> 注意：旧服务 towstrap-agent 还在跑旧二进制；去掉 --no-service 重跑本脚本会换成新服务 towstrap"
 	fi
 fi
 
@@ -198,9 +216,9 @@ towstrap | towstrap-agent)
 	;;
 esac
 
-# 不带 --systemd 的重装：二进制已换新，但正在跑的服务不会自动重启。
-# 提醒一声，免得以为升级完了实际还跑旧版。
-if [ "$SYSTEMD" != 1 ] && command -v systemctl >/dev/null 2>&1 &&
+# 没走服务安装路的重装（--no-service/无 systemctl）：二进制已换新，
+# 但正在跑的服务不会自动重启。提醒一声，免得以为升级完了实际还跑旧版。
+if [ "$want_systemd" != 1 ] && command -v systemctl >/dev/null 2>&1 &&
 	{ systemctl is-active --quiet towstrap 2>/dev/null || systemctl --user is-active --quiet towstrap 2>/dev/null; }; then
 	echo ">> 注意：towstrap 服务还在跑旧二进制；systemctl [--user] restart towstrap 后新版生效"
 fi
@@ -242,10 +260,7 @@ else
 	echo ">> $agentyaml 已存在，没动它"
 fi
 
-if [ "$SYSTEMD" = 1 ]; then
-	if ! command -v systemctl >/dev/null 2>&1; then
-		die "--systemd 需要 systemctl"
-	fi
+if [ "$want_systemd" = 1 ]; then
 	# 旧版本的单元叫 towstrap-agent：不停掉它，新旧两个 agent 拿同一个
 	# token 连服务器会互相顶替（AGENT-REPLACE 刷屏）。只处理本脚本写的那份。
 	if [ "$(id -u)" = 0 ]; then
@@ -326,8 +341,7 @@ EOF
 	fi
 fi
 
-if [ "$LAUNCHD" = 1 ]; then
-	[ "$os" = darwin ] || die "--launchd 只在 macOS 上用（Linux 用 --systemd）"
+if [ "$want_launchd" = 1 ]; then
 	label=com.towstrap.agent
 	if [ "$(id -u)" = 0 ]; then
 		plist="/Library/LaunchDaemons/$label.plist"
@@ -379,14 +393,18 @@ EOF
 fi
 
 echo ""
+if [ "$SERVICE" = 0 ]; then
+	echo ">> --no-service：没注册常驻服务，手动跑：towstrap"
+fi
 if [ "$have_token" = 0 ] && [ ! -f "$tokenfile" ]; then
 	echo "完成（未提供 token）。下一步建号拿凭据："
 	echo "  towstrap register --server $SERVER   # 服务器开了自助注册时"
 	echo "或把管理员签发的 token 写入 $tokenfile 后直接跑："
 	echo "  towstrap   （会自动加载 ${agentyaml}）"
 else
-	echo "完成。没装服务的话这样跑："
-	echo "  towstrap   （自动加载 ${agentyaml}；查状态：towstrap status）"
+	echo "完成。查运行状态：towstrap status"
+	echo "手动前台跑调试（装了常驻服务就别再起：两个进程抢同一个 token 会互相顶替）："
+	echo "  towstrap   （自动加载 ${agentyaml}）"
 	echo "或直接用旗标："
 	echo "  towstrap --server $SERVER --agent-token-file $tokenfile"
 fi

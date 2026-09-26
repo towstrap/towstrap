@@ -11,7 +11,8 @@ param(
     [string]$Server = $(if ($env:TOWSTRAP_SERVER) { $env:TOWSTRAP_SERVER } else { "__TOWSTRAP_DEFAULT_SERVER__" }),
     [string]$Version = "__TOWSTRAP_DEFAULT_VERSION__",
     [string]$Prefix = "$env:LOCALAPPDATA\TowStrap",
-    [switch]$NoVerify
+    [switch]$NoVerify,
+    [switch]$NoService
 )
 $ErrorActionPreference = "Stop"
 
@@ -130,6 +131,29 @@ if ($wasTask) {
 if ($wasManual) {
     Write-Host ">> 注意：之前手工跑的 towstrap 进程已停，用下面的命令重启它"
 }
+
+# 常驻默认开：注册「登录自起」的计划任务（-NoService 退出）。
+# 已存在的不动（wasTask 分支已经把升级重启做了）；新建的现在有凭据就拉起，
+# 没凭据等 register 写完 token 后下次登录自然生效。
+if (-not $NoService) {
+    $taskExists = $false
+    try { schtasks /query /tn towstrap 2>$null | Out-Null; $taskExists = ($LASTEXITCODE -eq 0) } catch {}
+    if (-not $taskExists) {
+        schtasks /create /tn towstrap /sc onlogon /rl limited /f /tr "`"$exe`" --config `"$agentyaml`"" | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            $taskExists = $true
+            Write-Host ">> 计划任务 towstrap 已注册（每次登录自起）"
+        } else {
+            Write-Host ">> 计划任务注册失败；手动补：schtasks /create /tn towstrap /sc onlogon /rl limited /tr `"`"$exe`" --config `"`"$agentyaml`"`""
+        }
+    }
+    if ($taskExists -and -not $wasTask -and ($haveToken -or (Test-Path $tokenfile))) {
+        schtasks /run /tn towstrap 2>$null | Out-Null
+        Write-Host ">> 计划任务 towstrap 已拉起（查状态：& `"$exe`" status）"
+    }
+} else {
+    Write-Host ">> -NoService：没注册计划任务，手动跑：& `"$exe`" --config `"$agentyaml`""
+}
 Write-Host ""
 if (-not $haveToken -and -not (Test-Path $tokenfile)) {
     Write-Host "完成（未提供 token）。下一步建号拿凭据："
@@ -140,8 +164,6 @@ if (-not $haveToken -and -not (Test-Path $tokenfile)) {
     Write-Host "完成。跑起来："
     Write-Host "  & `"$exe`" --config `"$agentyaml`""
 }
-Write-Host "要开机自启可以注册计划任务（示例，按需调整）："
-Write-Host "  schtasks /create /tn towstrap /sc onlogon /rl limited /tr `"`"$exe`" --config `"`"$agentyaml`"`"`""
 Write-Host ""
 Write-Host "远程进这台机器（标准 SSH 直连）："
 Write-Host "  ssh -p $SshPort <账号名>@$sshhost"

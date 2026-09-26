@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布
+
+### 变更
+
+- **常驻服务改为默认**：`install.sh` 不再要 `--systemd`/`--launchd`——Linux 有 `systemctl` 就建 systemd 单元（root 系统级、普通用户 `~/.config/systemd/user`），macOS 建 launchd 项；`install.ps1` 默认注册「登录自起」计划任务。临时用/容器场景加 `--no-service`（ps1 用 `-NoService`）只放二进制+配置。显式 `--systemd`/`--launchd` 旗标兼容保留（用错平台仍报错）；显式 `--systemd` 在没 systemctl 的机器上照旧是硬错。`install-server.sh` 本来就是默认装服务，现在口径一致
+
 ## v0.3.6（2026-09-26）
 
 ### 新增

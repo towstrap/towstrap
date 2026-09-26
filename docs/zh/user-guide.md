@@ -96,7 +96,7 @@ curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
 ```
 
-脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。
+脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。**常驻是默认行为**：Linux 有 `systemctl` 就建 systemd 单元，macOS 建 launchd 项，Windows 注册「登录自起」计划任务；临时用/容器场景加 `--no-service`（`install.ps1` 用 `-NoService`）只放二进制和配置。
 
 也可以从 GitHub 直接拉脚本（默认指向官方服务器；自建才加 `--server wss://…`）：
 
@@ -284,7 +284,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 ### launchd（macOS）
 
-安装脚本加 `--launchd` 即注册 launchd 服务：普通用户写 `~/Library/LaunchAgents/com.towstrap.agent.plist` 并 `launchctl bootstrap gui/$UID` 加载（`RunAtLoad`+`KeepAlive`，日志在 `~/.towstrap/towstrap.log`）；root 写 `/Library/LaunchDaemons/` 系统守护项（日志 `/var/log/towstrap-agent.log`——注意这等于把远程会话开成 root shell）。升级重装时已加载的服务会 `kickstart -k` 重启生效；没 token 时只写 plist 不加载，`towstrap register` 建号后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` 拉起。
+安装脚本默认注册 launchd 服务（`--no-service` 退出）：普通用户写 `~/Library/LaunchAgents/com.towstrap.agent.plist` 并 `launchctl bootstrap gui/$UID` 加载（`RunAtLoad`+`KeepAlive`，日志在 `~/.towstrap/towstrap.log`）；root 写 `/Library/LaunchDaemons/` 系统守护项（日志 `/var/log/towstrap-agent.log`——注意这等于把远程会话开成 root shell）。升级重装时已加载的服务会 `kickstart -k` 重启生效；没 token 时只写 plist 不加载，`towstrap register` 建号后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` 拉起。
 
 卸载：`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist`（或 `system` 域 + sudo）后删 plist。
 
