@@ -56,7 +56,7 @@ TowStrap 用于访问位于 NAT/防火墙之后、无公网 IP 的机器。被�
 - 自助注册：`towstrap register` 建号或登录挂接机器；服务端 `register`/`register_invite` 控制入口
 - 机器指纹绑定：主板 UUID 哈希，一台机器仅可绑定一个账号
 - 认证方式：密码 / TOTP 二因素 / 公钥任意组合；支持 OAuth 一次性 SSH 授权（临时凭据不可执行管理命令）
-- 自助管理：SSH 登录后 `@machine list/add/remove/token`、`@totp`；本机 `towstrap totp`
+- 自助管理：SSH 登录后 `@machine list/add/remove/token`、`@totp`；本机 `towstrap totp`、`towstrap passwd`
 - token 换发：`towstrap token refresh`，原子写入、确认后作废旧 token、失败自动回退
 
 **安全与审计**

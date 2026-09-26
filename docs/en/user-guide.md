@@ -230,7 +230,17 @@ What it does: reports the machine fingerprint (SHA-256 hash — the raw hardware
 
 Constraints: **one machine fingerprint binds to only one account** — a fingerprint owned by another account reports that account's name (use `--login` with that account's password, or have an admin `user del` to release the fingerprint). If `register_invite` is set, signup needs `--invite CODE`; each source IP gets 8 requests per hour; with `register:` off, account creation uses the classic `user add` + `--token` flow (adding machines to existing accounts is unaffected).
 
+Interactive mode asks for "this machine's name" (Enter accepts the hostname) — the machine name doubles as the SSH login name and its label in the server's machine list; `--machine` or scripted mode without it still defaults to the hostname.
+
 Fingerprint boundaries, honestly: the raw hardware ID only ever participates in a source-tagged SHA-256 hash on the machine itself and the server stores just the hash — **the desensitization is solid**. The strongest available source is preferred: board/firmware IDs (macOS `IOPlatformUUID`+serial, Linux `product_uuid`, Windows SMBIOS UUID — all survive OS reinstalls), falling back to OS-level `machine-id`/`MachineGuid` when the firmware ID isn't readable. Still, "one account per machine" is an **anti-duplication guardrail, not anti-fraud** — anyone with root or a modified client can send a self-reported fingerprint; cloned VMs fail the other way (colliding fingerprint wrongly rejected).
+
+### Changing the password
+
+```bash
+towstrap passwd          # prompts once for the old password, twice for the new; TOTP-bound accounts also need a current 6-digit code
+```
+
+Auth is the machine's agent token + the old password (the token proves this machine is enrolled, the old password proves it's you) — the same chain as the `totp` subcommand, so agent IP allowlists, lockout, and `oauth_only` all apply. The change is account-wide: SSH logins to every machine under the account use the new password. In scripted mode `--password-stdin` reads two stdin lines (old, new) and `--totp` supplies the current code. If the old password is lost, only an admin can reset it: `towstrap-server user set NAME --password NEW`.
 
 ### Four ways to supply the token (in order of preference)
 
@@ -282,6 +292,8 @@ Unload: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agen
 ### Status
 
 `towstrap status` answers "is the agent actually running after install": process liveness (pid/uptime), server connection state (last handshake, dial count, last disconnect reason), active remote sessions and mirrors, whether `agent.yaml` and the token file are in place, and service-manager registration (systemd/launchd/scheduled task). When it isn't running it prints how to start it. Exit codes for scripting: `0` running and connected, `3` running but not connected, `1` not running; `-q` suppresses output.
+
+The credentials section shows the agent token's effective source (flag/env/config/file path) and a masked value (head and tail only); add `--show-token` for the full value. Don't confuse the two token families: the **agent token (`tsa-`)** is what this machine uses to reach the server, while an **MCP token (`tsm-`)** is issued per AI client via `towstrap-server mcp add` on the server — the agent neither needs nor sees tsm- tokens.
 
 ### On-machine visibility
 

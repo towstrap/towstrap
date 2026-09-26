@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/towstrap/towstrap/internal/machineid"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
 )
 
@@ -102,28 +102,13 @@ type MCP struct {
 	LocalNotify *bool `yaml:"local_notify"`
 }
 
-// AgentConfDir 是安装脚本写 agent.yaml 的默认目录：root 装法
+// AgentConfDir 是安装脚本写 agent.yaml 的默认目录（root 装法
 // /etc/towstrap，Windows 装法 %LOCALAPPDATA%\TowStrap，普通用户
-// $XDG_CONFIG_HOME 或 ~/.config 下的 towstrap/。runAgent 在不带
-// --config 启动时按它自动加载，status 也按它找配置。
+// $XDG_CONFIG_HOME 或 ~/.config/towstrap）——和 machineid.ConfDir
+// 同一约定，runAgent 不带 --config 时按它自动加载，status 也按它找配置。
 func AgentConfDir() string {
-	if runtime.GOOS == "windows" {
-		if d := os.Getenv("LOCALAPPDATA"); d != "" {
-			return filepath.Join(d, "TowStrap")
-		}
-		if h, err := os.UserHomeDir(); err == nil && h != "" {
-			return filepath.Join(h, "AppData", "Local", "TowStrap")
-		}
-		return "TowStrap"
-	}
-	if os.Geteuid() == 0 {
-		return "/etc/towstrap"
-	}
-	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-		return filepath.Join(d, "towstrap")
-	}
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		return filepath.Join(h, ".config", "towstrap")
+	if d, err := machineid.ConfDir(); err == nil {
+		return d
 	}
 	return "towstrap"
 }

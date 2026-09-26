@@ -4,6 +4,8 @@
 
 ### 新增
 
+- **`towstrap passwd` 子命令**：在这台机器上自助改账号的 SSH/登录密码（POST /passwd）。agent token 认机器 + 旧密码证本人 + 已绑 TOTP 要当前动态码（和 /totp/* 同一条鉴权链：IP 白名单、登录锁、oauth_only 拦截都算数）；改完全账号生效，名下所有机器 SSH 登录换新密码。`--password-stdin` 脚本模式从 stdin 读两行（旧、新），`--totp` 带当前动态码
+- **`towstrap status` 凭据段**：显示 agent token 的实际来源（旗标/环境变量/配置项/文件路径）和遮中段后的值（`--show-token` 可看完整值）；并明确 agent token（tsa-，本机用）与 MCP token（tsm-，服务器 `mcp add` 签发、给 AI 客户端用）是两套互不相干的凭据
 - **`towstrap status` 子命令**：显示本机 agent 跑没跑、连没连上服务器、上次断开原因、活跃远程会话/镜像数。数据走本机 mirror.sock 的 `status` 操作（实时权威），socket 不应答时退到进程表探测，再查 systemd/launchd/计划任务状态和 agent.yaml 凭据就位情况，没在跑时给启动指引。退出码：0 已连上、3 在跑未连、1 没在跑；`-q` 静默
 - **裸跑 `towstrap` 自动加载默认配置**：不带 `--config` 时按安装脚本落点找 agent.yaml（root→/etc/towstrap，用户→~/.config/towstrap，Windows→%LOCALAPPDATA%\TowStrap），装完直接 `towstrap` 即起
 - **`install.sh --launchd`（macOS 服务化）**：root 写 /Library/LaunchDaemons 守护项，普通用户写 ~/Library/LaunchAgents 并 `launchctl bootstrap`；已加载时 `kickstart -k` 重启让升级生效；无 token 时写 plist 不加载
@@ -11,7 +13,9 @@
 
 ### 修复
 
+- **`register` 不确认机器名**：之前未带 `--machine` 时静默用主机名，用户没机会命名——交互模式现在会问「这台机器的名字」（回车取主机名）；脚本模式不给旗标仍用主机名，行为不变
 - **裸 `towstrap` 只打帮助不起 agent**：入口 `len(args)<2` 直接进用法，默认配置自动加载轮不到——现在默认路径有 agent.yaml（或 TOWSTRAP_* 环境变量已给凭据）时裸跑即启动 agent，什么都没装的机器才显示用法
+- **`machineid.ConfDir` 不认 XDG_CONFIG_HOME**：install.sh 认，导致设了 XDG 的机器上 register/token/status 与安装路径分家——confDirOS 补上 XDG 分支，persistedID 对旧位置留兜底防指纹漂移
 
 ## v0.3.5（2026-09-26）
 

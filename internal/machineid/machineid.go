@@ -79,6 +79,15 @@ func persistedID() (string, error) {
 			return id, nil
 		}
 	}
+	// ConfDir 开始认 XDG_CONFIG_HOME 后，设了 XDG 的旧机器上 machine-id
+	// 还在 ~/.config/towstrap 下——找不到就先认旧位置的，保住既有指纹。
+	if home, err := os.UserHomeDir(); err == nil {
+		if b, err := os.ReadFile(filepath.Join(home, ".config", "towstrap", "machine-id")); err == nil {
+			if id := strings.TrimSpace(string(b)); id != "" {
+				return id, nil
+			}
+		}
+	}
 	var rnd [16]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return "", fmt.Errorf("没有可用的机器 ID 来源: %w", err)

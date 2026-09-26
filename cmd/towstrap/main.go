@@ -59,6 +59,8 @@ func main() {
 		os.Exit(runRegister(args[2:]))
 	case "totp":
 		os.Exit(runTOTP(args[2:]))
+	case "passwd":
+		os.Exit(runPasswd(args[2:]))
 	case "update":
 		os.Exit(runUpdate(args[2:]))
 	case "status":
@@ -88,6 +90,7 @@ func usage() {
   towstrap oauth [--wait 5m] [选项]   发起 OIDC 授权，拿到短时效 SSH 凭据
   towstrap register [选项]            首次接入：没账号建号（服务器开 register:）、有账号登录加机
   towstrap totp [remove] [选项]       绑/换绑/解绑账号的 TOTP 二因素（SSH 里也能用 @totp）
+  towstrap passwd [选项]              改账号的 SSH/登录密码（本机 token + 旧密码鉴权）
   towstrap mirror [ls|kill|<名字> [命令]]   本机的可接力终端（Ctrl-\ 脱离）
                                        （install.sh 会把它软链成 mirror，直接敲 mirror work）
   towstrap update [--version vX.Y.Z] [--check]   自升级：从官方 Release 拉新版，
@@ -155,7 +158,7 @@ func runAgent(args []string) int {
 	// 位置参数没有意义——拼错的子命令会落到这里，不拦就当成启动
 	// agent 跑起来了，报错比误解安全。
 	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "未知参数 %q——是不是想打某个子命令？（oauth/register/totp/mirror/update/status/version）\n", fs.Args())
+		fmt.Fprintf(os.Stderr, "未知参数 %q——是不是想打某个子命令？（oauth/register/totp/passwd/mirror/update/status/version）\n", fs.Args())
 		return 2
 	}
 

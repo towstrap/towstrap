@@ -5,6 +5,7 @@ package machineid
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -86,6 +87,11 @@ func (e errString) Error() string { return string(e) }
 func confDirOS() string {
 	if os.Geteuid() == 0 {
 		return "/etc/towstrap"
+	}
+	// install.sh 认 $XDG_CONFIG_HOME——register/token/status 都得跟它对齐，
+	// 不然设了 XDG 的机器上 token 和配置会落两个目录。
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "towstrap")
 	}
 	return ""
 }

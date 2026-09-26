@@ -229,7 +229,17 @@ echo '密码' | towstrap register --account alice --password-stdin   # 脚本化
 
 约束：**一台机器的指纹只许绑一个账号**——指纹已被别的账号占用会提示既有账号名（那账号的密码走 `--login`，或管理员 `user del` 释放指纹）。服务器设了 `register_invite` 时建号要带 `--invite 码`；每来源 IP 每小时限 8 次；服务器没开 `register:` 时建号走 `user add` + `--token` 的传统流程（已有账号加机器不受影响）。
 
+交互模式会问「这台机器的名字」（回车取主机名）——机器名是 SSH 登录名、也是服务器机器列表里的显示名；`--machine` 或脚本模式不给时仍默认主机名。
+
 指纹的边界要说清：原始硬件 ID 只在机器内参与 SHA256（带来源标签），服务器存的是哈希——**脱敏是到位的**；优先取主板固件级 ID（macOS `IOPlatformUUID`+序列号、Linux `product_uuid`、Windows SMBIOS UUID——重装系统不变），取不到才回落 OS 级 `machine-id`/`MachineGuid`。但"一机一号"仍是**防误刷护栏、不是反欺诈**——有 root 或改了客户端的人照样能发自报指纹；VM 克隆则方向相反（撞指纹被误拒）。
+
+### 改密码
+
+```bash
+towstrap passwd          # 问旧密码一遍、新密码两遍；绑了 TOTP 再要一个当前动态码
+```
+
+鉴权是本机 agent token + 旧密码（token 证明这台机器已登记、旧密码证明是本人），和 `totp` 子命令同一条鉴权链——IP 白名单、登录锁定、`oauth_only` 拦截都算数。改完全账号生效，名下所有机器的 SSH 登录都换新密码。脚本模式 `--password-stdin` 从 stdin 读两行（旧密码、新密码），`--totp` 带当前动态码。忘了旧密码只能找管理员重置：`towstrap-server user set 名字 --password 新密码`。
 
 ### token 的四种给法（按推荐排序）
 
@@ -281,6 +291,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 ### 状态查看
 
 `towstrap status` 一条命令回答「装完了到底跑没跑」：进程存活（pid/启动时长）、与服务器连接状态（握手时间、拨号次数、上次断开原因）、活跃远程会话与镜像终端数、agent.yaml 与 token 文件就位情况、系统服务（systemd/launchd/计划任务）注册状态。没在跑时直接给出启动指引。退出码三档可进脚本：`0` 在跑且已连上、`3` 在跑未连上、`1` 没在跑；`-q` 静默只给退出码。
+
+凭据一栏显示 agent token 的实际来源（旗标/环境变量/配置项/文件路径）和遮中段后的值（留头尾够认是哪个），要看完整值加 `--show-token`。注意别把两套 token 弄混：**agent token（`tsa-`）**是这台机器连服务器用的，**MCP token（`tsm-`）**是 AI 客户端走 MCP 用的，由服务器上 `towstrap-server mcp add` 签发——agent 不需要、也接触不到 tsm-。
 
 ### 被控端感知
 
@@ -455,6 +467,8 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # 解�
 ```
 
 TOTP 也可以直接在被管的机器上管——SSH 进机器后在 shell 里敲 `towstrap totp`（绑/换绑）或 `towstrap totp remove`（解绑）。效果和 `@totp` 完全一样，鉴权是本机 agent token + 账号密码（已绑的换绑/解绑还要当前动态码），对已经登进机器的人来说少记一种写法；`@totp` 留给手边没这台机器的场合（比如机器不在身边、从别的设备上收）。
+
+改密码同理：`towstrap passwd` 在机器上就能改（旧密码 + 绑了要动态码），不用管理员经手。
 
 限制：
 

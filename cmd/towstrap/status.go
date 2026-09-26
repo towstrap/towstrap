@@ -22,13 +22,16 @@ import (
 // 1 = 没在跑或查不到。
 //
 // 数据分三层，越往后越是兜底：
-//   1. mirror.sock 的 status 操作——agent 进程活着才会应答（权威实时态）
-//   2. 进程表探测——socket 挂了/老版本没 status 时证明进程还在
-//   3. 服务管理器与配置文件——没在跑时回答「怎么起」
+//  1. mirror.sock 的 status 操作——agent 进程活着才会应答（权威实时态）
+//  2. 进程表探测——socket 挂了/老版本没 status 时证明进程还在
+//  3. 服务管理器与配置文件——没在跑时回答「怎么起」
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	configPath := fs.String("config", "", "agent.yaml 路径（默认按安装位置探测）")
 	sock := fs.String("sock", "", "mirror socket 路径（默认环境变量/审计目录约定）")
+	agentToken := fs.String("agent-token", "", "覆盖凭据来源（默认和 agent 同款优先级）")
+	tokenFile := fs.String("agent-token-file", "", "覆盖 token 文件路径")
+	showToken := fs.Bool("show-token", false, "显示完整 token 值（默认只露头尾）")
 	quiet := fs.Bool("q", false, "静默：只给退出码，不打印")
 	fs.BoolVar(quiet, "quiet", false, "同 -q")
 	_ = fs.Parse(args)
@@ -98,22 +101,27 @@ func runStatus(args []string) int {
 	cfg, cfgErr := config.LoadAgent(cfgPath)
 	switch {
 	case cfgErr == nil:
-		tokenMark := "无"
-		if cfg.AgentToken != "" {
-			tokenMark = "写在配置里"
-		} else if cfg.AgentTokenFile != "" {
-			if _, e := os.Stat(cfg.AgentTokenFile); e == nil {
-				tokenMark = cfg.AgentTokenFile
-			} else {
-				tokenMark = cfg.AgentTokenFile + "（文件不存在！）"
-			}
-		}
-		out("配置：%s（server %s，token %s）", cfgPath, orDefault(cfg.Server), tokenMark)
+		out("配置：%s（server %s）", cfgPath, orDefault(cfg.Server))
 	case *configPath != "":
 		out("配置：%s 读不了（%v）", cfgPath, cfgErr)
 	default:
 		out("配置：%s 不存在（没装过或装在别处；--config 指定）", cfgPath)
 	}
+
+	// —— 凭据：解析优先级和 agent 一致，报出来的来源就是它实际用的。
+	// 值默认遮中段只露头尾；要完整值加 --show-token。
+	tok, tokSource, _, tokErr := resolveAgentToken(*agentToken, *tokenFile,
+		os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
+	switch {
+	case tokErr != nil:
+		out("凭据：agent token 缺失——%v", tokErr)
+	case *showToken:
+		out("凭据：agent token %s（来源：%s）", tok, tokSource)
+	default:
+		out("凭据：agent token %s（来源：%s）", maskToken(tok), tokSource)
+	}
+	out("说明：这是 agent 连服务器用的 token（tsa-）。AI 客户端走 MCP 用的是另一套 tsm- token，")
+	out("      在服务器上 towstrap-server mcp add 签发——两套凭据互不相干，agent 不需要 tsm-。")
 
 	// —— 收尾：没在跑时给启动指引 ——
 	if !running {
@@ -137,6 +145,15 @@ func orDefault(s string) string {
 		return "默认官方"
 	}
 	return s
+}
+
+// maskToken 遮中段：留 tsa- 前缀后的头 4 位和尾 4 位（够认是哪个 token，
+// 不够用）。太短的（测试桩之类）整体打码。
+func maskToken(tok string) string {
+	if len(tok) <= 12 {
+		return "***"
+	}
+	return tok[:8] + "…" + tok[len(tok)-4:]
 }
 
 // shortDur 把时长收成「3 小时」「2 分钟」这种一眼懂的粒度。

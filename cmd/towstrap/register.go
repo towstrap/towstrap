@@ -43,7 +43,8 @@ func usageRegister() {
   --server wss://..     服务器地址（默认官方 %s）
   --login               跳过提问直接走"已有账号登录"分支（脚本里用）
   --account 名字        账号名（默认当前用户名；不给会交互问）
-  --machine 名字        这台机器的名字（默认主机名；登录分支里同名=重装换 token）
+  --machine 名字        这台机器的名字（交互模式会问，回车取主机名；
+                        登录分支里同名=重装换 token；脚本里不给就静默用主机名）
   --invite 码           服务器设了 register_invite 时必填（只建号分支用）
   --password-stdin      密码从 stdin 读一行（脚本用；交互模式自动问）
   --totp 6位码          账号已绑 TOTP 时登录加机要带的当前动态码
@@ -101,8 +102,16 @@ func runRegister(args []string) int {
 	}
 	mach := *machine
 	if mach == "" {
+		def := ""
 		if h, err := os.Hostname(); err == nil {
-			mach = proto.SanitizeName(h)
+			def = proto.SanitizeName(h)
+		}
+		if interactive {
+			// 机器名是 SSH 登录名、也是服务器机器列表里的显示名——别
+			// 闷头用主机名，让人看过再定；回车即取默认。
+			mach = promptLine("这台机器的名字", def)
+		} else {
+			mach = def
 		}
 	}
 	if !proto.ValidName(mach) {
@@ -232,8 +241,8 @@ func runRegister(args []string) int {
 	return 0
 }
 
-// totpPost 是 TOTP 端点共用的请求封装：JSON body + X-Agent-Token 头
-// （token 反查账号，密码在 body 里）。
+// totpPost 是自助管理端点（/totp/*、/passwd）共用的请求封装：JSON body +
+// X-Agent-Token 头（token 反查账号，密码在 body 里）。
 func totpPost(hc *http.Client, base, token, path string, body, out any) (int, bool) {
 	b, _ := json.Marshal(body)
 	req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(b))
@@ -244,7 +253,7 @@ func totpPost(hc *http.Client, base, token, path string, body, out any) (int, bo
 	req.Header.Set("X-Agent-Token", token)
 	resp, err := hc.Do(req)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "TOTP 请求失败:", err)
+		fmt.Fprintln(os.Stderr, "请求失败:", err)
 		return 0, false
 	}
 	defer resp.Body.Close()

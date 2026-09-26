@@ -171,6 +171,21 @@ type TOTPRemoveResp struct {
 	Err      string `json:"err,omitempty"`
 }
 
+// PasswdReq/Resp 是自助改密码（POST /passwd，towstrap passwd）的体形。
+// 鉴权和 /totp/* 同款：X-Agent-Token 头认机器 + 旧密码证明本人；
+// 已绑 TOTP 的账号另要当前动态码（need_code 提示位同 TOTPRemoveResp）。
+type PasswdReq struct {
+	Password    string `json:"password"`
+	NewPassword string `json:"new_password"`
+	Code        string `json:"code,omitempty"` // 已绑 TOTP 要当前动态码
+}
+
+type PasswdResp struct {
+	OK       bool   `json:"ok"`
+	NeedCode bool   `json:"need_code,omitempty"`
+	Err      string `json:"err,omitempty"`
+}
+
 func SanitizeName(s string) string {
 	s = strings.TrimSpace(s)
 	if ValidName(s) {

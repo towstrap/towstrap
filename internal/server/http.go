@@ -91,6 +91,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/totp/begin", s.handleTOTPBegin)
 	mux.HandleFunc("/totp/confirm", s.handleTOTPConfirm)
 	mux.HandleFunc("/totp/remove", s.handleTOTPRemove)
+	mux.HandleFunc("/passwd", s.handlePasswd)
 	if s.oauth != nil {
 		mux.HandleFunc("/oauth/request", s.handleOAuthRequest)
 		mux.HandleFunc("/oauth/begin", s.handleOAuthBegin)

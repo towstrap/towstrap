@@ -176,7 +176,7 @@ func (s *Server) Run() error {
 	// mcp.allow_plain_http 是旧开关，表态的是同一回事，任一个开都算数。
 	plainOK := s.cfg.AllowPlainHTTP || (s.cfg.MCP != nil && s.cfg.MCPAllowPlainHTTP)
 	if plainHTTPListenerBlocked(s.cfg.HTTPAddr, s.cfg.TLS) && !plainOK {
-		return fmt.Errorf("HTTP 监听开在明文非回环地址 %q 上：/register、/totp/*、/token/refresh、/agent 都会明文传凭据；请开 tls，或确认只在内网/隧道里用并设置 allow_plain_http: true", s.cfg.HTTPAddr)
+		return fmt.Errorf("HTTP 监听开在明文非回环地址 %q 上：/register、/totp/*、/passwd、/token/refresh、/agent 都会明文传凭据；请开 tls，或确认只在内网/隧道里用并设置 allow_plain_http: true", s.cfg.HTTPAddr)
 	}
 	// 监控事件同理：ws:// 明文只允许回环，否则要显式确认。
 	if s.mon != nil {

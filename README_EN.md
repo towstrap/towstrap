@@ -56,7 +56,7 @@ Ships as three static binaries backed by SQLite — no Docker, no web UI, no ext
 - Self-service registration: `towstrap register` signs up or logs in and attaches the machine; the server gates entry via `register`/`register_invite`
 - Machine fingerprint binding: motherboard-UUID hash; a machine binds to exactly one account
 - Authentication: password / TOTP / public key in any combination; OAuth one-time SSH grants supported (temporary credentials cannot run management commands)
-- Self-service management: `@machine list/add/remove/token` and `@totp` after SSH login; `towstrap totp` on the machine itself
+- Self-service management: `@machine list/add/remove/token` and `@totp` after SSH login; `towstrap totp` and `towstrap passwd` on the machine itself
 - Token rotation: `towstrap token refresh` — atomic write, old token retired only on acknowledgement, automatic fallback on partial failure
 
 **Security & audit**
