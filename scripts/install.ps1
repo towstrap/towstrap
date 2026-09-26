@@ -73,6 +73,23 @@ if ($NoVerify) {
     if ($got -ne $want.Trim().ToLower()) { Remove-Item $tmpExe -Force; Die "SHA256 校验失败" }
     Write-Host ">> SHA256 校验通过"
 }
+# 升级重装时 exe 可能在跑（计划任务或手工启动）——Windows 锁运行中的
+# 可执行文件，直接覆盖会失败。先停下来装完再视情况拉回来。
+$wasTask = $false
+$wasManual = $false
+if (Get-Process towstrap -ErrorAction SilentlyContinue) {
+    $hasTask = $false
+    try { schtasks /query /tn towstrap 2>$null | Out-Null; $hasTask = ($LASTEXITCODE -eq 0) } catch {}
+    if ($hasTask) {
+        schtasks /end /tn towstrap 2>$null | Out-Null
+        $wasTask = $true
+        Write-Host ">> 计划任务 towstrap 已停（升级覆盖用）"
+    } else {
+        Stop-Process -Name towstrap -Force
+        $wasManual = $true
+        Write-Host ">> 正在运行的 towstrap 已停（升级覆盖用）"
+    }
+}
 Move-Item -Force $tmpExe $exe
 Write-Host ">> 已装到 $exe"
 
@@ -100,6 +117,13 @@ if (-not (Test-Path $agentyaml)) {
 # SSH 登录提示：主机从 -Server 推导，端口是下发服务器配置的 SSH 口。
 $sshhost = ([uri]$Server).Host
 
+if ($wasTask) {
+    schtasks /run /tn towstrap 2>$null | Out-Null
+    Write-Host ">> 计划任务 towstrap 已重新拉起，新版本生效"
+}
+if ($wasManual) {
+    Write-Host ">> 注意：之前手工跑的 towstrap 进程已停，用下面的命令重启它"
+}
 Write-Host ""
 Write-Host "完成。跑起来："
 Write-Host "  & `"$exe`" --config `"$agentyaml`""

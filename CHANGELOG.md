@@ -1,5 +1,16 @@
 # Changelog
 
+## 未发布
+
+### 修复
+
+- **server 装完打印实际访问信息**：`install-server.sh` 收尾从 server.yaml 抠出真实 HTTP/SSH 监听地址，连同配置文件路径、SSH 登录示例、agent 接入命令一起打印；HTTP 只挂回环时明示对外接入的两条出路。`init` 就绪段同样固定打印监听地址（此前没填 public_url 时只给个 SSH 端口）
+- **agent 升级真正生效**：`install.sh --systemd` 对已启用服务改为 `restart`（此前 `enable --now` 对运行中服务是空操作，二进制换了旧版还在跑）；不带 `--systemd` 重装时若服务在跑会提醒手工重启。`install.ps1` 覆盖 exe 前先停运行中的进程（Windows 锁运行中文件，此前升级直接失败），装完自动拉回计划任务
+
+### 文档
+
+- README 补升级路径说明（重装即升级、服务端下发脚本钉同版本、`min_agent_version` 版本淘汰）
+
 ## v0.3.3（2026-09-26）
 
 ### 安全修复（本轮安全审计批次）

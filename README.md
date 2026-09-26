@@ -121,6 +121,8 @@ curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/inst
 
 Linux+root 下自动注册并启动 systemd 服务（`--no-systemd` 仅安装二进制与配置，亦适用于 macOS）。安装后执行 `sudo towstrap-server init` 完成初始化（对外地址、自助注册、首个账号）。
 
+升级：重复执行同一安装脚本即可——二进制覆盖更新，配置与 token 保留；已注册的 systemd 服务/计划任务自动重启使新版本生效。服务端下发的 `/install.sh` 默认安装与服务器同版本的 agent；管理员可在 `server.yaml` 设置 `min_agent_version` 拒绝过低版本接入。
+
 Windows 交互会话使用 ConPTY（要求 Windows 10 1809+），详见[用户手册](docs/zh/user-guide.md)。
 
 ---

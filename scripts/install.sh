@@ -191,6 +191,13 @@ towstrap | towstrap-agent)
 	;;
 esac
 
+# 不带 --systemd 的重装：二进制已换新，但正在跑的服务不会自动重启。
+# 提醒一声，免得以为升级完了实际还跑旧版。
+if [ "$SYSTEMD" != 1 ] && command -v systemctl >/dev/null 2>&1 &&
+	{ systemctl is-active --quiet towstrap 2>/dev/null || systemctl --user is-active --quiet towstrap 2>/dev/null; }; then
+	echo ">> 注意：towstrap 服务还在跑旧二进制；systemctl [--user] restart towstrap 后新版生效"
+fi
+
 # token 文件和配置：root 进 /etc/towstrap，普通用户进 ~/.config/towstrap
 if [ "$(id -u)" = 0 ]; then
 	confdir=/etc/towstrap
@@ -265,8 +272,15 @@ ProtectSystem=true
 WantedBy=multi-user.target
 EOF
 		systemctl daemon-reload
-		systemctl enable --now towstrap
-		echo ">> systemd 服务 towstrap 已启动（journalctl -u towstrap 看日志）"
+		if systemctl is-enabled --quiet towstrap 2>/dev/null; then
+			# 已启用 = 这是升级重装：enable --now 对运行中的服务是空操作，
+			# 必须 restart 才能让刚装的新二进制真正跑起来。
+			systemctl restart towstrap
+			echo ">> towstrap 服务已重启，新二进制生效（journalctl -u towstrap 看日志）"
+		else
+			systemctl enable --now towstrap
+			echo ">> systemd 服务 towstrap 已启动（journalctl -u towstrap 看日志）"
+		fi
 	else
 		mkdir -p "$HOME/.config/systemd/user"
 		cat >"$HOME/.config/systemd/user/towstrap.service" <<EOF
@@ -283,9 +297,15 @@ RestartSec=5
 WantedBy=default.target
 EOF
 		systemctl --user daemon-reload 2>/dev/null || true
-		systemctl --user enable --now towstrap 2>/dev/null &&
-			echo ">> 用户级服务 towstrap 已启动" ||
-			echo ">> 单元已写好（~/.config/systemd/user/towstrap.service），enable 失败的话手工: systemctl --user enable --now towstrap"
+		if systemctl --user is-enabled --quiet towstrap 2>/dev/null; then
+			systemctl --user restart towstrap &&
+				echo ">> 用户级服务 towstrap 已重启，新二进制生效" ||
+				echo ">> restart 失败，手工跑: systemctl --user restart towstrap"
+		else
+			systemctl --user enable --now towstrap 2>/dev/null &&
+				echo ">> 用户级服务 towstrap 已启动" ||
+				echo ">> 单元已写好（~/.config/systemd/user/towstrap.service），enable 失败的话手工: systemctl --user enable --now towstrap"
+		fi
 	fi
 fi
 

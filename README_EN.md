@@ -122,6 +122,8 @@ curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/inst
 
 On Linux as root, a systemd unit is installed and started automatically (`--no-systemd` installs the binary and config only; same path on macOS). Afterwards, run `sudo towstrap-server init` to complete setup (public URL, self-signup, first account).
 
+Upgrade: re-run the same install script — the binary is replaced while config and tokens are preserved; registered systemd units/scheduled tasks restart automatically. The `/install.sh` served by a server installs the agent matching that server's version; admins can set `min_agent_version` in `server.yaml` to reject older agents.
+
 On Windows, interactive agent sessions use ConPTY (Windows 10 1809+ required) — see the [User Guide](docs/en/user-guide.md).
 
 ---
