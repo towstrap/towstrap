@@ -774,6 +774,7 @@ On the agent side (`audit.log`) there are also `START`/`END` (mode=mirror for a 
 
 ## 14. Upgrade notes
 
+- **Self-update**: `towstrap update` (agent) / `sudo towstrap-server update` (server) fetches the platform binary from the official Release, verifies it against SHA256SUMS, and replaces itself atomically; `--check` only queries, `--version vX.Y.Z` pins a release (downgrades allowed with a warning). Instances running under systemd or a Windows scheduled task restart into the new version automatically; manually started processes need a manual restart. Re-running install.sh/install-server.sh upgrades the same way (config and tokens untouched)
 - **Automatic DB migration**: upgrading from the old one-token-per-account layout, `Open` moves each account's token, agent allowlist, and last source IP into a machine named `default` — tokens don't change, agents don't need touching; the login name becomes `account+default` (the bare account name still works for single-machine accounts)
 - **`users_key` unset**: defaults to `users_db` minus `.db` plus `.key` (`/etc/towstrap/users.db` → `/etc/towstrap/users.key`); back up the DB and key together
 - **SSH host key**: defaults to `ssh_host_key` next to `users_db`; carry it over when moving the DB or every client will warn about a changed host key

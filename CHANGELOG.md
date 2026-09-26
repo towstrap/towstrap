@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 新增
+
+- **`update` 自升级子命令**（`towstrap update` / `towstrap-server update`）：从官方 Release 拉本平台二进制，SHA256SUMS 校验通过后原子替换自身（旧文件先挪 .old 备份位，失败回滚）；装成 systemd 服务/Windows 计划任务的自动重启生效。`--check` 只查最新版，`--version vX.Y.Z` 指定版本（可降级，有提示）。升级源固定官方仓库不接受配置
+
 ### 修复
 
 - **server 装完打印实际访问信息**：`install-server.sh` 收尾从 server.yaml 抠出真实 HTTP/SSH 监听地址，连同配置文件路径、SSH 登录示例、agent 接入命令一起打印；HTTP 只挂回环时明示对外接入的两条出路。`init` 就绪段同样固定打印监听地址（此前没填 public_url 时只给个 SSH 端口）

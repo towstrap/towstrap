@@ -21,6 +21,7 @@ import (
 	"github.com/towstrap/towstrap/internal/mcpsrv"
 	"github.com/towstrap/towstrap/internal/monitor"
 	"github.com/towstrap/towstrap/internal/qrcode"
+	"github.com/towstrap/towstrap/internal/selfupdate"
 	"github.com/towstrap/towstrap/internal/server"
 	"github.com/towstrap/towstrap/internal/totp"
 	"github.com/towstrap/towstrap/internal/version"
@@ -43,6 +44,8 @@ func main() {
 		os.Exit(runMachine(os.Args[2:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[2:]))
+	case "update":
+		os.Exit(runUpdate(os.Args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -60,6 +63,7 @@ func usage() {
   towstrap-server user    add|list|set|remove|token|totp [选项] 用户名
   towstrap-server machine add|list|set|remove|token [选项] 账号 机器名
   towstrap-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
+  towstrap-server update [--version vX.Y.Z] [--check]     自升级：拉新版替换自身，服务在跑则重启生效
   towstrap-server version
 
 开通一台机器（都在服务器上操作，不用网页）:
@@ -156,6 +160,19 @@ func usage() {
 不能明文传输）；确认只在内网/隧道里用才设 mcp.allow_plain_http: true。
 token 是凭据：别贴进 shell 历史（命令行里用文件/环境变量传），别进日志。
 `)
+}
+
+// runUpdate：手工自升级（towstrap-server update）。实现在 internal/selfupdate。
+func runUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	tag := fs.String("version", "", "指定版本（默认 latest）")
+	check := fs.Bool("check", false, "只查最新版本，不下载")
+	_ = fs.Parse(args)
+	if err := selfupdate.Run(selfupdate.Opts{Product: "towstrap-server", Tag: *tag, Check: *check}); err != nil {
+		fmt.Fprintln(os.Stderr, "update:", err)
+		return 1
+	}
+	return 0
 }
 
 func visited(fs *flag.FlagSet) map[string]string {

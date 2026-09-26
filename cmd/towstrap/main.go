@@ -12,6 +12,7 @@ import (
 	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/selfupdate"
 	"github.com/towstrap/towstrap/internal/version"
 )
 
@@ -48,6 +49,8 @@ func main() {
 		os.Exit(runRegister(args[2:]))
 	case "totp":
 		os.Exit(runTOTP(args[2:]))
+	case "update":
+		os.Exit(runUpdate(args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -75,6 +78,8 @@ func usage() {
   towstrap totp [remove] [选项]       绑/换绑/解绑账号的 TOTP 二因素（SSH 里也能用 @totp）
   towstrap mirror [ls|kill|<名字> [命令]]   本机的可接力终端（Ctrl-\ 脱离）
                                        （install.sh 会把它软链成 mirror，直接敲 mirror work）
+  towstrap update [--version vX.Y.Z] [--check]   自升级：从官方 Release 拉新版，
+                                       核 SHA256 后替换自身；服务托管的自动重启
   towstrap version
 
 选项:
@@ -184,6 +189,20 @@ func runAgent(args []string) int {
 		MCPPolicy:    cfg.MCPPolicy,
 	}); err != nil {
 		slog.Error("agent", "err", err)
+		return 1
+	}
+	return 0
+}
+
+// runUpdate：手工自升级（不是后台自动更新，什么时候换由人拍板）。
+// 实现细节（下载/校验/原子替换/服务重启）都在 internal/selfupdate。
+func runUpdate(args []string) int {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	tag := fs.String("version", "", "指定版本（默认 latest）")
+	check := fs.Bool("check", false, "只查最新版本，不下载")
+	_ = fs.Parse(args)
+	if err := selfupdate.Run(selfupdate.Opts{Product: "towstrap", Tag: *tag, Check: *check}); err != nil {
+		fmt.Fprintln(os.Stderr, "update:", err)
 		return 1
 	}
 	return 0

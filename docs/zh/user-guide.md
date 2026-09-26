@@ -773,6 +773,7 @@ agent 侧（`audit.log`）另有 `START`/`END`（mode=mirror 的本机接入）�
 
 ## 14. 升级说明
 
+- **自升级**：`towstrap update`（agent）/ `sudo towstrap-server update`（服务端）从官方 Release 拉本平台二进制，SHA256SUMS 校验后原子替换自身；`--check` 只查不装，`--version vX.Y.Z` 指定版本（含降级）。装成 systemd 服务或 Windows 计划任务的升级后自动重启生效；手工跑的进程要手工重启。重跑 install.sh/install-server.sh 同样能升级（配置、token 不动）
 - **老账号库自动迁移**：从「一个账号一个 token」的旧版本升级时，打开库就把每个账号的 token、agent 白名单、最近来源 IP 搬到一台名为 `default` 的机器上——老 token 不变，agent 不用动；之后登录名变成 `账号+default`（单机时写账号名仍可用）
 - **`users_key` 没配过**：默认用 `users_db` 去掉 `.db` 后缀 + `.key`（`/etc/towstrap/users.db` → `/etc/towstrap/users.key`），库和 key 要一起备份
 - **SSH 主机密钥**：默认在 `users_db` 同目录的 `ssh_host_key`；换库路径时记得带上它，否则所有客户端会报 host key 变更
