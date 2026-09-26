@@ -10,12 +10,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/proto"
 )
@@ -69,17 +69,10 @@ func runOAuth(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	// token 走明文出公网不行：ws:// 非回环要显式确认。
-	if strings.HasPrefix(cfg.Server, "ws://") && !*allowPlain {
-		host := strings.TrimPrefix(cfg.Server, "ws://")
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			fmt.Fprintln(os.Stderr, "服务器地址是明文 ws:// 且不在回环：加 --allow-plain 才继续（token 会被明文传输）")
-			return 2
-		}
+	// token 走明文出公网不行：ws:///http:// 非回环要显式确认。
+	if err := client.PlainCheck(cfg.Server, *allowPlain); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
 	hc := &http.Client{Timeout: 15 * time.Second}
 	if *insecure {

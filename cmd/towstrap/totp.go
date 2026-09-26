@@ -10,13 +10,12 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/machineid"
 	"github.com/towstrap/towstrap/internal/proto"
@@ -97,15 +96,9 @@ func runTOTP(args []string) int {
 		srv = proto.OfficialServer
 	}
 	// 密码会走这个地址出去——明文出公网必须显式确认。
-	if strings.HasPrefix(srv, "ws://") && !*allowPlain {
-		host := strings.TrimPrefix(srv, "ws://")
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-			fmt.Fprintln(os.Stderr, "服务器地址是明文 ws:// 且不在回环：加 --allow-plain 才继续（密码会被明文传输）")
-			return 2
-		}
+	if err := client.PlainCheck(srv, *allowPlain); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
 	base, err := oauthHTTPBase(srv)
 	if err != nil {

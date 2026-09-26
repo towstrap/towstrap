@@ -153,7 +153,10 @@ func Open(dbPath, keyPath string) (*Store, error) {
 			return nil, err
 		}
 	}
-	key, err := loadOrCreateKey(keyPath)
+	// 库文件已在而 key 读不出来 = 密封凭据不可救——拒绝启动让管理员
+	// 来处理，绝不静默重建（见 loadOrCreateKey 注释）。
+	_, statErr := os.Stat(dbPath)
+	key, err := loadOrCreateKey(keyPath, statErr == nil)
 	if err != nil {
 		return nil, err
 	}
@@ -594,6 +597,26 @@ func (s *Store) VerifyTOTP(username, code string) bool {
 	}
 	n, _ := res.RowsAffected()
 	return n == 1
+}
+
+// CheckTOTP 校验 6 位码但不消费时间片：给「同一流程里要先验一次、后面
+// 还要真正消费一次」的场景用（TOTP 换绑的 begin 验身份，confirm 才落库
+// 消费）。已被消费过的码照样拒——重放一个旧登录码过不了这里。
+func (s *Store) CheckTOTP(username, code string) bool {
+	var enc []byte
+	var lastStep int64
+	err := s.db.QueryRow(
+		`SELECT totp_secret_enc, totp_last_step FROM users WHERE username = ?`, username).
+		Scan(&enc, &lastStep)
+	if err != nil || len(enc) == 0 {
+		return false
+	}
+	secret, err := s.decTOTP(enc)
+	if err != nil {
+		return false
+	}
+	_, ok := totp.Verify(secret, code, lastStep, time.Now())
+	return ok
 }
 
 // Rename 改用户名；agent 不用动（它靠 token 认，不靠名字）。账号下的

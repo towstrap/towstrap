@@ -45,7 +45,7 @@ func TestTOTPAccountPasswordAttemptKeepsGuard(t *testing.T) {
 		s.guard.fail("alice", "1.2.3.4")
 	}
 	// 用偷来的正确密码走 password 通道：必须被拒，且不能碰计数
-	if s.sshAuthOK("alice", "alicepw123", addr) {
+	if ok, _ := s.sshAuthOK("alice", "alicepw123", addr); ok {
 		t.Fatal("TOTP 账号不应通过纯密码")
 	}
 	// 再失败一次就到阈值：如果计数被清过，这里就不会锁
@@ -80,7 +80,7 @@ func TestNormalAccountPasswordResetsGuard(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		s.guard.fail("bob", "1.2.3.4")
 	}
-	if !s.sshAuthOK("bob", "bobpw12345", addr) {
+	if ok, _ := s.sshAuthOK("bob", "bobpw12345", addr); !ok {
 		t.Fatal("正确密码应通过")
 	}
 	if !s.guard.allowed("bob", "1.2.3.4") {

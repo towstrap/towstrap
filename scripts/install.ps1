@@ -10,7 +10,8 @@ param(
     [string]$Token  = $env:TOWSTRAP_AGENT_TOKEN,
     [string]$Server = $(if ($env:TOWSTRAP_SERVER) { $env:TOWSTRAP_SERVER } else { "__TOWSTRAP_DEFAULT_SERVER__" }),
     [string]$Version = "__TOWSTRAP_DEFAULT_VERSION__",
-    [string]$Prefix = "$env:LOCALAPPDATA\TowStrap"
+    [string]$Prefix = "$env:LOCALAPPDATA\TowStrap",
+    [switch]$NoVerify
 )
 $ErrorActionPreference = "Stop"
 
@@ -59,15 +60,19 @@ try {
     Write-Host ">> 试旧资产名 $asset"
     Invoke-WebRequest -UseBasicParsing "$relbase/$asset" -OutFile $tmpExe
 }
-try {
-    $sums = (Invoke-WebRequest -UseBasicParsing "$relbase/SHA256SUMS").Content
+# 校验是硬门槛：拉不到清单/清单没这行都算不过；实在要跳过得显式 -NoVerify。
+if ($NoVerify) {
+    Write-Host ">> -NoVerify：跳过 SHA256 校验（不推荐）"
+} else {
+    try {
+        $sums = (Invoke-WebRequest -UseBasicParsing "$relbase/SHA256SUMS").Content
+    } catch { Remove-Item $tmpExe -Force; Die "拉不到 SHA256SUMS，校验过不了就不装；要跳过加 -NoVerify" }
     $want = ($sums -split "`n" | Where-Object { $_ -match " $asset`$" } | ForEach-Object { ($_ -split "\s+")[0] })
-    if ($want) {
-        $got = (Get-FileHash $tmpExe -Algorithm SHA256).Hash.ToLower()
-        if ($got -ne $want.Trim().ToLower()) { Remove-Item $tmpExe -Force; Die "SHA256 校验失败" }
-        Write-Host ">> SHA256 校验通过"
-    }
-} catch { Write-Host ">> 拉不到 SHA256SUMS，跳过校验（不建议）" }
+    if (-not $want) { Remove-Item $tmpExe -Force; Die "SHA256SUMS 里没有 $asset 这一行；要跳过加 -NoVerify" }
+    $got = (Get-FileHash $tmpExe -Algorithm SHA256).Hash.ToLower()
+    if ($got -ne $want.Trim().ToLower()) { Remove-Item $tmpExe -Force; Die "SHA256 校验失败" }
+    Write-Host ">> SHA256 校验通过"
+}
 Move-Item -Force $tmpExe $exe
 Write-Host ">> 已装到 $exe"
 

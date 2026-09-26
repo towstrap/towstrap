@@ -49,6 +49,12 @@ type Server struct {
 	Register       bool   `yaml:"register"`
 	RegisterInvite string `yaml:"register_invite"`
 
+	// AllowPlainHTTP：HTTP 口明文开在非回环地址上时必须显式确认——
+	// /register、/totp/*、/token/refresh、/oauth/*、/agent 全在这条通道上
+	// 收发密码和 token。TLS 开着或只听回环用不到它；mcp.allow_plain_http
+	// 表态的是同一回事，任一个开都算确认。
+	AllowPlainHTTP bool `yaml:"allow_plain_http"`
+
 	// MCP 是服务器内嵌 MCP（HTTP /mcp）的开关和策略；nil = 不开。
 	MCP *MCP `yaml:"mcp"`
 	// Monitor 是旁路监控推送目标（服务器主动推，接收端被动收）；
@@ -141,6 +147,7 @@ type file struct {
 	AgentDefaults   Agent      `yaml:"agent_defaults"`
 	Register        bool       `yaml:"register"`
 	RegisterInvite  string     `yaml:"register_invite"`
+	AllowPlainHTTP  bool       `yaml:"allow_plain_http"`
 	MCP             *MCP       `yaml:"mcp"`
 	Monitor         MonitorCfg `yaml:"monitor"`
 	OAuth           *OAuthCfg  `yaml:"oauth"`
@@ -194,6 +201,7 @@ func LoadServer(path string) (Server, error) {
 		AgentDefaults:   f.AgentDefaults,
 		Register:        f.Register,
 		RegisterInvite:  f.RegisterInvite,
+		AllowPlainHTTP:  f.AllowPlainHTTP,
 		MCP:             f.MCP,
 		Monitor:         f.Monitor,
 		OAuth:           f.OAuth,
@@ -249,6 +257,9 @@ func MergeServer(file Server, set map[string]string) Server {
 		SSHMaxTimeout:   "24h",
 		AuditLog:        file.AuditLog,
 		MinAgentVersion: file.MinAgentVersion,
+		// allow_plain_http 是运维的显式确认（明文部署在可信内网/隧道
+		// 后面）——文件里写了就得透出去，丢了等于监听报错死活找不到开关。
+		AllowPlainHTTP: file.AllowPlainHTTP,
 	}
 	if file.IdleVerify != "" {
 		out.IdleVerify = file.IdleVerify

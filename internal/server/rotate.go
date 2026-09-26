@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/towstrap/towstrap/internal/accounts"
-	"github.com/towstrap/towstrap/internal/allow"
 )
 
 type refreshReq struct {
@@ -58,12 +57,9 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, code)
 	}
 	// 调用方机器设了 agent 来源白名单时，这个接口也只认名单里的来源。
-	if len(caller.AgentAllowIPs) > 0 {
-		list, err := allow.Parse(caller.AgentAllowIPs)
-		if err != nil || !list.AllowsAddr(tcpAddr(r.RemoteAddr)) {
-			denyUser(http.StatusForbidden, "agent-allow", "来源不在调用机器的 agent 白名单里")
-			return
-		}
+	if !agentIPAllowed(caller, tcpAddr(r.RemoteAddr)) {
+		denyUser(http.StatusForbidden, "agent-allow", "来源不在调用机器的 agent 白名单里")
+		return
 	}
 	if !s.guard.allowed(account, ip) {
 		denyUser(http.StatusTooManyRequests, "locked", "失败次数过多，暂时锁定，稍后再试")
@@ -79,7 +75,16 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		denyUser(http.StatusUnauthorized, "password", "密码不对或账号已停用")
 		return
 	}
-	if acct, ok := s.cfg.Users.Get(account); ok && acct.TOTPEnabled {
+	acct, acctOK := s.cfg.Users.Get(account)
+	if acctOK && acct.OAuthOnly {
+		// oauth_only = 密码在这个账号上不作数（唯一例外是 OAuth 一次性
+		// 授权那条专属通道）。换 token 是敏感操作，不能用「它没拦住
+		// 登录所以这里能收」来放水。
+		s.guard.fail(account, ip)
+		denyUser(http.StatusForbidden, "oauth-only", "这个账号标记了 oauth_only：密码验证不作数——token 换发请用完整登录走 @machine，或找管理员")
+		return
+	}
+	if acctOK && acct.TOTPEnabled {
 		if !s.cfg.Users.VerifyTOTP(account, req.TOTP) {
 			s.guard.fail(account, ip)
 			denyUser(http.StatusUnauthorized, "totp", "验证码不对")

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,7 +44,9 @@ func (w *Writer) Path() string {
 }
 
 // Log 追加一行：`<时间> <event> k=v k=v`。kv 成对出现；值里的控制字符被
-// 去掉（防换行 smuggle 伪造日志行）。
+// 去掉（防换行 smuggle 伪造日志行）；值里出现空格、=、引号或为空时整值
+// 加 %q 引起来——不然 `user=alice admin=true` 这种一个值里塞两个键的写法
+// 能伪造出不存在的字段。
 func (w *Writer) Log(event string, kv ...string) {
 	if w == nil || w.path == "" {
 		return
@@ -54,15 +57,21 @@ func (w *Writer) Log(event string, kv ...string) {
 		b.WriteByte(' ')
 		b.WriteString(kv[i])
 		b.WriteByte('=')
-		b.WriteString(Clean(kv[i+1]))
+		v := Clean(kv[i+1])
+		if v == "" || strings.ContainsAny(v, " =\"") {
+			v = strconv.Quote(v)
+		}
+		b.WriteString(v)
 	}
 	w.write(time.Now().Format(time.RFC3339) + " " + b.String() + "\n")
 }
 
-// Clean 去掉控制字符（换行、终端转义等）。
+// Clean 去掉控制字符（换行、终端转义等）。范围比「ASCII 控制符」宽一些：
+// C1（0x80–0x9f，终端上同样是转义序列起点）和 U+2028/2029（Unicode 行
+// 分隔符，不少查看器会当换行渲染）也剥——审计和终端广播共用这一份。
 func Clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == 0x2028 || r == 0x2029 {
 			return -1
 		}
 		return r

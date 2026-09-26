@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 )
 
@@ -25,18 +26,39 @@ type secretKey struct {
 	macKey []byte
 }
 
-func loadOrCreateKey(path string) (*secretKey, error) {
-	if raw, err := os.ReadFile(path); err == nil {
+// loadOrCreateKey 读密钥文件；只有「文件真不存在 + 账号库还不存在」
+// 才生成新的。其他任何读失败（权限、磁盘坏块）都不重建——重建等于
+// 亲手把库里所有密封 token/TOTP 密钥永久销毁；账号库已在而 key 没了
+// 同理拒绝（静默重建只会把丢钥事故藏成「全员登不上」）。
+func loadOrCreateKey(path string, dbExists bool) (*secretKey, error) {
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
 		if len(raw) != keyFileSize {
 			return nil, fmt.Errorf("密钥文件 %s 长度不对", path)
 		}
+		// 顺手收敛权限（和 tightenPerms 对 users.db 做的同款）。
+		_ = os.Chmod(path, 0o600)
 		return &secretKey{aesKey: raw[:32], macKey: raw[32:]}, nil
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("读密钥文件 %s: %w（非「不存在」错误不重建——重建会永久摧毁库里的凭据，请修复后重试或从备份恢复）", path, err)
+	case dbExists:
+		return nil, fmt.Errorf("密钥文件 %s 不存在但账号库已在：重建会让库里所有 token/TOTP 永久报废。请从备份恢复 %s；确认从零开始请先删掉账号库文件", path, path)
 	}
-	raw := make([]byte, keyFileSize)
+	raw = make([]byte, keyFileSize)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	// O_EXCL：并发/残留的 key 文件绝不覆盖——覆盖和重建一样是摧毁。
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("写密钥文件 %s: %w", path, err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("写密钥文件 %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("写密钥文件 %s: %w", path, err)
 	}
 	return &secretKey{aesKey: raw[:32], macKey: raw[32:]}, nil

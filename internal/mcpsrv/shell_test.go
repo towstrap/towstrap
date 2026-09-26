@@ -330,7 +330,7 @@ func newTestServer(t *testing.T, opener Runner, maxSessions int) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.dialects["m"] = dialectPOSIX
+	s.remotes["m"] = remoteInfo{dialect: dialectPOSIX}
 	t.Cleanup(s.Close)
 	return s
 }

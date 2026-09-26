@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.3.3（2026-09-26）
+
+### 安全修复（本轮安全审计批次）
+
+**高危**
+
+- **`machine list` 不再默认打印在线 agent token**：默认输出脱敏（`tsa-…<尾4位>`），`--show-tokens` 需现场再确认或 `--admin`；此前任何登上服务器的人能直接抄走 token 冒充机器、劫持会话
+- **MCP 文件工具改为按远端真实路径判定**：先在目标机器上把路径解析成真实形态（符号链接、`..`、`~`、macOS `/var`→`/private/var`、Windows 盘符/分隔符归一），再对真实路径过 deny_paths 和 agent 自报禁碰清单，执行也走解析后的路径——`~/../etc/...`、`/proc/self/root/...`、Unicode 拼写差异、Windows 尾点/ADS 这类别名现在打不开也写不进保护文件；解析不出来一律拒
+- **`/register/machine` 补齐认证链**：此前只凭账号密码就能换发/轮换 agent token。现在过登录锁、`oauth_only`（开了的账号拒绝密码路径）、绑了 TOTP 必须给动态码；`towstrap register --login` 会提示补码，`--totp` 旗标供脚本用
+- **SSH 广播不再攥着全局锁做写**：每会话独立发送队列（满了丢消息不卡别人），一个停读的会话冻不住其他账号的登录、会话清理和 MCP 审批
+- **SSH 输入行有长度上限**：不换行流式塞数据耗尽内存的路被堵死
+- **内嵌 MCP 会话的机器元数据按调用刷新**：机器离线后重连补上的 protect 清单、`mcp_policy` 收紧，对老会话立即生效——不再按建会话时的旧快照判
+- **`/totp/begin` 不再抹登录锁定**：「密码+机器 token」此前每调一次 begin 就清空共享失败计数，等于给了无限爆破 6 位码的口。现在 begin 只验不消费、不清零；已绑账号 begin 就要先验当前动态码（confirm 才消费时间片）
+
+**中危**
+
+- `users.key` 读不出来不再静默重建：库在而 key 没了/读不动 → 拒绝启动并明示恢复路径（此前重建等于永久销毁全部密封 token 和 TOTP 密钥）；新建走 `O_EXCL`，读到后顺手收敛 0600
+- 客户端明文闸门堵拼写绕过：`http://` 和大写 `WS://` 同样算明文（此前只认字面 `ws://`）；register/totp/oauth 三处手写判断统一收进 `client.PlainCheck`
+- **服务端整个 HTTP 口新增明文准入**：明文且非回环监听默认拒绝启动（密码/token 都在这条通道上跑）；确认内网/隧道部署设 `allow_plain_http: true`（`mcp.allow_plain_http` 同样算数）；回环监听照旧不受影响
+- `/oauth/request`、`/oauth/result`、`/status` 补上机器 `agent_allow_ips` 检查——此前名单外的 token 持有者能领 SSH 凭据、还能占满机器 OAuth 待批槽；来源判定抽成 `agentIPAllowed` 一处共用
+- OAuth 签发的一次性 SSH 凭据在用的时候复查账号停用状态和账号来源白名单（此前 grant 快速路径跳过这两项）
+- **审批绑定收紧到完整上下文**：`machine+kind+detail+cwd+session+stdin/内容摘要`——同一个「同意」不能换个目录/换个 stdin/换个文件内容再复用；待批标记原子消费，一次批准并发也只能跑一趟
+- 审批通知和 `towstrap-mcp pending` 打印剥控制字符：LLM 给的命令文本不能在别人终端上画假提示（SSH 广播、`wall`、桌面通知、confirm 弹窗同一道清洗）
+- 命令策略匹配前先去引号归一：`r'm'`、`p"k"ill`、`-ex""ec` 这类拼写逃不出 ask/deny 名单
+- 服务端→agent 的 ws 帧落实 256KiB 上限（超限断开），大数据改走 `data` 分片
+- SSH 登录新增裸来源 IP 预算：换着用户名刷同一 IP 也累计锁定；三张失败表都有条目上限
+- `/register*` 的每 IP 限速表加上限+清扫：乱喷来源刷不大内存
+- **`install.sh`/`install-server.sh`/`install.ps1` 校验 fail-closed**：SHA256SUMS 拉不到、清单没有这行、机器没哈希工具都直接不装；显式 `--no-verify`/`-NoVerify` 可跳
+- **Host 头注入堵住**：`installServerURL`/OAuth 回调推导用的 `r.Host` 过白名单字符集，脏 Host 退回监听地址——此前 `Host: x$(id)` 会让下发的安装脚本里藏进命令、`evil<b>` 混进落地页
+- PTY 关闭按会话杀：交互 shell 后台 `job &` 这类独立进程组、同会话的幸存者不再漏杀（Linux 扫 /proc，macOS/BSD 走 pgrep -s；setsid 有意脱离的不追）。Windows 侧仍是 TerminateProcess+ConPTY 收尾，属已知差异
+
+**审计「待验证」批次中已收紧的**
+
+- 审计日志值不再能伪造字段：控制字符之外，值带空格/`=`/引号或为空时整值加引号——`user=evil admin=true` 这种一个值塞出第二个字段的写法失效
+- Windows 路径冒号检查收紧：盘符以外再出现冒号一律拒——`C:\x\token::$DATA`、`file:stream` 这类 ADS/别名写法之前只查第一个冒号，漏查
+- OAuth `redirect_uri` 不再被首次请求的 Host 钉死：改为每次请求现算（配了 `redirect_url`/`public_url` 照旧用配置值）——此前谁抢到进程里的第一次 `/oauth/begin`，谁的 Host 就成为所有人的回调域名
+- `/status` 管理口令错试计入来源 IP 的锁定预算（与 SSH 登录共用），并记 `STATUS-DENY` 审计；锁定后回 429——此前管理口令可以被无限猜
+- `towstrap-mcp` 在 `HOME` 未设置时不再把默认配置/批准目录落成 cwd 相对路径（cwd 可能是不可信目录，埋个 `mcp.yaml` 就被当操作员配置）；现在明确报错让用 `--config` 或写绝对路径
+- `release.yml`：发布挂进 `release` 环境（可在仓库设置里加 reviewer / 把签名密钥挪进环境），并要求标签指向主干上的提交——此前任何人能推 v* 标签就能把私有分支代码发成签名产物
+
+### 安全修复（第二轮复审批次）
+
+**中危**
+
+- **`deny_paths` 保护清单同步进命令通道**：`read_file` 明确拒掉的 `~/.aws/credentials`、`~/.config/towstrap/token` 这类凭据文件，此前一条 `cat` 命令零批准拿走——现在同一批路径模式直接进命令拒名单
+- **stdin 过策略并进批准界面**：`run_command{command:"bash -s", stdin:"..."}` 此前批准界面只显示 `bash -s`、stdin 还绕过整个拒名单。现在 stdin 当第二份命令文本过 deny/ask，批准界面、通知、待批列表都带消毒过的预览（类型+长度+SHA-256 摘要+开头片段）
+- **「记住的批准」按操作类型分桶**：批过一次 `run_command{bash -l}` 不再解锁同命令的 `terminal_open` 交互终端（终端后续按键不走命令策略，等于白名单被放大成任意命令通道）
+- **OAuth 一次性授权会话进不了管理面**：`grant` 登录打上标记，`@machine token/add`、`@totp` 一律拒——15 分钟临时票不再能换长期 token 或绑走别人的验证器
+- **远程系统类型探测失败不再静默放行**：`uname -s` 拿不到结果/认不出系统时直接报错重试，不再缓存「当大小写敏感处理」——此前 macOS 上探测一失败，`TOKEN` 这种大小写变体就能读走 token 文件且整会话缓存
+- **UNC 路径在策略门前就拒**：`\\host\share`、`//host/share` 不再进远端解析——此前解析动作本身先触发 SMB/NTLM 认证，凭据在判定前就泄到攻击者主机
+- **`towstrap-server init` 保留扁平配置写法**：见到顶层平铺的老格式（`http:`/`ssh:` 直接铺顶层）就把新键也写顶层，不再追加 `server:` 小节——此前追加后那些顶层键全部被 `server:` 段遮住静默失效（`tls`、`allow_ips`、`admin_token`、`users_db` 全丢）；`server:` 已存在而顶层还躺扁平键时打印提醒
+- **agent 输出队列塞满不再拖死整机**：分发循环往满缓冲写时多了连接级取消口——客户端停读只丢自己的会话输出，机器不会变幽灵（此前吊销都踢不掉）
+- **`mcp pending`/`towstrap-mcp pending` 输出消毒**：审批的机器名、命令、预览全过控制字符清洗——LLM 可控文本不能清管理员屏幕、伪造批准提示
+- **SSH env 请求总量上限**：每条通道最多 128 个变量/64KiB，超限拒开会话——底层库在会话建立前无条件攒 env，没上限时一个通道能攒出十几 MB 常驻内存
+
+**低危**
+
+- `UseSSHGrant` 改条件更新原子扣减（`WHERE uses_left>0` + 影响行数判定）——并发下两张请求不再能分掉同一个最后次数
+- `/token/refresh`、`/totp/*` 同样认 `oauth_only` 标记——此前只 `/register/machine` 和 SSH 面拦密码，这两个 HTTP 端点漏了
+- 机器指纹入库前统一小写——`AA…`/`aa…` 大小写变体不再能绕过「一机一账号」；注册占坑的回滚只删自己插的行（并发败方不再错杀胜方绑定）
+- 409 指纹冲突响应不再回带既有账号名——别想拿注册端点枚举已注册账号
+- agent token 换发留 prev 兜底：服务端 401 拒收新 token 时回退旧 token 写回文件重试——换发半途失败（本地已写、服务端没提交）不再永久锁死
+- 会话输出通道关闭即释放会话槽位，PTY 客户端断开不再泄漏配额
+- Windows 路径拒 `PROGRA~1` 这类 `~数字` 短名段——8.3 别名不再能绕过保护清单的全名比对
+- `towstrap-mcp` 的 `pending`/`approve`/`deny` 支持 `--approvals-dir`，批准通知里的非默认目录能直接用
+- `MergeServer` 补上 `AllowPlainHTTP` 透传——文件里开的明文确认不再被合并丢掉
+- 远端路径解析结果校验收紧：空输出、带换行、非绝对路径一律拒；POSIX 侧 `//x` 归一成 `/x`（直接挂在 `/` 下的保护文件不再因双斜杠逃逸对比）
+- `examples/nginx.conf` 头注写明反代代价：代理后服务端只见 `127.0.0.1`，`agent_allow_ips`/登录限速的按 IP 配额坍缩成同一个桶
+
 ## v0.3.2（2026-09-25）
 
 ### 修复

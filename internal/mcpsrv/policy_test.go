@@ -89,6 +89,74 @@ func TestCommandDenyAgentSelf(t *testing.T) {
 	}
 }
 
+// deny_paths 保护的凭据文件同步进了命令拒名单：文件工具拒掉的，cat 也拿不到。
+func TestCommandDenyProtectedPaths(t *testing.T) {
+	p := testPolicy(t)
+	for _, c := range []string{
+		"cat ~/.aws/credentials",
+		"cat /home/u/.aws/credentials",
+		"less ~/.config/towstrap/token",
+		"cat ~/.config/towstrap/agent.yaml",
+		"cp ~/.aws/credentials /tmp/x",
+		"cat ~/.gnupg/secring.gpg",
+		// 引号拼装照样命中（dequote 后比对）：".aws" 引号吃掉后就是
+		// 真路径；$HOME 不展开但模式直接命中原文
+		`cat ~/".aws"/credentials`,
+		`cat $HOME/.aws/credentials`,
+	} {
+		if d, r := p.Command(c); d != Deny {
+			t.Errorf("Command(%q) = %v(%s), want Deny", c, d, r)
+		}
+	}
+	for _, c := range []string{
+		"cat ~/.aws/config",               // 非 credentials 文件不拦
+		"cat ~/.config/towstrap/mcp.yaml", // 配置目录其他文件不拦
+		"ls ~/.aws",
+	} {
+		if d, r := p.Command(c); d == Deny {
+			t.Errorf("Command(%q) = Deny(%s), 不应拦", c, r)
+		}
+	}
+}
+
+// 删根/删家的词法判定：引号、$() 包裹、env/sudo 前缀、ANSI-C 转义都藏不住。
+func TestCommandFatalRm(t *testing.T) {
+	p := testPolicy(t)
+	for _, c := range []string{
+		"rm -rf /",
+		"rm -rf /*",
+		"rm -r /.",
+		"rm -rf /..",
+		"rm -rf ~",
+		"rm -rf ~/",
+		"rm -rf ~root",
+		`rm --recursive "$HOME"`,
+		"rm -rf ${HOME}/",
+		"env rm -rf /",
+		"sudo rm -rf ~",
+		"$(echo rm) -rf /",
+		"r'm' -rf ~",              // 单引号拼装
+		`r"m" -rf /`,              // 双引号拼装
+		`rm -rf '/'`,              // 引号包目标
+		`$'\x72\x6d' -rf /`,       // ANSI-C 转义拼出 rm
+		`$'\x72\x6d' -rf $'\x7e'`, // rm 和 ~ 全编码
+	} {
+		if d, _ := p.Command(c); d != Deny {
+			t.Errorf("Command(%q) = %v, want Deny", c, d)
+		}
+	}
+	for _, c := range []string{
+		"rm -rf ~/work", // 删家里子目录：ask 不拦死
+		"rm -rf /tmp/x",
+		"rm -rf /var/log/old",
+		"rm file.txt", // 非递归：ask
+	} {
+		if d, _ := p.Command(c); d != Ask {
+			t.Errorf("Command(%q) = %v, want Ask", c, d)
+		}
+	}
+}
+
 func TestCommandDenyReason(t *testing.T) {
 	p := testPolicy(t)
 	d, reason := p.Command("rm -rf /")
@@ -206,6 +274,9 @@ func TestWindowsPathDeny(t *testing.T) {
 		`D:\towstrap\token`,
 		`~\.SSH\config`,
 		`~\x\..\.aws\credentials`,
+		// UNC 网络路径在策略门前就拒——远端解析之前碰到 \\host 会先
+		// 触发 SMB/NTLM，凭据外泄窗口在放行判定之前。
+		`\\srv\share\dir\f.go`,
 	} {
 		if p.PathFor(s, true) {
 			t.Errorf("PathFor(%q, windows) 应拒绝", s)
@@ -214,7 +285,6 @@ func TestWindowsPathDeny(t *testing.T) {
 	for _, s := range []string{
 		`C:\work\file.txt`,
 		`D:\data\readme.md`,
-		`\\srv\share\dir\f.go`,
 		`~/work/f.txt`,
 	} {
 		if !p.PathFor(s, true) {
@@ -236,6 +306,18 @@ func TestWindowsPathUnsafeForms(t *testing.T) {
 		`sub/f.txt`,
 		`/etc/passwd`,
 		"",
+		// ADS / 别名写法：第一个冒号是合法盘符，第二个必须被拒
+		`C:\Users\u\token::$DATA`,
+		`C:\x\file:stream`,
+		`C:/Users/u/agent.yaml::$DATA`,
+		`~\AppData\token::$DATA`,
+		// 结尾点/空格别名（文件系统会吃掉，绕过全名比对）
+		`C:\Users\u\token.`,
+		`C:\x\agent.yaml `,
+		// 8.3 短名别名：PROGRA~1 这类 ~数字 段绕过全名比对，一律拒
+		`C:\PROGRA~1\x`,
+		`~\DOCUME~1\token`,
+		`C:\Users\u\TOKEN~1.TXT`,
 	} {
 		if p.PathFor(s, true) {
 			t.Errorf("PathFor(%q, windows) 应拒绝（无法可靠对照策略）", s)
@@ -268,12 +350,11 @@ func TestWindowsInRoots(t *testing.T) {
 			t.Errorf("InRootsFor(%q, windows) 应为 false", s)
 		}
 	}
+	// UNC 路径整体进不了 roots 匹配——winPathBad 在入口就拒了，这里
+	// 断言拒绝语义而不是匹配行为（UNC 永远不该走到对比这一步）。
 	m2 := &Machine{Roots: []string{`\\srv\share\dir`}}
-	if !m2.InRootsFor(`\\SRV\SHARE\dir\f.txt`, true) {
-		t.Error("UNC roots 大小写不敏感应命中")
-	}
-	if m2.InRootsFor(`\\srv\share\dir2\f.txt`, true) {
-		t.Error("UNC 前缀兄弟目录不应命中")
+	if m2.InRootsFor(`\\SRV\SHARE\dir\f.txt`, true) {
+		t.Error("UNC 路径应在 winPathBad 被拒，不进 roots 匹配")
 	}
 }
 

@@ -52,6 +52,14 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 		deny("pubkey", "管理命令只能用密码登录执行（公钥登录是给自动化用的）")
 		return
 	}
+	// OAuth 一次性授权换的登录只够「用机器」，够不着管理面：grant
+	// 有效期就十几分钟，拿它跑 @machine token/add、@totp 等于把
+	// 临时票换成长期钥匙串（甚至给账号绑上攻击者的验证器）。要管理
+	// 请用密码（+TOTP）完整登录。
+	if sess.Context().Value(authMethodKey{}) == "grant" {
+		deny("grant", "这是 OAuth 授权换来的临时登录，管理命令需要密码完整登录")
+		return
+	}
 	// 绑了 TOTP 的账号，管理命令要再要一个新验证码——登录时用过的那个不行。
 	if acct, ok := s.cfg.Users.Get(account); ok && acct.TOTPEnabled {
 		if !s.mgmtReverifyTOTP(sess, account, from) {

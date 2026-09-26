@@ -3,6 +3,7 @@ package mcpsrv
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,11 +19,20 @@ import (
 )
 
 // ApprovalRequest 是一次等待批准的请求。Detail 是命令本身或文件路径。
+// Session/Digest 是绑定位：批准的效力只覆盖「这台机器、这种操作、
+// 这段内容、这个工作目录、这个常驻会话、这份输入」——光换 cwd 或
+// stdin 内容再调同名命令，照样重新问。Kind 进绑定位：批过一次
+// run_command 不会把同命令的 terminal_open 也放行（PTY 一开后续
+// 按键不再过策略，那是另一种操作）。Preview 是给人看的输入内容
+// 单行预览（stdin/写入内容的大小+摘要+开头），绑定身份靠 Digest。
 type ApprovalRequest struct {
 	Machine string
-	Kind    string // "command" | "write_file"
+	Kind    string // "command" | "terminal" | "write_file"
 	Detail  string
 	Cwd     string
+	Session string // run_command 的常驻 shell 名（会话命令和一次性命令的批准不互认）
+	Digest  string // stdin/写入内容的 sha256（hex 前 16 位）；空 = 没输入
+	Preview string // 已剥控制字符的单行内容预览；空 = 没输入
 }
 
 // Outcome 是批准环节的结果。
@@ -51,6 +61,9 @@ type pendingFile struct {
 	Kind    string    `json:"kind"`
 	Detail  string    `json:"detail"`
 	Cwd     string    `json:"cwd,omitempty"`
+	Session string    `json:"session,omitempty"`
+	Digest  string    `json:"digest,omitempty"`
+	Preview string    `json:"preview,omitempty"`
 	Created time.Time `json:"created"`
 	PID     int       `json:"pid"`
 }
@@ -58,8 +71,33 @@ type pendingFile struct {
 // elicitKey 是 InputRequests 里批准请求的键名。
 const elicitKey = "approval"
 
-// rememberedKey 是「本次会话记住」的键：同一台机器上相同 detail 不再问。
-func rememberedKey(req ApprovalRequest) string { return req.Machine + "\x00" + req.Detail }
+// rememberedKey 是「本次会话记住」和「会话内确认挂起」共同的键：批准
+// 绑定到完整上下文（机器 + 类型 + 内容 + cwd + 常驻会话 + 输入摘要）——
+// 换任何一项都是另一条请求，不能用同一个同意。
+func rememberedKey(req ApprovalRequest) string {
+	return strings.Join([]string{req.Machine, req.Kind, req.Detail, req.Cwd, req.Session, req.Digest}, "\x00")
+}
+
+// digestOf 给批准绑定位算内容指纹：命令的 stdin 和 write_file 的内容
+// 长度不做进 Detail，只靠摘要把「批的那份内容」钉死。空输入给空串。
+func digestOf(content string) string {
+	if content == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:8])
+}
+
+// previewOf 给批准界面造输入内容的单行预览：字节数+摘要钉死身份，
+// 开头一小段（剥掉控制字符）让人看得出批的是什么。批准绑定位用的是
+// Digest；预览只是给弹窗/对话框/待批清单看，本身不参与绑定。
+func previewOf(label, content string) string {
+	if content == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s：%d 字节，sha256 %s，开头 %q",
+		label, len(content), digestOf(content), clip(notify.Clean(content), 120))
+}
 
 // sessID 容忍单测等没有真实会话的 nil。
 func sessID(sess *mcp.ServerSession) string {
@@ -123,6 +161,21 @@ func (s *Server) clearPending(sess *mcp.ServerSession, req ApprovalRequest) {
 	delete(s.pending[sessID(sess)], rememberedKey(req))
 }
 
+// consumePending 原子地「查到并摘掉」挂起标记：拿 confirmed 并发重试
+// 同一请求时，只有抢到标记的调用被放行，第二个走新请求流程重新问。
+// 之前 pendingAt + clearPending 两步分开，并发下两个调用都能挤过去。
+func (s *Server) consumePending(sess *mcp.ServerSession, req ApprovalRequest) (pendAsk, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := sessID(sess)
+	key := rememberedKey(req)
+	p, ok := s.pending[id][key]
+	if ok {
+		delete(s.pending[id], key)
+	}
+	return p, ok
+}
+
 // supportsElicitation 看客户端 initialize 时声明的能力：会弹确认框才走
 // elicitation，否则走本地批准回退。
 func supportsElicitation(sess *mcp.ServerSession) bool {
@@ -154,7 +207,11 @@ func elicitResult(req *mcp.CallToolRequest) *mcp.ElicitResult {
 // 注意：不能在新协议下直接调 ServerSession.Elicit——SDK 会报
 // "cannot be sent while serving a request"，必须用 InputRequests。
 func elicitRequest(req ApprovalRequest) *mcp.CallToolResult {
-	msg := fmt.Sprintf("towstrap：在 %s 上执行\n\n%s\n\ncwd: %s", req.Machine, req.Detail, orDash(req.Cwd))
+	msg := fmt.Sprintf("towstrap：在 %s 上执行\n\n%s\n\ncwd: %s",
+		req.Machine, notify.Clean(req.Detail), notify.Clean(orDash(req.Cwd)))
+	if req.Preview != "" {
+		msg += "\n\n" + req.Preview
+	}
 	return &mcp.CallToolResult{
 		InputRequests: mcp.InputRequestMap{
 			elicitKey: &mcp.ElicitParams{
@@ -215,16 +272,21 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 	}
 	if p, ok := s.pendingAt(req.Session, ar); ok && time.Since(p.at) <= llmConfirmTTL {
 		if er := elicitResult(req); er != nil {
-			out = s.evalElicit(req.Session, ar, er, p.id)
-			s.clearPending(req.Session, ar)
+			// 有答复才消费标记——没答复的并发调用继续等自己的回合；
+			// 消费是原子的，两个带着答复的并发调用只有一个能落定。
+			pp, consumed := s.consumePending(req.Session, ar)
+			if !consumed {
+				return AwaitingLLM, false, "", nil
+			}
+			out = s.evalElicit(req.Session, ar, er, pp.id)
 			rem, _ := er.Content["remember"].(bool)
 			if rem && out == Approved {
-				s.auditOutcome(out, ar, p.id, "remember", "true")
+				s.auditOutcome(out, ar, pp.id, "remember", "true")
 			} else {
-				s.auditOutcome(out, ar, p.id)
+				s.auditOutcome(out, ar, pp.id)
 			}
-			s.tellSettled(ctx, req.Session, ar.Machine, p.id, out, rem)
-			return out, false, p.id, nil
+			s.tellSettled(ctx, req.Session, ar.Machine, pp.id, out, rem)
+			return out, false, pp.id, nil
 		}
 		switch {
 		case p.via == "elicit":
@@ -232,17 +294,22 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 		case !confirmed:
 			return AwaitingLLM, false, p.id, nil // 还在等用户答复，原样重试不算同意
 		default:
-			s.clearPending(req.Session, ar)
-			if remember {
-				s.remember(req.Session, ar, p.id)
+			// confirmed 重试：原子消费标记——并发带 confirmed 的两个调用
+			// 只有一个放行，另一个当成新请求重新走确认。
+			pp, consumed := s.consumePending(req.Session, ar)
+			if !consumed {
+				return AwaitingLLM, false, "", nil
 			}
 			if remember {
-				s.auditOutcome(ApprovedLLM, ar, p.id, "remember", "true")
+				s.remember(req.Session, ar, pp.id)
+			}
+			if remember {
+				s.auditOutcome(ApprovedLLM, ar, pp.id, "remember", "true")
 			} else {
-				s.auditOutcome(ApprovedLLM, ar, p.id)
+				s.auditOutcome(ApprovedLLM, ar, pp.id)
 			}
-			s.tellSettled(ctx, req.Session, ar.Machine, p.id, ApprovedLLM, remember)
-			return ApprovedLLM, false, p.id, nil
+			s.tellSettled(ctx, req.Session, ar.Machine, pp.id, ApprovedLLM, remember)
+			return ApprovedLLM, false, pp.id, nil
 		}
 	} else if ok {
 		s.clearPending(req.Session, ar) // 过期：当成新请求重新发起确认
@@ -313,6 +380,7 @@ func (s *Server) auditOutcome(out Outcome, ar ApprovalRequest, authID string, ex
 // 落在远端终端，内嵌模式进服务端日志）、OnPending 钩子（内嵌服务器接
 // 它写进同账号的 SSH 终端）。工具调用阻塞/出结果时远端原本什么迹象都没有。
 func (s *Server) tellNotice(ctx context.Context, sess *mcp.ServerSession, machine, msg string) {
+	msg = notify.Clean(msg) // 命令内容不可信：剥掉终端转义再到处发
 	slog.Warn(msg)
 	if sess != nil {
 		_ = sess.Log(ctx, &mcp.LoggingMessageParams{
@@ -392,16 +460,22 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 	}
 	pf := pendingFile{
 		ID: id, Machine: req.Machine, Kind: req.Kind,
-		Detail: req.Detail, Cwd: req.Cwd, Created: time.Now(), PID: os.Getpid(),
+		Detail: req.Detail, Cwd: req.Cwd, Session: req.Session, Digest: req.Digest,
+		Preview: req.Preview,
+		Created: time.Now(), PID: os.Getpid(),
 	}
 	b, _ := json.MarshalIndent(pf, "", "  ")
 	jsonPath := filepath.Join(dir, id+".json")
 	if err := os.WriteFile(jsonPath, b, 0600); err != nil {
 		return Unavailable, false, fmt.Errorf("写待批文件 %s: %w", jsonPath, err)
 	}
-	s.tellNotice(ctx, sess, req.Machine, fmt.Sprintf(
+	notice := fmt.Sprintf(
 		"等待人工批准 %s（%s: %s）——批准：%s %s；%s内未处理视为拒绝",
-		id, req.Machine, clip(req.Detail, 80), s.cfg.ApproveCmd, id, humanDur(s.cfg.Policy.AskTimeout)))
+		id, req.Machine, clip(req.Detail, 80), s.cfg.ApproveCmd, id, humanDur(s.cfg.Policy.AskTimeout))
+	if req.Preview != "" {
+		notice += "\n" + req.Preview
+	}
+	s.tellNotice(ctx, sess, req.Machine, notice)
 	approved := filepath.Join(dir, id+".approved")
 	denied := filepath.Join(dir, id+".denied")
 	remember := filepath.Join(dir, id+".remember")
@@ -423,8 +497,12 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 			// 分行排版：对话框/通知/wall 都是给人看的，一眼能扫到机器、
 			// 命令、编号，比挤成一行清楚。对话框有自己的三个按钮，
 			// 不需要终端命令；通知和 wall 点不了，得给出命令行批准方式。
-			base := fmt.Sprintf("机器：%s\n命令：%s\n批准编号：%s\n\n%s内不处理视为拒绝",
-				req.Machine, detail, id, humanDur(s.cfg.Policy.AskTimeout))
+			extra := ""
+			if req.Preview != "" {
+				extra = req.Preview + "\n"
+			}
+			base := fmt.Sprintf("机器：%s\n命令：%s\n%s批准编号：%s\n\n%s内不处理视为拒绝",
+				req.Machine, detail, extra, id, humanDur(s.cfg.Policy.AskTimeout))
 			hint := fmt.Sprintf("\n\n也可在终端运行：\n%s %s", s.cfg.ApproveCmd, id)
 			notify.Desktop(title, base+hint)
 			notify.Wall(title + "：" + base + hint)

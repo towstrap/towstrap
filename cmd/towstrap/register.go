@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/machineid"
 	"github.com/towstrap/towstrap/internal/proto"
 	"github.com/towstrap/towstrap/internal/qrcode"
@@ -45,6 +46,7 @@ func usageRegister() {
   --machine 名字        这台机器的名字（默认主机名；登录分支里同名=重装换 token）
   --invite 码           服务器设了 register_invite 时必填（只建号分支用）
   --password-stdin      密码从 stdin 读一行（脚本用；交互模式自动问）
+  --totp 6位码          账号已绑 TOTP 时登录加机要带的当前动态码
   --skip-totp           跳过最后的 TOTP 绑定提问（SSH 登录后 @totp 也能绑）
   --insecure            跳过 TLS 证书校验（自签证书用）
   --allow-plain         服务器是明文 ws:// 且不在回环时必须加（密码不裸奔）
@@ -60,21 +62,16 @@ func runRegister(args []string) int {
 	machine := fs.String("machine", "", "")
 	invite := fs.String("invite", "", "")
 	pwStdin := fs.Bool("password-stdin", false, "")
+	totpCode := fs.String("totp", "", "")
 	skipTOTP := fs.Bool("skip-totp", false, "")
 	insecure := fs.Bool("insecure", false, "")
 	allowPlain := fs.Bool("allow-plain", false, "")
 	_ = fs.Parse(args)
 
-	// 明文出公网不行：ws:// 非回环要显式确认（注册/登录都带密码）。
-	if strings.HasPrefix(*server, "ws://") && !*allowPlain {
-		host := strings.TrimPrefix(*server, "ws://")
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-			fmt.Fprintln(os.Stderr, "服务器地址是明文 ws:// 且不在回环：加 --allow-plain 才继续（密码会被明文传输）")
-			return 2
-		}
+	// 明文出公网不行：ws:///http:// 非回环要显式确认（注册/登录都带密码）。
+	if err := client.PlainCheck(*server, *allowPlain); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
 	base, err := oauthHTTPBase(*server)
 	if err != nil {
@@ -129,23 +126,43 @@ func runRegister(args []string) int {
 	if have {
 		endpoint = "/register/machine"
 	}
-	reqBody, _ := json.Marshal(proto.RegisterReq{
-		Account: acct, Password: pw, Machine: mach,
-		Fingerprint: fp, Invite: *invite,
-	})
 	hc := &http.Client{Timeout: 15 * time.Second}
 	if *insecure {
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
-	resp, err := hc.Post(base+endpoint, "application/json", bytes.NewReader(reqBody))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "连服务器失败:", err)
+	var res proto.RegisterResp
+	var resp *http.Response
+	for i := 0; i < 2; i++ {
+		reqBody, _ := json.Marshal(proto.RegisterReq{
+			Account: acct, Password: pw, Machine: mach,
+			Fingerprint: fp, Invite: *invite, TOTP: *totpCode,
+		})
+		resp, err = hc.Post(base+endpoint, "application/json", bytes.NewReader(reqBody))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "连服务器失败:", err)
+			return 1
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		res = proto.RegisterResp{}
+		_ = json.Unmarshal(raw, &res)
+		// 账号绑了 TOTP 但没带码：交互模式补问一次重发；脚本模式提示 --totp。
+		if !(resp.StatusCode == http.StatusForbidden && res.NeedTOTP) {
+			break
+		}
+		if *totpCode != "" {
+			break // 带了码还拒 = 码不对，走统一失败出口
+		}
+		if interactive {
+			fmt.Fprintf(os.Stderr, "账号 %s 已绑 TOTP\n", acct)
+			*totpCode = promptLine("当前 6 位动态码", "")
+			if *totpCode != "" {
+				continue
+			}
+		}
+		fmt.Fprintln(os.Stderr, "这个账号绑了 TOTP：加 --totp 带上当前 6 位动态码（或去掉 --password-stdin 走交互）")
 		return 1
 	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
-	var res proto.RegisterResp
-	_ = json.Unmarshal(raw, &res)
 
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -246,22 +263,30 @@ func totpWizard(hc *http.Client, base, token, password string) {
 }
 
 // totpBindFlow 是绑定主流程（register 向导和 towstrap totp 共用）：
-// begin 拿秘钥出二维码 → 已绑过先验旧码 → 输新码 confirm 落库。
-// 返回 false 表示没绑成；调用方自己决定致不致命。
+// begin 拿秘钥出二维码（已绑账号在 begin 就先验旧码）→ 输新码
+// confirm 落库。返回 false 表示没绑成；调用方自己决定致不致命。
 func totpBindFlow(hc *http.Client, base, token, password string) bool {
 	var beg proto.TOTPBeginResp
-	code, ok := totpPost(hc, base, token, "/totp/begin", proto.TOTPBeginReq{Password: password}, &beg)
-	if !ok {
-		return false
-	}
-	if code != 200 {
-		fmt.Fprintln(os.Stderr, "TOTP 绑定没成：", beg.Err)
-		return false
-	}
 	oldCode := ""
-	if beg.Bound {
-		fmt.Fprintf(os.Stderr, "账号 %s 已绑过 TOTP——换绑会让旧验证器失效。\n", beg.Account)
-		oldCode = promptLine("输当前验证器上的 6 位码验身份", "")
+	for {
+		code, ok := totpPost(hc, base, token, "/totp/begin", proto.TOTPBeginReq{Password: password, OldCode: oldCode}, &beg)
+		if !ok {
+			return false
+		}
+		if code == http.StatusForbidden && beg.NeedCode && oldCode == "" {
+			fmt.Fprintf(os.Stderr, "账号 %s 已绑过 TOTP——换绑会让旧验证器失效。\n", beg.Account)
+			oldCode = promptLine("输当前验证器上的 6 位码验身份", "")
+			if oldCode == "" {
+				fmt.Fprintln(os.Stderr, "没输旧码，放弃换绑")
+				return false
+			}
+			continue
+		}
+		if code != 200 {
+			fmt.Fprintln(os.Stderr, "TOTP 绑定没成：", beg.Err)
+			return false
+		}
+		break
 	}
 	fmt.Println("用验证器（Google Authenticator / 1Password / Aegis / 微软 Authenticator 都行）扫下面这个码：")
 	if qr, err := qrcode.Terminal(beg.URI); err == nil {
@@ -271,7 +296,7 @@ func totpBindFlow(hc *http.Client, base, token, password string) bool {
 	fmt.Println("  手动录入秘钥:", beg.Secret)
 	codeStr := promptLine("输新验证器上现在的 6 位码", "")
 	var cf proto.TOTPConfirmResp
-	code, ok = totpPost(hc, base, token, "/totp/confirm", proto.TOTPConfirmReq{
+	code, ok := totpPost(hc, base, token, "/totp/confirm", proto.TOTPConfirmReq{
 		Password: password, Secret: beg.Secret, Code: codeStr, OldCode: oldCode,
 	}, &cf)
 	if !ok {

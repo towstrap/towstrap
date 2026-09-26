@@ -73,12 +73,12 @@ func TestRegister(t *testing.T) {
 			t.Fatalf("SSH 端口没带上: %q", res.SSHPort)
 		}
 
-		// 同指纹换账号名再注册 → 409 + 既有账号名
+		// 同指纹换账号名再注册 → 409；不回既有账号名（防枚举已注册账号）
 		code, res = postRegister(t, ts.URL, proto.RegisterReq{
 			Account: "mallory", Password: "0123456789", Fingerprint: fp,
 		})
-		if code != http.StatusConflict || res.Owner != "alice" {
-			t.Fatalf("同指纹该 409+owner, got %d %+v", code, res)
+		if code != http.StatusConflict || res.Owner != "" {
+			t.Fatalf("同指纹该 409 且不泄 owner, got %d %+v", code, res)
 		}
 	})
 
@@ -162,13 +162,14 @@ func TestRegister(t *testing.T) {
 			t.Fatal(err)
 		}
 		fpE := strings.Repeat("e", 64)
-		if _, err := users.BindFingerprint(fpE, "eve"); err != nil {
-			t.Fatal(err)
+		if bound, _, err := users.BindFingerprint(fpE, "eve"); err != nil || !bound {
+			t.Fatalf("占指纹: bound=%t err=%v", bound, err)
 		}
 		code, res := postRegisterURL(t, ts.URL+"/register/machine", proto.RegisterReq{
 			Account: "fred", Password: "0123456789", Machine: "laptop", Fingerprint: fpE})
-		if code != http.StatusConflict || res.Owner != "eve" {
-			t.Fatalf("跨账号指纹该 409+owner, got %d %+v", code, res)
+		// 409 里不回归属账号名——跨账号的归属信息不外露
+		if code != http.StatusConflict || res.Owner != "" {
+			t.Fatalf("跨账号指纹该 409 且不带 owner, got %d %+v", code, res)
 		}
 	})
 
@@ -247,15 +248,24 @@ func TestRegister(t *testing.T) {
 		if a, _ := users.Get("ivy"); !a.TOTPEnabled {
 			t.Fatal("confirm 过了应已绑")
 		}
-		// 已绑：换绑必须给当前码——不给 → 403，错码 → 401
+		// 已绑：begin 就先验旧码——不给 → 403 need_code，错码 → 401，
+		// 对了才发新秘钥原料。begin 只验不消费：confirm 里同一码再验
+		// 一次（那次才真正消费时间片）。
 		beg = proto.TOTPBeginResp{}
-		if code := post("/totp/begin", tok, proto.TOTPBeginReq{Password: "0123456789"}, &beg); code != 200 || !beg.Bound {
-			t.Fatalf("已绑该 bound=true: %d %+v", code, beg)
+		if code := post("/totp/begin", tok, proto.TOTPBeginReq{Password: "0123456789"}, &beg); code != http.StatusForbidden || !beg.NeedCode || !beg.Bound {
+			t.Fatalf("已绑 begin 不给码该 403+need_code: %d %+v", code, beg)
+		}
+		if code := post("/totp/begin", tok, proto.TOTPBeginReq{Password: "0123456789", OldCode: bad}, &beg); code != http.StatusUnauthorized {
+			t.Fatalf("begin 旧码错该 401，got %d", code)
+		}
+		// 旧秘钥的"新"码要用下一个时间片——绑定确认用掉的那片不能重放。
+		oldNext := totp.Code(secret, time.Now().Add(30*time.Second))
+		beg = proto.TOTPBeginResp{}
+		if code := post("/totp/begin", tok, proto.TOTPBeginReq{Password: "0123456789", OldCode: oldNext}, &beg); code != 200 || beg.Secret == "" || !beg.Bound {
+			t.Fatalf("begin 带旧码该发料: %d %+v", code, beg)
 		}
 		newSecret, _ := totp.ParseSecret(beg.Secret)
 		newGood := totp.Code(newSecret, time.Now())
-		// 旧秘钥的"新"码要用下一个时间片——绑定确认用掉的那片不能重放。
-		oldNext := totp.Code(secret, time.Now().Add(30*time.Second))
 		if code := post("/totp/confirm", tok, proto.TOTPConfirmReq{
 			Password: "0123456789", Secret: beg.Secret, Code: newGood,
 		}, &cf); code != http.StatusForbidden {

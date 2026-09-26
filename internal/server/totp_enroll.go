@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/towstrap/towstrap/internal/accounts"
-	"github.com/towstrap/towstrap/internal/allow"
 	"github.com/towstrap/towstrap/internal/proto"
 	"github.com/towstrap/towstrap/internal/totp"
 )
@@ -38,12 +37,9 @@ func (s *Server) totpCaller(w http.ResponseWriter, r *http.Request, password str
 		slog.Warn("TOTP 管理被拒", "user", m.Username, "ip", ip, "reason", reason)
 		deny(code, reason, msg)
 	}
-	if len(m.AgentAllowIPs) > 0 {
-		list, err := allow.Parse(m.AgentAllowIPs)
-		if err != nil || !list.AllowsAddr(tcpAddr(r.RemoteAddr)) {
-			denyU(http.StatusForbidden, "agent-allow", "来源不在这台机器的 agent 白名单里")
-			return accounts.Machine{}, false
-		}
+	if !agentIPAllowed(m, tcpAddr(r.RemoteAddr)) {
+		denyU(http.StatusForbidden, "agent-allow", "来源不在这台机器的 agent 白名单里")
+		return accounts.Machine{}, false
 	}
 	if !s.guard.allowed(m.Username, ip) {
 		denyU(http.StatusTooManyRequests, "locked", "失败次数过多，暂时锁定，稍后再试")
@@ -52,6 +48,13 @@ func (s *Server) totpCaller(w http.ResponseWriter, r *http.Request, password str
 	if !s.cfg.Users.Verify(m.Username, password) {
 		s.guard.fail(m.Username, ip)
 		denyU(http.StatusUnauthorized, "password", "密码不对或账号已停用")
+		return accounts.Machine{}, false
+	}
+	if acct, ok := s.cfg.Users.Get(m.Username); ok && acct.OAuthOnly {
+		// oauth_only = 密码不作数：TOTP 自助端点和注册通道同款口径，
+		// 不然标了 oauth_only 的账号照样能用密码绑/解绑二因素。
+		s.guard.fail(m.Username, ip)
+		denyU(http.StatusForbidden, "oauth-only", "这个账号标记了 oauth_only：密码在这类接口上不作数——TOTP 管理请走 SSH @totp（完整登录）或找管理员")
 		return accounts.Machine{}, false
 	}
 	return m, true
@@ -95,12 +98,33 @@ func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.guard.pass(m.Username, hostOnly(r.RemoteAddr))
-	secret, uri := totp.Generate("towstrap", m.Username)
-	bound := false
-	if acct, ok2 := s.cfg.Users.Get(m.Username); ok2 && acct.TOTPEnabled {
-		bound = true
+	ip := hostOnly(r.RemoteAddr)
+	acct, _ := s.cfg.Users.Get(m.Username)
+	bound := acct.TOTPEnabled
+	// 已绑账号在 begin 就要先验当前码——发新秘钥原料本身就是换绑的
+	// 第一步，只凭密码放行等于给「偷到密码的人」留了换绑通道。
+	// 注意：这里 **不** 调 guard.pass——begin 只验证了密码，完整认证
+	// 链（密码+动态码）还没走完，清零会把前面的失败计数抹掉，给
+	// 「密码+一次 begin」每轮刷新的爆破口。
+	if bound && req.OldCode == "" {
+		s.audit.Log("TOTP-DENY", "user", m.Username, "ip", ip, "reason", "need-code")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(proto.TOTPBeginResp{
+			Err: "账号已绑 TOTP，换绑要当前 6 位动态码（old_code）", NeedCode: true, Bound: true, Account: m.Username,
+		})
+		return
 	}
+	if bound {
+		// 用 CheckTOTP 而不是 VerifyTOTP：这里只验身份不消费时间片，
+		// 真正消费是 confirm 落库那次——同一个流程里这个码要被验两次。
+		if !s.cfg.Users.CheckTOTP(m.Username, strings.TrimSpace(req.OldCode)) {
+			s.guard.fail(m.Username, ip)
+			s.audit.Log("TOTP-DENY", "user", m.Username, "ip", ip, "reason", "totp")
+			fail(http.StatusUnauthorized, "totp", "当前动态码不对")
+			return
+		}
+	}
+	secret, uri := totp.Generate("towstrap", m.Username)
 	// 不落库、不写审计成功项——begin 只是发料，confirm 过了才算数。
 	_ = json.NewEncoder(w).Encode(proto.TOTPBeginResp{
 		Secret: totp.SecretString(secret), URI: uri,

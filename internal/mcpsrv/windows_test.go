@@ -25,6 +25,7 @@ type probeRunner struct {
 	calls      []probeCall
 	osVar      string
 	envOS      string
+	uname      string
 	fileOut    string
 	failNext   int
 	probeExit  int
@@ -37,8 +38,70 @@ func (r *probeRunner) answer(cmd string) (Result, bool) {
 		return Result{Stdout: r.osVar, ExitCode: r.probeExit}, true
 	case "echo $env:OS":
 		return Result{Stdout: r.envOS, ExitCode: r.probeExit}, true
+	case "uname -s":
+		u := r.uname
+		if u == "" {
+			u = "Linux"
+		}
+		return Result{Stdout: u}, true
 	}
 	return Result{}, false
+}
+
+// fakeResolve 模拟远端路径解析：认出 resolvePath 生成的脚本，回
+// 「规范化后」的路径。POSIX 脚本以 p='..' 开头且含 readlink；
+// PowerShell 是 EncodedCommand 且脚本里带 Resolve-Path。~ 展开到
+// 固定假家目录，路径其余原样回。
+func fakeResolve(cmd string) (string, bool) {
+	if strings.HasPrefix(cmd, "p=") && strings.Contains(cmd, "readlink") {
+		first, _, _ := strings.Cut(cmd[2:], "\n")
+		return expandFakeHome(unquoteSH(first), `/home/u`), true
+	}
+	if strings.HasPrefix(cmd, "powershell.exe") {
+		script, ok := decodePSQuiet(cmd)
+		if !ok || !strings.Contains(script, "Resolve-Path") {
+			return "", false
+		}
+		_, rest, ok := strings.Cut(script, "$p=")
+		if !ok {
+			return "", false
+		}
+		first, _, _ := strings.Cut(strings.TrimSpace(rest), "\n")
+		return expandFakeHome(unquotePS(first), `C:\Users\tester`), true
+	}
+	return "", false
+}
+
+// unquoteSH 剥 shellQuote 产出的 '..'字面量（'\” 是转义的引号）。
+func unquoteSH(s string) string {
+	if len(s) < 2 || s[0] != '\'' {
+		return s
+	}
+	return strings.ReplaceAll(s[1:len(s)-1], `'\''`, "'")
+}
+
+// unquotePS 剥 PowerShell 单引号字面量（” 是转义的引号）。
+func unquotePS(s string) string {
+	if len(s) < 2 || s[0] != '\'' {
+		return s
+	}
+	return strings.ReplaceAll(s[1:len(s)-1], "''", "'")
+}
+
+func expandFakeHome(p, home string) string {
+	switch {
+	case p == "~":
+		return home
+	case strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`):
+		sep := "/"
+		tail := p[2:]
+		if strings.ContainsRune(home, '\\') {
+			sep = `\`
+			tail = strings.ReplaceAll(tail, "/", `\`)
+		}
+		return home + sep + tail
+	}
+	return p
 }
 
 func (r *probeRunner) run(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int, cwd string, at bool) (Result, error) {
@@ -56,6 +119,9 @@ func (r *probeRunner) run(ctx context.Context, machine, cmd string, stdin []byte
 	}
 	if res, ok := r.answer(cmd); ok {
 		return res, nil
+	}
+	if p, ok := fakeResolve(cmd); ok {
+		return Result{Stdout: p}, nil
 	}
 	return Result{Stdout: r.fileOut}, nil
 }
@@ -105,22 +171,27 @@ func newProbeServer(t *testing.T, r Runner) *Server {
 
 func decodePS(t *testing.T, cmd string) string {
 	t.Helper()
-	const prefix = "powershell.exe -NoProfile -NonInteractive -EncodedCommand "
-	if !strings.HasPrefix(cmd, prefix) {
+	s, ok := decodePSQuiet(cmd)
+	if !ok {
 		t.Fatalf("不是 PowerShell EncodedCommand: %q", cmd)
 	}
-	raw, err := base64.StdEncoding.DecodeString(cmd[len(prefix):])
-	if err != nil {
-		t.Fatal(err)
+	return s
+}
+
+func decodePSQuiet(cmd string) (string, bool) {
+	const prefix = "powershell.exe -NoProfile -NonInteractive -EncodedCommand "
+	if !strings.HasPrefix(cmd, prefix) {
+		return "", false
 	}
-	if len(raw)%2 != 0 {
-		t.Fatal("UTF-16 长度应为偶数")
+	raw, err := base64.StdEncoding.DecodeString(cmd[len(prefix):])
+	if err != nil || len(raw)%2 != 0 {
+		return "", false
 	}
 	u := make([]uint16, len(raw)/2)
 	for i := range u {
 		u[i] = uint16(raw[2*i]) | uint16(raw[2*i+1])<<8
 	}
-	return string(utf16.Decode(u))
+	return string(utf16.Decode(u)), true
 }
 
 func TestWindowsReadFileCmd(t *testing.T) {
@@ -188,14 +259,20 @@ func TestWindowsTildePath(t *testing.T) {
 	if err != nil || res.IsError {
 		t.Fatalf("readFile: %v %+v", err, res)
 	}
-	script := decodePS(t, r.last().cmd)
+	// 倒数第二个调用是路径解析：~ 展开在远端脚本里做。
+	resolveScript := decodePS(t, r.calls[len(r.calls)-2].cmd)
 	for _, want := range []string{"$p='~/work/x.txt'", "$HOME", "StartsWith('~/')", "IsNullOrEmpty($HOME)"} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("脚本缺 %q:\n%s", want, script)
+		if !strings.Contains(resolveScript, want) {
+			t.Fatalf("解析脚本缺 %q:\n%s", want, resolveScript)
 		}
 	}
-	if strings.Contains(script, "$env:HOME") {
-		t.Fatalf("不应用 $env:HOME（Windows PowerShell 默认没有）:\n%s", script)
+	if strings.Contains(resolveScript, "$env:HOME") {
+		t.Fatalf("不应用 $env:HOME（Windows PowerShell 默认没有）:\n%s", resolveScript)
+	}
+	// 真正读文件走解析后的真实路径（fake 解析成 C:\Users\tester\work\x.txt）。
+	script := decodePS(t, r.last().cmd)
+	if !strings.Contains(script, `$p='C:\Users\tester\work\x.txt'`) {
+		t.Fatalf("读文件应用解析后路径:\n%s", script)
 	}
 }
 
@@ -253,7 +330,8 @@ func TestPOSIXDialectUnchanged(t *testing.T) {
 	if call.at {
 		t.Fatal("POSIX 不应走 RunAt")
 	}
-	if call.cmd != `head -c 1025 -- "$HOME/"'x.txt'` {
+	// fake 解析器把 ~/x.txt 归一成 /home/u/x.txt，读命令用解析后的路径。
+	if call.cmd != `head -c 1025 -- '/home/u/x.txt'` {
 		t.Fatalf("POSIX 命令不对: %q", call.cmd)
 	}
 }

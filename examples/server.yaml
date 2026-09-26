@@ -26,6 +26,7 @@ server:
   # tls: true                  # 网页口走 HTTPS/WSS；不给 cert/key 会自动生成自签证书
   # cert: /etc/towstrap/cert.pem # 正式证书（Let's Encrypt 等）配在这里
   # key: /etc/towstrap/key.pem
+  # allow_plain_http: true     # 明文 HTTP + 非回环监听时必须显式确认（这条通道上全是凭据）
   # allow_ips: [10.0.0.0/8]    # 全局：谁能连 SSH；账号还可以再设自己的白名单
   # idle_verify: 30m           # 绑了 TOTP 的账号挂机超过这么久，下次敲键重验验证码（0 关闭）
   # max_sessions: 16           # 每台机器（每账号）并发 SSH 会话上限（0 不限）

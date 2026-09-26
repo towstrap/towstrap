@@ -3,10 +3,14 @@
 package client
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 
@@ -119,12 +123,83 @@ func (p *ptyFile) Write(b []byte) (int, error) { return p.file.Write(b) }
 func (p *ptyFile) Close() error {
 	p.dead.Store(true)
 	if p.cmd != nil && p.cmd.Process != nil {
+		// PTY 子进程是 setsid 的会话首领（sid=pid）：关终端按会话杀——
+		// 交互 shell 的作业控制会给每个 job 单独开进程组，只杀首领或
+		// 首领所在的组都盖不住 `sleep 300 &` 这类后台 job；setsid 自己
+		// 脱离出去的守护进程是用户有意留的，不追。
+		killSession(p.cmd.Process.Pid)
 		_ = p.cmd.Process.Kill()
 	}
 	if p.file != nil {
 		return p.file.Close()
 	}
 	return nil
+}
+
+// killSession 杀 sid=pid 的整个会话：先按首领自己的进程组杀，再扫同
+// 会话其他进程组的成员补杀。枚举在杀之前做——首领死后其组员的 sid
+// 不变（孤儿进程组仍记这个 sid）。
+func killSession(pid int) {
+	targets := sessionPids(pid)
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	for _, t := range targets {
+		if t != pid {
+			_ = syscall.Kill(t, syscall.SIGKILL)
+		}
+	}
+}
+
+// sessionPids 枚举会话里的所有进程：Linux 扫 /proc；别的 Unix 用
+// pgrep -s（macOS/BSD 都带）。扫不到就返回空——killSession 里按组
+// 杀首领那一发还在，行为不比以前差。
+func sessionPids(sid int) []int {
+	if runtime.GOOS == "linux" {
+		return sessionPidsProc(sid)
+	}
+	out, err := exec.Command("pgrep", "-s", strconv.Itoa(sid)).Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Fields(string(out)) {
+		if p, err := strconv.Atoi(line); err == nil {
+			pids = append(pids, p)
+		}
+	}
+	return pids
+}
+
+// sessionPidsProc 扫 /proc/<pid>/stat 找同 sid 的进程。stat 的 comm 字段
+// 带括号空格，按最后一个 ')' 切；剩下字段里 state ppid pgrp session 依次排。
+func sessionPidsProc(sid int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	sidStr := strconv.Itoa(sid)
+	var pids []int
+	for _, e := range entries {
+		name := e.Name()
+		if name == "" || name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + name + "/stat")
+		if err != nil {
+			continue // 进程说没就没，忽略
+		}
+		i := bytes.LastIndexByte(b, ')')
+		if i < 0 {
+			continue
+		}
+		f := strings.Fields(string(b[i+1:]))
+		// f[0]=state f[1]=ppid f[2]=pgrp f[3]=session
+		if len(f) > 3 && f[3] == sidStr {
+			if p, err := strconv.Atoi(name); err == nil {
+				pids = append(pids, p)
+			}
+		}
+	}
+	return pids
 }
 
 // Wait 回收子进程并返回退出码；Close 先杀进程时再调用只是收尸。

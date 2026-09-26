@@ -25,12 +25,13 @@ import (
 	"github.com/towstrap/towstrap/internal/proto"
 )
 
-// mcpPlainHTTPAllowed 决定 /mcp 能不能挂在明文 HTTP 上：Bearer token
-// 是凭据，走明文就等于把钥匙贴在网上。TLS 开着、显式
-// allow_plain_http、或只监听回环地址时放行，其余拒绝启动。
-func mcpPlainHTTPAllowed(listenAddr string, tls, allowPlain bool) error {
-	if tls || allowPlain {
-		return nil
+// plainHTTPListenerBlocked 判定 HTTP 监听器是不是「明文 + 非回环」——
+// 整个口都是凭据通道（/register、/totp/*、/token/refresh、/oauth/*、/agent、
+// /mcp 全在这收发密码和 token），这样开出去等于把凭据贴在网上。
+// 回环监听（loopback IP / localhost）放行；tls 开着没有明文问题。
+func plainHTTPListenerBlocked(listenAddr string, tls bool) bool {
+	if tls {
+		return false
 	}
 	host, _, err := net.SplitHostPort(listenAddr)
 	if err != nil {
@@ -38,11 +39,23 @@ func mcpPlainHTTPAllowed(listenAddr string, tls, allowPlain bool) error {
 	}
 	if host != "" {
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-			return nil
+			return false
 		}
 		if host == "localhost" {
-			return nil
+			return false
 		}
+		return true
+	}
+	// ":7880" 这类空 host = 所有网卡 = 非回环。
+	return true
+}
+
+// mcpPlainHTTPAllowed 决定 /mcp 能不能挂在明文 HTTP 上：Bearer token
+// 是凭据，走明文就等于把钥匙贴在网上。TLS 开着、显式
+// allow_plain_http、或只监听回环地址时放行，其余拒绝启动。
+func mcpPlainHTTPAllowed(listenAddr string, tls, allowPlain bool) error {
+	if !plainHTTPListenerBlocked(listenAddr, tls) || allowPlain {
+		return nil
 	}
 	return fmt.Errorf("mcp 开在明文 HTTP 上，Bearer token 会明文传输；" +
 		"请开 tls，或确认只在内网/隧道里用并设置 mcp.allow_plain_http: true")
@@ -217,6 +230,13 @@ type mcpRunner struct {
 }
 
 func (r *mcpRunner) Connected(machine string) bool { return r.s.Hub.Has(machine) }
+
+// MachineMeta 每次返回当下拼出来的机器元数据：protect 清单、家目录、
+// 批准姿态都跟着 agent 最近一次 hello 和 mcp.machines 配置走——会话
+// 建立时拍下的快照不作数，agent 重连或运维收紧策略后立刻生效。
+func (r *mcpRunner) MachineMeta(machine string) *mcpsrv.Machine {
+	return r.s.mcpMachineMeta(machine)
+}
 
 // MachineAllowed 按当前数据库复核这个 MCP 客户端还能不能碰 machine。
 // mcpsrv 的机器清单是会话建立时的快照；撤权/停用客户端后，后续每个工具

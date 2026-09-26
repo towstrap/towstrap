@@ -1,6 +1,8 @@
 package accounts
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -99,5 +101,31 @@ func TestSSHGrantLifecycle(t *testing.T) {
 	// 普通密码不会被当成凭据
 	if s.UseSSHGrant("alice+default", "alicepw12345") {
 		t.Fatal("非 tso- 前缀必须拒")
+	}
+}
+
+// 只剩 1 次的 grant 被并发消费：原子扣减下只能有一个调用成功，
+// 两个都过就是凭据次数翻倍（之前查-扣分离时两个都能挤过检查）。
+func TestSSHGrantConcurrentUse(t *testing.T) {
+	s := openTest(t)
+	secret, err := s.CreateSSHGrant("alice+default", time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 16
+	var okCount atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s.UseSSHGrant("alice+default", secret) {
+				okCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if okCount.Load() != 1 {
+		t.Fatalf("uses=1 的 grant 被 %d 个并发调用同时用掉了", okCount.Load())
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/proto"
 )
 
@@ -32,11 +33,31 @@ func (s *Server) startSSH() error {
 	srv := &glssh.Server{
 		Addr: s.cfg.SSHAddr,
 		PasswordHandler: func(ctx glssh.Context, password string) bool {
-			return s.sshAuthOK(s.canonicalLogin(ctx.User()), password, ctx.RemoteAddr())
+			ok, viaGrant := s.sshAuthOK(s.canonicalLogin(ctx.User()), password, ctx.RemoteAddr())
+			if ok && viaGrant {
+				ctx.SetValue(authMethodKey{}, "grant")
+			}
+			return ok
 		},
 		PublicKeyHandler:           s.handlePublicKey,
 		KeyboardInteractiveHandler: s.handleKbdInteractive,
 		Handler:                    s.handleSSH,
+		// env 请求在会话建立前由底层库无条件攒着（它没有逐请求回调），
+		// 第一个会话请求到来时把已攒的总量核掉——超限的拒绝并关掉通道，
+		// 让那部分内存当场释放。残余：只发 env 永远不发会话请求的通道，
+		// 攒的部分由底层持有到通道关闭为止。
+		SessionRequestCallback: func(sess glssh.Session, _ string) bool {
+			env := sess.Environ()
+			total := 0
+			for _, e := range env {
+				total += len(e) + 1
+			}
+			if len(env) > maxEnvCount || total > maxEnvBytes {
+				_ = sess.Close()
+				return false
+			}
+			return true
+		},
 		// IdleTimeout 随读写活动刷新，能治未认证连接挂死（Slowloris），
 		// 但也会杀掉长时间空闲的交互会话——默认关，需要的自己开。
 		IdleTimeout: s.cfg.SSHIdleTimeout,
@@ -91,38 +112,45 @@ func (s *Server) canonicalLogin(user string) string {
 // 就能「每猜 4 次验证码重置一次」，把限速变成摆设。
 //
 // user 是完整登录名（可能带 +机器名）；认证和限速都按账号部分走，
-// 审计记完整登录名。
-func (s *Server) sshAuthOK(user, password string, remote net.Addr) bool {
+// 审计记完整登录名。第二个返回值表示「这次是靠 OAuth 一次性凭据过的」
+// ——调用方拿它给会话打标，管理面不认这种登录。
+func (s *Server) sshAuthOK(user, password string, remote net.Addr) (bool, bool) {
 	account, _ := splitUser(user)
+	ip := hostOnly(remote.String())
 	if acct, ok := s.cfg.Users.Get(account); ok && acct.TOTPEnabled {
 		// TOTP 账号的账号密码只走 kbd-interactive；但 OAuth 换来的
 		// 一次性凭据本身已是外部强认证，这里直接放行。
 		if strings.HasPrefix(password, "tso-") {
 			ok, viaGrant := s.verifyPassword(user, password, remote, "password")
 			if ok && viaGrant {
-				ip := hostOnly(remote.String())
 				s.guard.pass(account, ip)
 				s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "password", "via", "oauth")
-				return true
+				return true, true
 			}
 		}
 		// 不看密码也要烧一次 bcrypt：直接拒比密码错快得多，快慢一比就能
-		// 筛出「存在且绑了 TOTP」的账号。
+		// 筛出「存在且绑了 TOTP」的账号。但这里密码对错都不验——失败预算
+		// 只能记在来源 IP 头上（用户名是攻击者自己填的，计上会把真人
+		// 的账号桶弄脏）：换着用户名刷这条通道也有上限，刷不动。
+		if !s.guard.ipAllowed(ip) {
+			s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", "password", "reason", "locked")
+			return false, false
+		}
 		s.cfg.Users.BurnPassword(password)
-		return false
+		s.guard.failIP(ip)
+		return false, false
 	}
 	ok, viaGrant := s.verifyPassword(user, password, remote, "password")
 	if !ok {
-		return false
+		return false, false
 	}
-	ip := hostOnly(remote.String())
 	s.guard.pass(account, ip)
 	if viaGrant {
 		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "password", "via", "oauth")
 	} else {
 		s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "password")
 	}
-	return true
+	return true, viaGrant
 }
 
 // verifyPassword 校验密码并联动限速器：全局白名单 → 锁定检查 → OAuth 凭据
@@ -149,6 +177,23 @@ func (s *Server) verifyPassword(user, password string, remote net.Addr, method s
 			}
 		}
 		if machineName != "" && s.cfg.Users.UseSSHGrant(account+"+"+machineName, password) {
+			// grant 是几分钟前领的，中间账号可能已被停用或收紧了来源
+			// 白名单——快速路径也要复查，不能跳过和普通登录同款的闸门。
+			acct, ok := s.cfg.Users.Get(account)
+			reason := ""
+			switch {
+			case !ok || acct.Disabled:
+				reason = "disabled"
+			default:
+				if list, err := allow.Parse(acct.AllowIPs); err != nil || !list.AllowsAddr(remote) {
+					reason = "allow-ip"
+				}
+			}
+			if reason != "" {
+				s.guard.fail(account, ip)
+				s.audit.Log("AUTH-FAIL", "user", user, "ip", ip, "method", method, "reason", "grant-"+reason)
+				return false, false
+			}
 			s.audit.Log("OAUTH-GRANT-USE", "user", user, "ip", ip, "method", method)
 			return true, true
 		}
@@ -220,6 +265,7 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 	if !exists || !acct.TOTPEnabled || viaGrant {
 		s.guard.pass(account, ip)
 		if viaGrant {
+			ctx.SetValue(authMethodKey{}, "grant")
 			s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive", "via", "oauth")
 		} else {
 			s.audit.Log("AUTH-OK", "user", user, "ip", ip, "method", "kbd-interactive")
@@ -241,8 +287,18 @@ func (s *Server) handleKbdInteractive(ctx glssh.Context, challenger gossh.Keyboa
 }
 
 // authMethodKey 是 gliderlabs Context 里记「这次登录用了哪种认证」的键：
-// 公钥登录（给自动化用的）和密码类登录待遇不同——空闲重验只罩后者。
+// "publickey" = 自动化公钥；"grant" = OAuth 一次性授权换来的临时登录。
+// 空闲重验只罩密码类登录（公钥不算）；管理命令只认完整登录
+// （publickey 和 grant 都不算）。
 type authMethodKey struct{}
+
+// 单条会话通道上 env 变量的上限：正常客户端（含 towstrap-mcp）就几条
+// LANG/TERM；env 请求在会话建立前由底层无条件收进内存，不给上限的话
+// 一条通道能堆出几十 MB。
+const (
+	maxEnvCount = 128
+	maxEnvBytes = 64 << 10
+)
 
 // handlePublicKey 公钥登录：全局白名单 → 账号白名单/停用 → 公钥匹配。
 // 不进限速器（客户端会依次试好几把钥匙，计失败会误锁；钥匙也猜不出来），
@@ -477,29 +533,61 @@ func (s *Server) handleSSH(sess glssh.Session) {
 // 「有 MCP 请求在等人批准」写进同账号的每个终端——人正登在服务器上时
 // 立刻看得见，不用猜调用为什么挂着。按账号过滤：命令内容不跨账号泄；
 // machine 解析不出账号（不该有）时发给所有会话兜底。
+//
+// 每个会话一条带缓冲的出队列（sshNoticeQueue 深）+ 专用写 goroutine：
+// 广播只在锁里做非阻塞投递，真正把「可能堵住的网络写」放在会话自己的
+// 协程里——一个挂着不读终端的客户端不会冻结别人的登录、清理或审批提示。
+type sshOutbox struct {
+	acct string
+	w    io.Writer
+	ch   chan string
+}
+
+// sshNoticeQueue 单会话待写提示的最大积压数。提示只是提醒（批准本身
+// 照常挂着等批），满了丢新的不丢旧的——人总会看到最近一条。
+const sshNoticeQueue = 8
+
 func (s *Server) registerSSH(sess glssh.Session, account string) {
+	ob := &sshOutbox{acct: account, w: sess, ch: make(chan string, sshNoticeQueue)}
 	s.sshMu.Lock()
-	defer s.sshMu.Unlock()
 	if s.sshSess == nil {
-		s.sshSess = map[glssh.Session]string{}
+		s.sshSess = map[glssh.Session]*sshOutbox{}
 	}
-	s.sshSess[sess] = account
+	s.sshSess[sess] = ob
+	s.sshMu.Unlock()
+	go func() {
+		for line := range ob.ch {
+			if _, err := io.WriteString(ob.w, line); err != nil {
+				return // 会话死了：登记处会在 unregister 时摘掉它
+			}
+		}
+	}()
 }
 
 func (s *Server) unregisterSSH(sess glssh.Session) {
 	s.sshMu.Lock()
-	defer s.sshMu.Unlock()
+	ob := s.sshSess[sess]
 	delete(s.sshSess, sess)
+	s.sshMu.Unlock()
+	if ob != nil {
+		close(ob.ch) // 写 goroutine 排空后退出；卡在写里的由会话关闭兜底
+	}
 }
 
 func (s *Server) broadcastSSH(machine, text string) {
 	account, _ := accounts.SplitMachineID(machine)
-	line := fmt.Sprintf("\r\n\x1b[1;33m[towstrap] %s\x1b[0m\r\n", text)
+	// 文本来自 LLM 提交的命令内容，先剥掉控制字符再进终端——不然一条
+	// 恶意命令就能伪造提示、改标题甚至触发终端应答（应答会被当键盘输入
+	// 喂回 shell）。原始内容在待批文件和审计里照旧全留。
+	line := fmt.Sprintf("\r\n\x1b[1;33m[towstrap] %s\x1b[0m\r\n", auditlog.Clean(text))
 	s.sshMu.Lock()
 	defer s.sshMu.Unlock()
-	for sess, acct := range s.sshSess {
-		if account == "" || acct == account {
-			_, _ = io.WriteString(sess, line)
+	for _, ob := range s.sshSess {
+		if account == "" || ob.acct == account {
+			select {
+			case ob.ch <- line:
+			default: // 队列满就丢这条：绝不阻塞广播方和其他会话
+			}
 		}
 	}
 }
@@ -549,7 +637,15 @@ func (s *Server) reverifyTOTP(sess glssh.Session, username string, limit time.Du
 	return errors.New("TOTP 重验失败，断开会话")
 }
 
+// maxPromptLine 是密码/验证码这类提示行的长度上限：真实密码和 6 位码
+// 都远比它短。不设上限的话，一个已认证连接「流式发数据就是不换行」
+// 就能把共享进程内存越堆越大。
+const maxPromptLine = 256
+
+var errLineTooLong = errors.New("输入行超过长度上限")
+
 // readLine 从会话逐字节读一行（密码/验证码不要 bufio 缓冲，避免吞掉后续输入）。
+// 超过 maxPromptLine 还没遇到换行就报错——调用方会把整个会话断掉。
 func readLine(r io.Reader) (string, error) {
 	var b []byte
 	one := make([]byte, 1)
@@ -561,6 +657,9 @@ func readLine(r io.Reader) (string, error) {
 			}
 			if one[0] != '\r' {
 				b = append(b, one[0])
+				if len(b) > maxPromptLine {
+					return "", errLineTooLong
+				}
 			}
 		}
 		if err != nil {

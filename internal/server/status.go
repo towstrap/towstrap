@@ -22,8 +22,12 @@ type StatusReport struct {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	rep, ok := s.statusReport(r)
-	if !ok {
+	rep, ok, locked := s.statusReport(r)
+	switch {
+	case locked:
+		http.Error(w, "locked", http.StatusTooManyRequests)
+		return
+	case !ok:
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -36,19 +40,36 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // statusReport 决定看什么：管理口令看全量；机器 token 只看自己那一台
 // （普通用户没有枚举整个机群的道理，那是信息泄露）。
-func (s *Server) statusReport(r *http.Request) (StatusReport, bool) {
-	if s.cfg.AdminToken != "" && auth.Equal(r.Header.Get("X-Admin-Token"), s.cfg.AdminToken) {
-		return s.Snapshot(), true
+// 第三个返回值是「来源 IP 已锁」：错试管理口令/机器 token 都计入登录
+// 锁的 IP 预算——管理口令是人选的，不能让人无限猜。
+func (s *Server) statusReport(r *http.Request) (StatusReport, bool, bool) {
+	ip := hostOnly(r.RemoteAddr)
+	if !s.guard.ipAllowed(ip) {
+		return StatusReport{}, false, true
+	}
+	if tok := r.Header.Get("X-Admin-Token"); tok != "" {
+		if s.cfg.AdminToken != "" && auth.Equal(tok, s.cfg.AdminToken) {
+			return s.Snapshot(), true, false
+		}
+		s.guard.failIP(ip)
+		s.audit.Log("STATUS-DENY", "ip", ip, "reason", "admin-token")
+		return StatusReport{}, false, false
 	}
 	m, ok := s.cfg.Users.MachineByToken(r.Header.Get("X-Agent-Token"))
 	if !ok {
-		return StatusReport{}, false
+		s.guard.failIP(ip)
+		return StatusReport{}, false, false
+	}
+	// 机器设了 agent 来源白名单就只认名单里的来源（和 /agent、
+	// /token/refresh、/totp/*、/oauth/* 同一条闸门）。
+	if !agentIPAllowed(m, tcpAddr(r.RemoteAddr)) {
+		return StatusReport{}, false, false
 	}
 	rep := StatusReport{HTTP: s.cfg.HTTPAddr, SSH: s.cfg.SSHAddr}
 	on := s.Hub.Has(m.ID())
 	rep.Users = []UserStatus{{User: m.Username, Machine: m.ID(), Online: on}}
 	rep.OK = on
-	return rep, true
+	return rep, true, false
 }
 
 func (s *Server) Snapshot() StatusReport {

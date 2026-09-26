@@ -105,6 +105,10 @@ type RegisterReq struct {
 	Machine     string `json:"machine,omitempty"`     // 空 = 服务器的 DefaultMachine
 	Fingerprint string `json:"fingerprint,omitempty"` // 机器指纹，注册去重
 	Invite      string `json:"invite,omitempty"`      // 服务器配了 register_invite 时必填
+	// TOTP 只在 /register/machine（登录加机/换发 token）有意义：账号
+	// 已绑二因素时凭密码单独换发 token 就是把 TOTP 架空的旁路——
+	// 必须带当前 6 位码，和 SSH 登录同一门槛。
+	TOTP string `json:"totp,omitempty"`
 }
 
 type RegisterResp struct {
@@ -116,6 +120,9 @@ type RegisterResp struct {
 	// Owner 是"指纹已注册"冲突时填的既有账号名——找回提示用（用当时
 	// 设的密码 SSH 登录就能接着用）。
 	Owner string `json:"owner,omitempty"`
+	// NeedTOTP：账号已绑 TOTP 但请求没带 totp 字段——客户端看到它
+	// 补问一次当前动态码再重发（同一次请求别忘带上）。
+	NeedTOTP bool `json:"need_totp,omitempty"`
 }
 
 // TOTPBeginReq/Resp、TOTPConfirmReq/Resp、TOTPRemoveReq/Resp 是自助
@@ -125,6 +132,9 @@ type RegisterResp struct {
 // 动态码（对齐 SSH 管理命令的重验门槛）。
 type TOTPBeginReq struct {
 	Password string `json:"password"`
+	// OldCode 已绑账号换绑时在 begin 就要先验当前码——begin 会下发新
+	// 秘钥原料，只凭密码发料等于给「偷到密码的人」开了换绑通道。
+	OldCode string `json:"old_code,omitempty"`
 }
 
 type TOTPBeginResp struct {
@@ -132,7 +142,10 @@ type TOTPBeginResp struct {
 	URI     string `json:"uri"`    // otpauth:// URI（渲染二维码用）
 	Bound   bool   `json:"bound"`  // 账号已经绑过 TOTP（再绑要旧码、会覆盖）
 	Account string `json:"account,omitempty"`
-	Err     string `json:"err,omitempty"`
+	// NeedCode：已绑账号没带 old_code 时的提示位——客户端补问当前
+	// 动态码后重发 begin。
+	NeedCode bool   `json:"need_code,omitempty"`
+	Err      string `json:"err,omitempty"`
 }
 
 type TOTPConfirmReq struct {

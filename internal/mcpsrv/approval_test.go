@@ -22,6 +22,10 @@ type countingRunner struct {
 func (c *countingRunner) Run(_ context.Context, _ string, cmd string, _ []byte, _ time.Duration, _ int) (Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if p, ok := fakeResolve(cmd); ok {
+		// 路径解析是文件工具的基础设施调用，不算「被执行的命令」。
+		return Result{Stdout: p}, nil
+	}
 	c.runs = append(c.runs, cmd)
 	return Result{Stdout: "ok"}, nil
 }
@@ -30,6 +34,53 @@ func (c *countingRunner) count() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.runs)
+}
+
+// rememberedKey 把批准钉死在完整上下文上：换类型/cwd/stdin 摘要都
+// 是另一条请求，一个「同意」不能跨边界复用。尤其是 command↔terminal
+// 分桶——批过一次 run_command{bash -l} 不能放行同名交互终端。
+func TestRememberedKeyBinding(t *testing.T) {
+	base := ApprovalRequest{Machine: "m", Kind: "command", Detail: "bash -l"}
+	same := ApprovalRequest{Machine: "m", Kind: "command", Detail: "bash -l"}
+	if rememberedKey(base) != rememberedKey(same) {
+		t.Fatal("同请求应同键")
+	}
+	for name, req := range map[string]ApprovalRequest{
+		"terminal 同命令": {Machine: "m", Kind: "terminal", Detail: "bash -l"},
+		"换 cwd":        {Machine: "m", Kind: "command", Detail: "bash -l", Cwd: "/tmp"},
+		"带 stdin":      {Machine: "m", Kind: "command", Detail: "bash -s", Digest: digestOf("rm -rf /")},
+		"stdin 换了内容":   {Machine: "m", Kind: "command", Detail: "bash -s", Digest: digestOf("rm -rf /tmp")},
+		"换机器":          {Machine: "other", Kind: "command", Detail: "bash -l"},
+	} {
+		if rememberedKey(base) == rememberedKey(req) && name != "terminal 同命令" {
+			t.Errorf("%s 不应与基准同键", name)
+		}
+	}
+	// command 和 terminal 即便所有字段相同，Kind 不同必须分桶
+	term := ApprovalRequest{Machine: "m", Kind: "terminal", Detail: "bash -l"}
+	if rememberedKey(base) == rememberedKey(term) {
+		t.Error("command/terminal 必须分桶——批一次命令不能解锁交互终端")
+	}
+	// stdin 摘要参与绑定：同命令不同 stdin 是两回事
+	d1 := ApprovalRequest{Machine: "m", Kind: "command", Detail: "bash -s", Digest: digestOf("ls")}
+	d2 := ApprovalRequest{Machine: "m", Kind: "command", Detail: "bash -s", Digest: digestOf("rm -rf /")}
+	if rememberedKey(d1) == rememberedKey(d2) {
+		t.Error("stdin 不同必须分键——批了 ls 的 bash -s 不能跑 rm 的 stdin")
+	}
+}
+
+// previewOf 的输出：单行、剥掉控制字符、带摘要钉死身份。
+func TestPreviewOf(t *testing.T) {
+	p := previewOf("stdin", "rm -rf /\n\x1b[2J\x07evil")
+	if strings.ContainsAny(p, "\n\x1b\x07") {
+		t.Fatalf("预览必须剥控制字符: %q", p)
+	}
+	if !strings.Contains(p, "stdin") || !strings.Contains(p, "sha256") {
+		t.Fatalf("预览要带类型和摘要: %q", p)
+	}
+	if previewOf("stdin", "") != "" {
+		t.Fatal("空输入不产预览")
+	}
 }
 
 // TestAutoFallsBackToLocal：ask_via 不写（auto）且客户端没有弹窗能力时，

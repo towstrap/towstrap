@@ -71,3 +71,12 @@ type TerminalOpener interface {
 type MachineChecker interface {
 	MachineAllowed(machine string) bool
 }
+
+// MachineMetaProvider 是可选能力：runner 实现它时，每次要用机器元数据
+// （protect 清单、家目录、批准姿态）都重新取一份，而不是用会话建立时
+// 拍下的快照——agent 重连带上新 protect 清单、运维收紧 mcp_policy，
+// 既有会话立刻按新规矩走。stdio 模式的静态清单不实现它，mcpsrv 退回
+// cfg.Machines 那份快照。返回 nil 表示该机器当前没有新鲜元数据。
+type MachineMetaProvider interface {
+	MachineMeta(machine string) *Machine
+}

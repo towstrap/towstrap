@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
@@ -361,8 +362,18 @@ func TestWrongKeyRejected(t *testing.T) {
 	}
 	s.Close()
 
-	// 把密钥换掉再打开：token 解不开，agent 侧认证全部失效
-	if err := os.Remove(filepath.Join(dir, "users.key")); err != nil {
+	// 把密钥换成另一把合法的再打开（删掉 key 现在是直接拒启动——
+	// 见 TestKeyFileFailsClosed）：token 解不开，agent 侧认证全部失效
+	dir2 := t.TempDir()
+	otherKey := filepath.Join(dir2, "users.key")
+	if _, err := loadOrCreateKey(otherKey, false); err != nil {
+		t.Fatal(err)
+	}
+	kb, err := os.ReadFile(otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "users.key"), kb, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s2, err := Open(dbPath, filepath.Join(dir, "users.key"))
@@ -419,13 +430,63 @@ func TestTwoProcesses(t *testing.T) {
 	}
 }
 
-func TestCryptoDeterministicAndPurposeBound(t *testing.T) {
+// TestKeyFileFailsClosed 密钥文件的安全边界：库在 key 没了 → 拒绝；
+// key 读不出来（权限等，不是不存在）→ 拒绝且文件原样——静默重建等于
+// 永久销毁全部密封凭据，必须明明白白报错。
+func TestKeyFileFailsClosed(t *testing.T) {
 	dir := t.TempDir()
-	k1, err := loadOrCreateKey(filepath.Join(dir, "k"))
+	dbPath := filepath.Join(dir, "users.db")
+	keyPath := DefaultKeyPath(dbPath)
+
+	// 库已在、key 不在 → 拒绝（不重建）
+	if err := os.WriteFile(dbPath, []byte("existing-db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dbPath, keyPath); err == nil {
+		t.Fatal("账号库在而 key 丢了应拒绝启动")
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatal("拒绝时不该顺手建出新 key")
+	}
+	// 从零开始（库也删掉）→ 正常建
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dbPath, keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	k2, err := loadOrCreateKey(filepath.Join(dir, "k"))
+	s.Close()
+
+	// key 文件存在但读不出来 → 拒绝，且原文件一字节不动
+	if os.Geteuid() == 0 {
+		t.Skip("root 下 chmod 挡不住读，跳过这个分支")
+	}
+	orig, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateKey(keyPath, true); err == nil {
+		t.Fatal("读不出来的 key 不该被静默重建")
+	}
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(keyPath); !bytes.Equal(b, orig) {
+		t.Fatal("失败后 key 文件被改动了")
+	}
+}
+
+func TestCryptoDeterministicAndPurposeBound(t *testing.T) {
+	dir := t.TempDir()
+	k1, err := loadOrCreateKey(filepath.Join(dir, "k"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, err := loadOrCreateKey(filepath.Join(dir, "k"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,6 +749,10 @@ func TestOpenMigratesSSHKeys(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "users.db")
 
+	// 先把 key 建出来（库在 key 没了会被拒绝——真实升级顺序也是先有 key）
+	if _, err := loadOrCreateKey(DefaultKeyPath(dbPath), false); err != nil {
+		t.Fatal(err)
+	}
 	// 用没有 ssh_pubkeys 列的旧 schema 手工建库
 	db, err := sql.Open("sqlite", "file:"+dbPath)
 	if err != nil {

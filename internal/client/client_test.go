@@ -186,3 +186,27 @@ func TestTokenStateReload(t *testing.T) {
 		t.Fatalf("cur 应换成新 token: %q", ts.get())
 	}
 }
+
+// tokenState.fallback：换发半途失败（本地已写新 token、服务端不认）时
+// 退回上一个 token 自愈；prev 只退一次，没有 prev 返回 false。
+func TestTokenStateFallback(t *testing.T) {
+	ts := &tokenState{cur: "tsa-old"}
+	ts.set("tsa-new") // 换发：prev=tsa-old, cur=tsa-new
+	if ts.get() != "tsa-new" {
+		t.Fatalf("set 后 cur 应为新 token: %q", ts.get())
+	}
+	if !ts.fallback() {
+		t.Fatal("有 prev 应回退成功")
+	}
+	if ts.get() != "tsa-old" {
+		t.Fatalf("回退后应拿旧 token: %q", ts.get())
+	}
+	if ts.fallback() {
+		t.Fatal("prev 只退一次——再退该失败，不能在新旧间来回抖")
+	}
+	// 同值 set 不污染 prev（重试收到同一个新 token 不算再换一次）
+	ts.set("tsa-old")
+	if ts.fallback() {
+		t.Fatal("cur 没变不该产生 prev")
+	}
+}

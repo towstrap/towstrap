@@ -61,6 +61,12 @@ func TestMergeServerDefaults(t *testing.T) {
 	if m.UsersDB != "/etc/towstrap/users.db" {
 		t.Fatalf("账号库默认路径: %#v", m)
 	}
+	// allow_plain_http 是文件里的显式确认，合并不能丢——丢了等于明文
+	// 闸门报错时运维写的开关不生效。
+	m = MergeServer(Server{AllowPlainHTTP: true}, nil)
+	if !m.AllowPlainHTTP {
+		t.Fatal("MergeServer 丢了 AllowPlainHTTP")
+	}
 }
 
 func TestLoadAgentSectionAndFlat(t *testing.T) {

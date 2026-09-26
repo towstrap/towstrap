@@ -712,7 +712,7 @@ The admin token lists every machine (`machine` is the full login name); a machin
 
 ## 12. Audit logs
 
-Both sides keep their own log in `<time> <event> k=v` format, rotating to `.1` at 16MB, mode 0600, with control characters scrubbed from values.
+Both sides keep their own log in `<time> <event> k=v` format, rotating to `.1` at 16MB, mode 0600, with control characters (incl. C1 and U+2028/2029) scrubbed from values; values containing spaces, `=`, or quotes are quoted so one value can't forge a second field.
 
 **Agent side** (default `/var/lib/towstrap/audit.log` or `~/.towstrap/audit.log`):
 

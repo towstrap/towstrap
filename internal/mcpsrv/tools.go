@@ -16,6 +16,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/towstrap/towstrap/internal/notify"
 	"github.com/towstrap/towstrap/internal/version"
 )
 
@@ -33,8 +34,8 @@ type Server struct {
 	watching   map[string]bool               // 已挂上会话清理的 sessionID
 	shells     map[string]*shellSession      // machine\x00名字 -> 常驻 shell
 	terms      map[string]*terminalSession   // terminal_id -> PTY 终端
-	dialects   map[string]shellDialect
-	reapStop   chan struct{} // 非空 = 回收器在跑
+	remotes    map[string]remoteInfo         // machine -> 探测到的远端形态
+	reapStop   chan struct{}                 // 非空 = 回收器在跑
 }
 
 // New 建 Server：编译策略，runner 是命令执行后端（stdio 模式传 *Pool，
@@ -56,7 +57,7 @@ func New(cfg *Config, runner Runner) (*Server, error) {
 		remembered: make(map[string]map[string]string), pending: make(map[string]map[string]pendAsk),
 		watching: make(map[string]bool),
 		shells:   make(map[string]*shellSession), terms: make(map[string]*terminalSession),
-		dialects: make(map[string]shellDialect)}, nil
+		remotes: make(map[string]remoteInfo)}, nil
 }
 
 // Close 释放执行后端（实现方有关闭方法就调），顺手关掉所有常驻会话。
@@ -88,6 +89,19 @@ func (s *Server) machineAllowed(machine string) bool {
 		return checker.MachineAllowed(machine)
 	}
 	return true
+}
+
+// machineFor 取机器元数据：runner 实现了 MachineMetaProvider 就拿当下
+// 新鲜的一份（protect 清单、批准姿态跟着 agent 现在上报的走）；没有
+// 就用会话建立时 cfg.Machines 里的快照（stdio 模式的静态清单）。
+// 取不到新鲜数据退回快照——资格已经由 machineBlocked 单独复核过。
+func (s *Server) machineFor(machine string) *Machine {
+	if p, ok := s.runner.(MachineMetaProvider); ok {
+		if m := p.MachineMeta(machine); m != nil {
+			return m
+		}
+	}
+	return s.cfg.Machines[machine]
 }
 
 // machineBlocked 在授权已撤掉时顺带清掉这台机器留下的常驻进程：
@@ -572,7 +586,7 @@ func (s *Server) listMachines(_ context.Context, _ *mcp.CallToolRequest, _ listI
 		if s.machineBlocked(n) {
 			continue
 		}
-		m := s.cfg.Machines[n]
+		m := s.machineFor(n)
 		out.Machines = append(out.Machines, machineInfo{
 			Name: n, Description: m.Description, Roots: m.Roots,
 			Connected: s.runner.Connected(n),
@@ -592,7 +606,7 @@ func tellClient(ctx context.Context, req *mcp.CallToolRequest, machine, command 
 	_ = req.Session.Log(ctx, &mcp.LoggingMessageParams{
 		Level:  "notice",
 		Logger: "towstrap",
-		Data:   fmt.Sprintf("在 %s 执行命令：%s", machine, command),
+		Data:   fmt.Sprintf("在 %s 执行命令：%s", machine, notify.Clean(command)),
 	})
 }
 
@@ -629,8 +643,12 @@ func llmConfirmResult(ar ApprovalRequest) *mcp.CallToolResult {
 	if ar.Kind != "command" {
 		what = "操作"
 	}
-	r, _ := errResult("这个%s命中了需要用户确认的策略，刚才没有执行。请把内容转告用户、说明风险、询问是否允许：\n\n机器：%s\n%s：%s\n\n用户明确同意后，用相同参数重新调用本工具并加 confirmed=true；用户说此类操作以后都允许时再加 remember=true。没问到同意就不要设 confirmed=true。确认请求 %d 分钟内有效。",
-		what, ar.Machine, what, ar.Detail, int(llmConfirmTTL/time.Minute))
+	preview := ""
+	if ar.Preview != "" {
+		preview = "\n" + ar.Preview
+	}
+	r, _ := errResult("这个%s命中了需要用户确认的策略，刚才没有执行。请把内容转告用户、说明风险、询问是否允许：\n\n机器：%s\n%s：%s%s\n\n用户明确同意后，用相同参数重新调用本工具并加 confirmed=true；用户说此类操作以后都允许时再加 remember=true。没问到同意就不要设 confirmed=true。确认请求 %d 分钟内有效。",
+		what, ar.Machine, what, notify.Clean(ar.Detail), preview, int(llmConfirmTTL/time.Minute))
 	return r
 }
 
@@ -722,26 +740,47 @@ func (s *Server) openTermRecord(term *terminalSession, opts TerminalOptions) str
 
 // machineOpen 这台机器声明了免批准姿态（policy: open——agent hello
 // 自报或机器 yaml 里写）。deny 名单不受影响，只跳过 ask 环节。
+// 每次取当下元数据：运维收紧姿态或 agent 重连换了上报内容，
+// 既有会话立刻跟着变。
 func (s *Server) machineOpen(machine string) bool {
-	m := s.cfg.Machines[machine]
+	m := s.machineFor(machine)
 	return m != nil && m.Policy == "open"
 }
 
 // authorizeCommand 走命令策略和人工批准。返回 early != nil 时调用方直接
 // 把这个结果交回（拒绝、弹窗请求、会话内确认指引或批准环节失败）；否则
 // 返回 approval 标记和授权编号（authID 非空 = 这条命令是批了才跑的，
-// 调用方要给它留执行记录）。
-func (s *Server) authorizeCommand(ctx context.Context, req *mcp.CallToolRequest, machine, command, cwd string, confirmed, remember bool) (approval, authID string, early *mcp.CallToolResult) {
+// 调用方要给它留执行记录）。sess 是 run_command 的常驻 shell 名、stdin
+// 是要喂的内容——批准绑定到「这台机器这个会话这个工作目录这条命令这份
+// 输入」，换个 cwd/会话/stdin 再调同名命令都得重新问。
+// kind 区分操作通道：run_command 是 "command"、terminal_open 是
+// "terminal"——「记住这条」按 kind 分桶，批过一次命令不会顺手把同命令
+// 的 PTY 终端也解锁（终端一开，后续按键就不再过策略了）。
+func (s *Server) authorizeCommand(ctx context.Context, req *mcp.CallToolRequest, kind, machine, command, cwd, sess, stdin string, confirmed, remember bool) (approval, authID string, early *mcp.CallToolResult) {
 	dec, reason := s.pol.Command(command)
+	if stdin != "" && dec != Deny {
+		// stdin 是第二份「命令输入」：bash -s、python -、mysql 这类会把
+		// stdin 当脚本跑，批准界面原本只显示 command——stdin 既得过
+		// 策略，也得在批准界面里亮出来（见 ApprovalRequest.Preview）。
+		sdec, sreason := s.pol.Command(stdin)
+		if sdec == Deny {
+			s.audit("MCP-POLICY-DENY", "machine", machine, "kind", kind, "detail", command, "reason", "stdin: "+sreason)
+			r, _ := errResult("策略拒绝：stdin 内容命中 deny 规则（%s）。不要改写绕过；如确有必要，请向用户说明并由用户调整策略。", sreason)
+			return "", "", r
+		}
+		if sdec == Ask && dec != Ask {
+			dec, reason = Ask, "stdin 内容命中 ask 规则"
+		}
+	}
 	if dec == Deny {
-		s.audit("MCP-POLICY-DENY", "machine", machine, "kind", "command", "detail", command, "reason", reason)
+		s.audit("MCP-POLICY-DENY", "machine", machine, "kind", kind, "detail", command, "reason", reason)
 		r, _ := errResult("策略拒绝：%s。不要改写命令绕过；如确有必要，请向用户说明并由用户调整策略。", reason)
 		return "", "", r
 	}
 	if dec == Ask && s.machineOpen(machine) {
 		// 机器姿态 open：部署者声明这台免批准。记一条和 MCP-POLICY-DENY
 		// 对仗的事件，事后能看清是姿态放行的、不是真人批的。
-		s.audit("MCP-POLICY-OPEN", "machine", machine, "kind", "command", "detail", command)
+		s.audit("MCP-POLICY-OPEN", "machine", machine, "kind", kind, "detail", command)
 		tellClient(ctx, req, machine, command)
 		return "open", "", nil
 	}
@@ -749,7 +788,8 @@ func (s *Server) authorizeCommand(ctx context.Context, req *mcp.CallToolRequest,
 		tellClient(ctx, req, machine, command)
 		return "allowed", "", nil
 	}
-	ar := ApprovalRequest{Machine: machine, Kind: "command", Detail: command, Cwd: cwd}
+	ar := ApprovalRequest{Machine: machine, Kind: kind, Detail: command,
+		Cwd: cwd, Session: sess, Digest: digestOf(stdin), Preview: previewOf("stdin", stdin)}
 	out, askAgain, authID, err := s.approve(ctx, req, ar, confirmed, remember)
 	if askAgain {
 		return "", "", elicitRequest(ar)
@@ -801,7 +841,7 @@ func (s *Server) runCommand(ctx context.Context, req *mcp.CallToolRequest, in ru
 	}
 
 	s.watchSession(req.Session)
-	approval, authID, early := s.authorizeCommand(ctx, req, in.Machine, in.Command, in.Cwd, in.Confirmed, in.Remember)
+	approval, authID, early := s.authorizeCommand(ctx, req, "command", in.Machine, in.Command, in.Cwd, in.Session, in.Stdin, in.Confirmed, in.Remember)
 	if early != nil {
 		return early, runOut{}, nil
 	}
@@ -953,35 +993,116 @@ func (s *Server) runInSession(ctx context.Context, req *mcp.CallToolRequest, in 
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
 }
 
+// checkPath 是文件工具的统一入口审查：成员/授权 → 文本层 deny_paths
+// （原文 + 清洗形）→ 远端文件系统解析出真实路径 → 对真实路径再过一遍
+// deny_paths 和 agent 自报的禁碰清单。返回的真实路径直接拿去执行——
+// 所有别名（大小写、Unicode、符号链接、/proc/self/root）都在远端现形，
+// 白名单按文本放行过的路径执行时已是等价的真实形态。
+func (s *Server) checkPath(ctx context.Context, machine, rawPath, kind string) (resolved string, m *Machine, ri remoteInfo, early *mcp.CallToolResult, err error) {
+	if _, ok := s.cfg.Machines[machine]; !ok || s.machineBlocked(machine) {
+		r, e := errResult("机器 %q 不在配置里或当前凭据无权访问", machine)
+		return "", nil, remoteInfo{}, r, e
+	}
+	ri, rerr := s.remoteInfo(ctx, machine)
+	if rerr != nil {
+		r, e := errResult("%v", rerr)
+		return "", nil, remoteInfo{}, r, e
+	}
+	m = s.machineFor(machine)
+	win := ri.dialect.windows()
+	if !s.pol.PathFor(rawPath, win) {
+		s.audit("MCP-POLICY-DENY", "machine", machine, "kind", kind, "detail", rawPath, "reason", "deny_paths")
+		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths（私钥、凭证、agent 配置这类文件不开放）。如确有必要，请向用户说明并由用户调整策略。", rawPath)
+		return "", nil, remoteInfo{}, r, e
+	}
+	resolved, rerr = s.resolvePath(ctx, machine, rawPath, ri.dialect)
+	if rerr != nil {
+		// 解析不出真实路径就拒：没法证明它不是受保护文件的别名，
+		// 宁可误伤也不能放行别名（机器离线/目录不可达/链接环都走到这）。
+		s.audit("MCP-POLICY-DENY", "machine", machine, "kind", kind, "detail", rawPath, "reason", "resolve-failed")
+		r, e := errResult("路径 %q 无法解析（机器离线、目录不可达或链接环）：%v。文件操作只对能确认真实身份的路径放行。", rawPath, rerr)
+		return "", nil, remoteInfo{}, r, e
+	}
+	if !s.pol.PathResolved(resolved, win, ri.fold) {
+		s.audit("MCP-POLICY-DENY", "machine", machine, "kind", kind, "detail", rawPath, "resolved", resolved, "reason", "deny_paths-resolved")
+		r, e := errResult("策略拒绝：%q 解析后的真实路径 %q 命中 deny_paths（路径别名改变不了文件身份）。", rawPath, resolved)
+		return "", nil, remoteInfo{}, r, e
+	}
+	if m.ProtectedResolved(resolved, ri.fold) {
+		s.audit("MCP-POLICY-DENY", "machine", machine, "kind", kind, "detail", rawPath, "resolved", resolved, "reason", "agent-protect")
+		r, e := errResult("策略拒绝：%q 实际指向这台机器 agent 自报的禁碰文件（token/配置文件），任何路径写法都不开放。", rawPath)
+		return "", nil, remoteInfo{}, r, e
+	}
+	return resolved, m, ri, nil, nil
+}
+
+// resolvedRootsFor 把机器的 roots 经远端解析成真实路径再比对——符号链接
+// 目录也摊平成物理路径，~/x 由远端自己展开。roots 内容变了（指纹不符）
+// 才重解；解析失败的条目丢弃（那条 root 名存实亡）。
+func (s *Server) resolvedRootsFor(ctx context.Context, machine string, m *Machine, d shellDialect) []string {
+	key := strings.Join(m.Roots, "\x00")
+	s.mu.Lock()
+	ri, cached := s.remotes[machine]
+	cached = cached && ri.rootsKey == key && ri.resolvedRoots != nil
+	s.mu.Unlock()
+	if cached {
+		return ri.resolvedRoots
+	}
+	out := make([]string, 0, len(m.Roots))
+	for _, r := range m.Roots {
+		if rp, err := s.resolvePath(ctx, machine, r, d); err == nil {
+			out = append(out, rp)
+		}
+	}
+	s.mu.Lock()
+	ri = s.remotes[machine]
+	ri.rootsKey, ri.resolvedRoots = key, out
+	s.remotes[machine] = ri
+	s.mu.Unlock()
+	return out
+}
+
+// inResolvedRoots 拿解析后的输入路径对解析后的 roots 做前缀比对——
+// 两边都是文件系统认的真实形态，前缀关系即包含关系；fold（macOS/
+// Windows）把大小写/Unicode 拼法差异也折叠掉。
+func inResolvedRoots(resolved string, roots []string, windows, fold bool) bool {
+	if windows {
+		cp := cleanWinPath(resolved)
+		for _, r := range roots {
+			cr := cleanWinPath(r)
+			if cp == cr || strings.HasPrefix(cp, cr+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, r := range roots {
+		if resolved == r || strings.HasPrefix(resolved, r+"/") {
+			return true
+		}
+		if fold {
+			fp, fr := foldPath(resolved), foldPath(r)
+			if fp == fr || strings.HasPrefix(fp, fr+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) readFile(ctx context.Context, _ *mcp.CallToolRequest, in readIn) (*mcp.CallToolResult, readOut, error) {
 	in.Machine = s.resolveMachine(in.Machine)
-	m, ok := s.cfg.Machines[in.Machine]
-	if !ok || s.machineBlocked(in.Machine) {
-		r, e := errResult("机器 %q 不在配置里或当前凭据无权访问", in.Machine)
-		return r, readOut{}, e
+	resolved, _, ri, early, err := s.checkPath(ctx, in.Machine, in.Path, "read_file")
+	if early != nil {
+		return early, readOut{}, err
 	}
-	d, err := s.dialect(ctx, in.Machine)
-	if err != nil {
-		r, e := errResult("%v", err)
-		return r, readOut{}, e
-	}
-	win := d.windows()
-	if !s.pol.PathFor(in.Path, win) {
-		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "read_file", "detail", in.Path, "reason", "deny_paths")
-		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths（私钥、凭证、agent 配置这类文件不开放）。如确有必要，请向用户说明并由用户调整策略。", in.Path)
-		return r, readOut{}, e
-	}
-	if m.ProtectedFor(in.Path, win) {
-		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "read_file", "detail", in.Path, "reason", "agent-protect")
-		r, e := errResult("策略拒绝：%q 是这台机器 agent 自报的禁碰文件（token/配置文件），任何路径写法都不开放。", in.Path)
-		return r, readOut{}, e
-	}
+	win := ri.dialect.windows()
 	// 多读一个字节用来判断超限；head -c 对不存在的文件也会走 stderr 报错。
 	var cmd string
 	if win {
-		cmd = psReadCommand(in.Path, s.cfg.Limits.MaxFile+1)
+		cmd = psReadCommand(resolved, s.cfg.Limits.MaxFile+1)
 	} else {
-		cmd = fmt.Sprintf("head -c %d -- %s", s.cfg.Limits.MaxFile+1, shellPathExpr(in.Path))
+		cmd = fmt.Sprintf("head -c %d -- %s", s.cfg.Limits.MaxFile+1, shellQuote(resolved))
 	}
 	res, err := s.runner.Run(ctx, in.Machine, cmd, nil, s.cfg.Limits.Timeout, s.cfg.Limits.MaxFile+1024)
 	if err != nil {
@@ -1005,39 +1126,29 @@ func (s *Server) readFile(ctx context.Context, _ *mcp.CallToolRequest, in readIn
 
 func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in writeIn) (*mcp.CallToolResult, writeOut, error) {
 	in.Machine = s.resolveMachine(in.Machine)
-	m, ok := s.cfg.Machines[in.Machine]
-	if !ok || s.machineBlocked(in.Machine) {
-		r, e := errResult("机器 %q 不在配置里或当前凭据无权访问", in.Machine)
-		return r, writeOut{}, e
+	resolved, m, ri, early, err := s.checkPath(ctx, in.Machine, in.Path, "write_file")
+	if early != nil {
+		return early, writeOut{}, err
 	}
-	d, err := s.dialect(ctx, in.Machine)
-	if err != nil {
-		r, e := errResult("%v", err)
-		return r, writeOut{}, e
-	}
-	win := d.windows()
-	if !s.pol.PathFor(in.Path, win) {
-		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "write_file", "detail", in.Path, "reason", "deny_paths")
-		r, e := errResult("策略拒绝：路径 %q 命中 deny_paths。如确有必要，请向用户说明并由用户调整策略。", in.Path)
-		return r, writeOut{}, e
-	}
-	if m.ProtectedFor(in.Path, win) {
-		s.audit("MCP-POLICY-DENY", "machine", in.Machine, "kind", "write_file", "detail", in.Path, "reason", "agent-protect")
-		r, e := errResult("策略拒绝：%q 是这台机器 agent 自报的禁碰文件（token/配置文件），任何路径写法都不开放。", in.Path)
-		return r, writeOut{}, e
-	}
+	win, fold := ri.dialect.windows(), ri.fold
 	if len(in.Content) > s.cfg.Limits.MaxFile {
 		r, e := errResult("内容 %d 字节超过上限 %d", len(in.Content), s.cfg.Limits.MaxFile)
 		return r, writeOut{}, e
 	}
+	// roots 对解析后的真实路径判：符号链接摊开之后逃出 roots 的写法
+	// 按「根外」走批准，不再混进自动放行。roots 本身也经远端解析——
+	// 文本配置里的 /var/... 和真实路径 /private/var/... 是同一目录。
+	inRoots := inResolvedRoots(resolved, s.resolvedRootsFor(ctx, in.Machine, m, ri.dialect), win, fold)
 	var authID string // 非空 = 这次写是批了才落的，结尾要留授权会话记录
-	if !m.InRootsFor(in.Path, win) && s.machineOpen(in.Machine) {
+	if !inRoots && s.machineOpen(in.Machine) {
 		s.audit("MCP-POLICY-OPEN", "machine", in.Machine, "kind", "write_file",
-			"detail", fmt.Sprintf("写入 %s（%d 字节）", in.Path, len(in.Content)))
-	} else if !m.InRootsFor(in.Path, win) {
+			"detail", fmt.Sprintf("写入 %s（%d 字节）", resolved, len(in.Content)))
+	} else if !inRoots {
 		ar := ApprovalRequest{
 			Machine: in.Machine, Kind: "write_file",
-			Detail: fmt.Sprintf("写入 %s（%d 字节）", in.Path, len(in.Content)),
+			Detail:  fmt.Sprintf("写入 %s（%d 字节）", resolved, len(in.Content)),
+			Digest:  digestOf(in.Content), // 批准绑死内容：换内容要重批
+			Preview: previewOf("写入内容", in.Content),
 		}
 		out, askAgain, aid, err := s.approve(ctx, req, ar, in.Confirmed, in.Remember)
 		authID = aid
@@ -1054,7 +1165,7 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 		switch out {
 		case Approved, ApprovedRemember, ApprovedLLM:
 		case DeniedByUser:
-			r, e := errResult("用户拒绝了写入 %s。请向用户说明目的，由用户决定；或把目录加进机器的 roots。", in.Path)
+			r, e := errResult("用户拒绝了写入 %s。请向用户说明目的，由用户决定；或把目录加进机器的 roots。", resolved)
 			return r, writeOut{}, e
 		case Timeout:
 			r, e := errResult("等待批准超时（%s）", humanDur(s.cfg.Policy.AskTimeout))
@@ -1066,9 +1177,9 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 	}
 	var cmd string
 	if win {
-		cmd = psWriteCommand(in.Path)
+		cmd = psWriteCommand(resolved)
 	} else {
-		cmd = fmt.Sprintf("cat > %s", shellPathExpr(in.Path))
+		cmd = fmt.Sprintf("cat > %s", shellQuote(resolved))
 	}
 	res, err := s.runner.Run(ctx, in.Machine,
 		cmd, []byte(in.Content),
@@ -1082,13 +1193,13 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 		// （内容可能很大），要核对原文去机器上找文件。
 		sum := sha256.Sum256([]byte(in.Content))
 		s.recordAuthExec(authID, in.Machine, "write_file",
-			fmt.Sprintf("写入 %s（%d 字节，sha256=%x）", in.Path, len(in.Content), sum[:8]), "", "", res)
+			fmt.Sprintf("写入 %s（%d 字节，sha256=%x）", resolved, len(in.Content), sum[:8]), "", "", res)
 	}
 	if res.ExitCode != 0 {
-		r, e := errResult("写 %s 失败（exit_code=%d）：%s", in.Path, res.ExitCode, strings.TrimSpace(res.Stderr))
+		r, e := errResult("写 %s 失败（exit_code=%d）：%s", resolved, res.ExitCode, strings.TrimSpace(res.Stderr))
 		return r, writeOut{}, e
 	}
-	return textResult("已写入 %s（%d 字节）", in.Path, len(in.Content)),
+	return textResult("已写入 %s（%d 字节）", resolved, len(in.Content)),
 		writeOut{BytesWritten: len(in.Content)}, nil
 }
 
@@ -1121,7 +1232,7 @@ func (s *Server) terminalOpen(ctx context.Context, req *mcp.CallToolRequest, in 
 		return r, terminalOpenOut{}, e
 	}
 	s.watchSession(req.Session)
-	approval, authID, early := s.authorizeCommand(ctx, req, in.Machine, in.Command, in.Cwd, in.Confirmed, in.Remember)
+	approval, authID, early := s.authorizeCommand(ctx, req, "terminal", in.Machine, in.Command, in.Cwd, "", "", in.Confirmed, in.Remember)
 	if early != nil {
 		return early, terminalOpenOut{}, nil
 	}

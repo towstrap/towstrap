@@ -29,6 +29,7 @@ TOKEN="${TOWSTRAP_AGENT_TOKEN:-}"
 SERVER="${TOWSTRAP_SERVER:-$DEFAULT_SERVER}"
 SYSTEMD=0
 CHECK=0
+NOVERIFY=0
 
 usage() {
 	cat <<'EOF'
@@ -40,6 +41,7 @@ usage() {
   --systemd          装 systemd 服务：root 跑建 towstrap 用户 + 系统单元并启动；
                      普通用户建 ~/.config/systemd/user 单元（需自己 enable）
   --check            干跑：打印解析出的服务器/版本/SSH 地址后退出（不安装）
+  --no-verify        跳过 SHA256 校验（不推荐；只在校验确实拉不动时用）
   -h, --help
 EOF
 }
@@ -54,6 +56,7 @@ while [ $# -gt 0 ]; do
 	--prefix) PREFIX="${2:-}"; shift 2 ;;
 	--systemd) SYSTEMD=1; shift ;;
 	--check) CHECK=1; shift ;;
+	--no-verify) NOVERIFY=1; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) die "未知参数 $1（--help 看用法）" ;;
 	esac
@@ -113,16 +116,24 @@ if ! curl -fsSL "$relbase/$asset" -o "$tmp/$asset"; then
 	echo ">> 试旧资产名 $asset"
 	curl -fsSL "$relbase/$asset" -o "$tmp/$asset" || die "下载失败：$relbase/{towstrap,towstrap-agent}-$os-$arch"
 fi
-if curl -fsSL "$relbase/SHA256SUMS" -o "$tmp/SHA256SUMS" 2>/dev/null; then
+# 校验是硬门槛：拉不到清单/清单没这行/没哈希工具都算不过——二进制来源
+# 只有 GitHub Releases 一个，装之前必须验明正身；实在要跳过得显式
+# --no-verify。
+if [ "$NOVERIFY" = 1 ]; then
+	echo ">> --no-verify：跳过 SHA256 校验（不推荐）"
+else
+	curl -fsSL "$relbase/SHA256SUMS" -o "$tmp/SHA256SUMS" 2>/dev/null ||
+		die "拉不到 SHA256SUMS，校验过不了就不装；实在要跳过加 --no-verify"
+	grep -q " $asset\$" "$tmp/SHA256SUMS" ||
+		die "SHA256SUMS 里没有 $asset 这一行；实在要跳过加 --no-verify"
 	if command -v shasum >/dev/null 2>&1; then
 		(cd "$tmp" && grep " $asset\$" SHA256SUMS | shasum -a 256 -c -) || die "SHA256 校验失败"
 	elif command -v sha256sum >/dev/null 2>&1; then
 		(cd "$tmp" && grep " $asset\$" SHA256SUMS | sha256sum -c -) || die "SHA256 校验失败"
 	else
-		echo ">> 没有 shasum/sha256sum，跳过校验（不建议）"
+		die "找不到 shasum/sha256sum，没法校验；实在要跳过加 --no-verify"
 	fi
-else
-	echo ">> 拉不到 SHA256SUMS，跳过校验（不建议）"
+	echo ">> SHA256 校验通过"
 fi
 
 if [ -z "$PREFIX" ]; then

@@ -346,7 +346,7 @@ func TestMigrateMachinesFromOldDB(t *testing.T) {
 	keyPath := DefaultKeyPath(dbPath)
 
 	// 先造密钥，再用它 seal 两个「老 token」插进旧 schema 的库
-	key, err := loadOrCreateKey(keyPath)
+	key, err := loadOrCreateKey(keyPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,8 +16,25 @@ import (
 	"time"
 )
 
+// Clean 剥掉能折腾终端的控制字符：ESC、C1 序列起点、回车/退格这类
+// 行内覆盖符、Unicode 行分隔符；保住换行和制表——审批通知本来就分行
+// 排版。凡是把命令文本这类不可信内容打进终端/对话框的路径都过它，
+// 不然一条精心构造的命令名能在别人终端上画出假提示。
+func Clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == 0x2028 || r == 0x2029:
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // Desktop 发一条桌面通知（macOS 用 osascript，Linux 用 notify-send）。
 func Desktop(title, body string) {
+	title, body = Clean(title), Clean(body)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var cmd *exec.Cmd
@@ -49,6 +66,7 @@ const rememberLabel = "允许并不再问"
 // 返回 answered=false 表示弹不了（没图形界面、没装 zenity、对话框自己超时
 // 没人点），调用方退到普通通知。ctx 取消会杀掉对话框进程。
 func Confirm(ctx context.Context, title, body string, givingUp time.Duration) (Answer, bool) {
+	title, body = Clean(title), Clean(body)
 	switch runtime.GOOS {
 	case "darwin":
 		if _, err := exec.LookPath("osascript"); err != nil {
@@ -131,6 +149,7 @@ func Confirm(ctx context.Context, title, body string, givingUp time.Duration) (A
 // Wall 用 wall(1) 广播：headless 多用户机器上桌面通知到不了，
 // 登录着的终端总能看到。
 func Wall(msg string) {
+	msg = Clean(msg)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "wall")

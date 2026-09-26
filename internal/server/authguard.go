@@ -12,19 +12,25 @@ import (
 // 别人的正常登录。另按账号汇总一个更宽松的阈值（50 次），换着 IP 打同一
 // 账号也会被锁；代价是攻击者能故意刷失败让某个账号暂时（1 分钟起）登不上，
 // 但他本来也进不来。只在内存里：重启清零，爆破者也要从头来。
+//
+// 第三张表按裸来源 IP 记（阈值 60）：堵住「固定一个 IP、不停换用户名喷
+// 密码」的空隙——前两张表按用户名分桶，这种打法永远不触发。登录成功
+// 不清 IP 表（成功只能说明这个来源里有一个真人，不能把前面的失败抹掉）。
 type authGuard struct {
 	threshold     int           // 「账号|IP」连续失败多少次开始锁
 	userThreshold int           // 按账号汇总的阈值（换 IP 打同一账号也累计）
+	ipThreshold   int           // 按裸来源 IP 的阈值（换用户名刷也累计）
 	base          time.Duration // 首次锁定时长，此后翻倍
 	window        time.Duration // 失败计数的有效窗口，超过则从头计
 	maxLock       time.Duration
-	// maxEntries 是失败记录表的条目上限（两张表分别算）：乱喷用户名的分布式
+	// maxEntries 是失败记录表的条目上限（三张表分别算）：乱喷用户名的分布式
 	// 爆破在窗口内也能把表撑大，到顶就先清过期的、再淘汰最旧的。
 	maxEntries int
 
 	mu          sync.Mutex
 	entries     map[string]*authEntry // 键 "user|ip"
 	userEntries map[string]*authEntry // 键 user
+	ipEntries   map[string]*authEntry // 键 ip
 	lastSweep   time.Time
 }
 
@@ -38,23 +44,54 @@ func newAuthGuard() *authGuard {
 	return &authGuard{
 		threshold:     5,
 		userThreshold: 50,
+		ipThreshold:   60,
 		base:          time.Minute,
 		window:        15 * time.Minute,
 		maxLock:       time.Hour,
 		maxEntries:    65536,
 		entries:       make(map[string]*authEntry),
 		userEntries:   make(map[string]*authEntry),
+		ipEntries:     make(map[string]*authEntry),
+	}
+}
+
+// ensureMaps 惰性建表：测试里直接字面量构造的零值 guard 也能跑。
+// 调用方持锁。
+func (g *authGuard) ensureMaps() {
+	if g.entries == nil {
+		g.entries = map[string]*authEntry{}
+	}
+	if g.userEntries == nil {
+		g.userEntries = map[string]*authEntry{}
+	}
+	if g.ipEntries == nil {
+		g.ipEntries = map[string]*authEntry{}
 	}
 }
 
 func (g *authGuard) allowed(user, ip string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.ensureMaps()
 	now := time.Now()
 	if e, ok := g.entries[user+"|"+ip]; ok && !now.After(e.lockedTill) {
 		return false
 	}
 	if e, ok := g.userEntries[user]; ok && !now.After(e.lockedTill) {
+		return false
+	}
+	if e, ok := g.ipEntries[ip]; ok && !now.After(e.lockedTill) {
+		return false
+	}
+	return true
+}
+
+// ipAllowed 只查来源 IP 维度的锁：用在「没有可信账号名可核」的路径上
+// （比如 TOTP 账号的密码燃烧检查）——用户名是攻击者自己填的，不能信。
+func (g *authGuard) ipAllowed(ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if e, ok := g.ipEntries[ip]; ok && !time.Now().After(e.lockedTill) {
 		return false
 	}
 	return true
@@ -63,18 +100,41 @@ func (g *authGuard) allowed(user, ip string) bool {
 func (g *authGuard) fail(user, ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.ensureMaps()
 	now := time.Now()
 	g.failLocked(g.entries, user+"|"+ip, "user+ip", g.threshold, now)
 	g.failLocked(g.userEntries, user, "user", g.userThreshold, now)
-	if g.maxEntries > 0 {
-		if len(g.entries) >= g.maxEntries {
-			g.evictLocked(g.entries, now)
-		}
-		if len(g.userEntries) >= g.maxEntries {
-			g.evictLocked(g.userEntries, now)
-		}
-	}
+	g.failLocked(g.ipEntries, ip, "ip", g.ipThreshold, now)
+	g.budgetLocked(now)
 	g.sweepLocked(now)
+}
+
+// failIP 只记来源 IP 一次失败：认证名可疑/不存在时用（TOTP 账号的密码
+// 燃烧、管理口令试错等），不往某个具体账号头上记。
+func (g *authGuard) failIP(ip string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ensureMaps()
+	now := time.Now()
+	g.failLocked(g.ipEntries, ip, "ip", g.ipThreshold, now)
+	g.budgetLocked(now)
+	g.sweepLocked(now)
+}
+
+// budgetLocked 是三张表的容量兜底（调用方持锁）。
+func (g *authGuard) budgetLocked(now time.Time) {
+	if g.maxEntries <= 0 {
+		return
+	}
+	if len(g.entries) >= g.maxEntries {
+		g.evictLocked(g.entries, now)
+	}
+	if len(g.userEntries) >= g.maxEntries {
+		g.evictLocked(g.userEntries, now)
+	}
+	if len(g.ipEntries) >= g.maxEntries {
+		g.evictLocked(g.ipEntries, now)
+	}
 }
 
 // failLocked 在一张表里记一次失败（调用方持锁）：取/建条目、计数、到阈值
@@ -101,8 +161,11 @@ func (g *authGuard) failLocked(m map[string]*authEntry, key, scope string, thres
 func (g *authGuard) pass(user, ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.ensureMaps()
 	delete(g.entries, user+"|"+ip)
 	delete(g.userEntries, user)
+	// ipEntries 不清：一次成功只能说明这个来源里有人是本人，前面攒的
+	// 失败照样算数——不然「每成功一次就刷新 IP 预算」等于白送重试。
 }
 
 // sweepLocked 顺手清掉早过期的条目：乱喷用户名的爆破撑不大内存。
@@ -113,6 +176,7 @@ func (g *authGuard) sweepLocked(now time.Time) {
 	g.lastSweep = now
 	sweepMap(g.entries, now, g.window)
 	sweepMap(g.userEntries, now, g.window)
+	sweepMap(g.ipEntries, now, g.window)
 }
 
 func sweepMap(m map[string]*authEntry, now time.Time, window time.Duration) {

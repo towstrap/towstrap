@@ -13,6 +13,7 @@ func TestAuthGuardLockAndEscalate(t *testing.T) {
 		window:        time.Minute,
 		maxLock:       time.Hour,
 		userThreshold: 100,
+		ipThreshold:   100, // 只考「账号|IP」这道，IP 维度抬高别先触发
 		entries:       make(map[string]*authEntry),
 		userEntries:   make(map[string]*authEntry),
 	}
@@ -49,6 +50,7 @@ func TestAuthGuardPassResets(t *testing.T) {
 		window:        time.Minute,
 		maxLock:       time.Hour,
 		userThreshold: 100,
+		ipThreshold:   100,
 		entries:       make(map[string]*authEntry),
 		userEntries:   make(map[string]*authEntry),
 	}
@@ -68,6 +70,7 @@ func TestAuthGuardWindowDecay(t *testing.T) {
 		window:        30 * time.Millisecond,
 		maxLock:       time.Hour,
 		userThreshold: 100,
+		ipThreshold:   100,
 		entries:       make(map[string]*authEntry),
 		userEntries:   make(map[string]*authEntry),
 	}
@@ -88,6 +91,7 @@ func TestAuthGuardEntryCap(t *testing.T) {
 		maxLock:       time.Hour,
 		maxEntries:    5,
 		userThreshold: 1000,
+		ipThreshold:   1000,
 		entries:       make(map[string]*authEntry),
 		userEntries:   make(map[string]*authEntry),
 	}
@@ -108,6 +112,7 @@ func TestAuthGuardPerUserLock(t *testing.T) {
 	g := &authGuard{
 		threshold:     100, // 「账号|IP」这道别先触发，只看按账号那道
 		userThreshold: 50,
+		ipThreshold:   1000, // 每个 IP 只失败一次，IP 道抬高别触发
 		base:          time.Hour,
 		window:        time.Hour,
 		maxLock:       time.Hour,
@@ -126,5 +131,34 @@ func TestAuthGuardPerUserLock(t *testing.T) {
 	g.pass("alice", "10.0.0.1")
 	if !g.allowed("alice", "10.0.0.99") {
 		t.Fatal("成功登录后按账号的锁也应清掉")
+	}
+}
+
+// TestAuthGuardPerIPLock 第三道按裸来源 IP 的门：换着用户名从一个 IP 刷，
+// 每个「账号|IP」对都只失败一次、按账号的表也摊薄了，但 IP 道累计到
+// ipThreshold 照样锁——挡「每换个名就重开预算」的绕过；新用户名从这个
+// IP 来也被拒，别的 IP 不受影响。pass 不清 IP 计数（一次成功不等于
+// 前面攒的失败是假的）。
+func TestAuthGuardPerIPLock(t *testing.T) {
+	g := &authGuard{
+		threshold:     100,  // 「账号|IP」别触发——每对只失败一次
+		userThreshold: 1000, // 账号道也别触发——每个用户名只用一次
+		ipThreshold:   10,
+		base:          time.Hour,
+		window:        time.Hour,
+		maxLock:       time.Hour,
+	}
+	for i := 0; i < 10; i++ {
+		g.fail(fmt.Sprintf("spray-%02d", i), "9.9.9.9")
+	}
+	if g.allowed("never-seen", "9.9.9.9") {
+		t.Fatal("这个 IP 换了 10 个用户名试错，新名字来也该拒")
+	}
+	if !g.allowed("never-seen", "8.8.8.8") {
+		t.Fatal("别的 IP 不应被牵连")
+	}
+	g.pass("alice", "9.9.9.9")
+	if g.allowed("alice", "9.9.9.9") {
+		t.Fatal("pass 不该清 IP 计数——一次成功抹不掉攒下的失败")
 	}
 }

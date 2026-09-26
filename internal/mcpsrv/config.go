@@ -89,16 +89,25 @@ type LimitsCfg struct {
 	MaxSessions int           `yaml:"max_sessions"` // 每个 MCP 客户端会话最多几个常驻 shell，默认 8
 }
 
-// DefaultPath 是 towstrap-mcp 没给 --config 时读的配置路径。
+// DefaultPath 是 towstrap-mcp 没给 --config 时读的配置路径。HOME 没设
+// 时返回空串——Join 空 home 得到的是 cwd 相对的 .config/...，而 stdio
+// 客户端的 cwd 可能是不可信目录（克隆的仓库、CI 工作区），那里塞个
+// mcp.yaml 就会被当操作员配置加载。调用方拿到空串应提示用 --config。
 func DefaultPath() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
 	return filepath.Join(home, ".config", "towstrap", "mcp.yaml")
 }
 
 // DefaultApprovalsDir 是 approvals_dir 的缺省值，也是批准子命令在
-// 找不到配置时用的目录。
+// 找不到配置时用的目录。HOME 没设时同样返回空串（理由同上）。
 func DefaultApprovalsDir() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
 	return filepath.Join(home, ".config", "towstrap", "approvals")
 }
 
@@ -113,12 +122,21 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("解析 %s: %w", path, err)
 	}
 	cfg.Server = strings.TrimSpace(cfg.Server)
-	cfg.Key = expandTilde(cfg.Key)
-	cfg.KnownHosts = expandTilde(cfg.KnownHosts)
-	cfg.ApprovalsDir = expandTilde(cfg.ApprovalsDir)
+	if cfg.Key, err = expandTilde(cfg.Key); err != nil {
+		return nil, fmt.Errorf("配置 %s: %w", path, err)
+	}
+	if cfg.KnownHosts, err = expandTilde(cfg.KnownHosts); err != nil {
+		return nil, fmt.Errorf("配置 %s: %w", path, err)
+	}
+	if cfg.ApprovalsDir, err = expandTilde(cfg.ApprovalsDir); err != nil {
+		return nil, fmt.Errorf("配置 %s: %w", path, err)
+	}
 	cfg.ApplyDefaults()
 	if cfg.ApprovalsDir == "" {
 		cfg.ApprovalsDir = DefaultApprovalsDir()
+		if cfg.ApprovalsDir == "" {
+			return nil, fmt.Errorf("配置 %s: approvals_dir 缺省推导需要 HOME（未设置）——请写绝对路径", path)
+		}
 	}
 	if cfg.ApproveCmd == "" {
 		cfg.ApproveCmd = "towstrap-mcp approve --approvals-dir " + cfg.ApprovalsDir
@@ -220,15 +238,19 @@ func (c *Config) Validate() error {
 }
 
 // expandTilde 把开头的 ~ 换成家目录。只处理 "~/..." 和单独的 "~"，
-// "~user" 形式不支持（本机用不到）。
-func expandTilde(p string) string {
+// "~user" 形式不支持（本机用不到）。HOME 没设时绝不把 ~/x 落成
+// cwd 相对路径——那是「某个工作目录下的隐藏文件」不是用户家目录，
+// 直接报错让调用方写绝对路径。
+func expandTilde(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("%q 里的 ~ 展不开：HOME 未设置，请写绝对路径", p)
+	}
 	if p == "~" {
-		home, _ := os.UserHomeDir()
-		return home
+		return home, nil
 	}
-	if strings.HasPrefix(p, "~/") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, p[2:])
-	}
-	return p
+	return filepath.Join(home, p[2:]), nil
 }

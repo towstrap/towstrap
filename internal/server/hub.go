@@ -71,6 +71,11 @@ type agentConn struct {
 	sessions map[string]*session
 	waiters  map[string]chan error // token 换发等在途请求：ID → 应答通道
 
+	// done 在连接被拆掉时关闭：分发循环往满了的会话缓冲写时会用它
+	// 退出来（不然一个只发不读的客户端能把整机卡成摘不掉的幽灵）。
+	done      chan struct{}
+	closeOnce sync.Once
+
 	// protect/home/dir 是 agent 在 hello 里自报的禁碰文件（token、
 	// 配置文件）和它的家目录、工作目录；MCP 文件工具拿来做拒名单。
 	protect []string
@@ -127,12 +132,23 @@ func (a *agentConn) setToken(t string) {
 }
 
 func (a *agentConn) send(m proto.Msg) error {
+	b := m.Bytes()
+	// 帧上限在序列化后的传输边界拦：JSON 转义能把 64KB 的命令放大出
+	// 一大截，只看原始字段长度挡不住——超限消息会把 agent 整条连接
+	// 打断，宁可这里报错也不要发出。
+	if len(b) > proto.MaxMessageBytes {
+		return fmt.Errorf("帧太大（%d > %d），这条消息发不出去", len(b), proto.MaxMessageBytes)
+	}
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
 	// 写超时：对端不读时不能无限等——同一台机器的会话共用一个写锁。
 	_ = a.conn.SetWriteDeadline(time.Now().Add(proto.WriteWait))
-	return a.conn.WriteMessage(websocket.TextMessage, m.Bytes())
+	return a.conn.WriteMessage(websocket.TextMessage, b)
 }
+
+// dataChunk 单片 data 帧的原始载荷上限：base64 后约 44KB，离 256KB
+// 帧上限很远。大输入分片发，不指望单个调用方自觉。
+const dataChunk = 32 << 10
 
 // sendData 是给子进程喂输入的 data 帧：在 transport 边界计一次
 // bytesToAgent，pipe / hubShell / hubTerminal 三条写入路径都走这里。
@@ -140,7 +156,38 @@ func (a *agentConn) sendData(id string, b []byte) error {
 	if a.hub != nil {
 		a.hub.bytesToAgent.Add(int64(len(b)))
 	}
+	for len(b) > dataChunk {
+		if err := a.send(proto.EncodeData(id, b[:dataChunk])); err != nil {
+			return err
+		}
+		b = b[dataChunk:]
+	}
 	return a.send(proto.EncodeData(id, b))
+}
+
+// shutdown 拆掉整条连接：close(done) 先把堵在会话缓冲上的分发放出来，
+// 再关底层连接让读循环报错退出，收掉所有会话、放掉在途应答（不用等
+// timeout）。幂等——readLoop 退出、Attach 顶号、PruneInvalid 吊销、
+// Detach 收尾都会走这里。
+func (a *agentConn) shutdown() {
+	a.closeOnce.Do(func() {
+		if a.done != nil {
+			close(a.done)
+		}
+		if a.conn != nil {
+			_ = a.conn.Close()
+		}
+		a.sessMu.Lock()
+		for id, w := range a.waiters {
+			select {
+			case w <- errors.New("连接已断开"):
+			default:
+			}
+			delete(a.waiters, id)
+		}
+		a.sessMu.Unlock()
+		a.closeAll()
+	})
 }
 
 // keepalive 定期 ping：对端已经死了（收不到 pong，读超时会断）或卡住不读
@@ -150,7 +197,7 @@ func (a *agentConn) keepalive() {
 	defer t.Stop()
 	for range t.C {
 		if err := a.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(proto.WriteWait)); err != nil {
-			_ = a.conn.Close()
+			a.shutdown()
 			return
 		}
 	}
@@ -159,6 +206,11 @@ func (a *agentConn) keepalive() {
 // openShell 开会话；max > 0 时限制同一台机器的并发会话数（防一个账号在被控机
 // 上 fork 出一堆 shell）。
 func (a *agentConn) openShell(id string, req OpenReq, max int) (*session, error) {
+	// Cmd/Cwd 混进 open 帧发出去，提前卡住：超长 JSON 转义后可能超过帧上限，
+	// 到这里报个明白错，比 transport 边界「帧太大」更好定位。
+	if len(req.Cmd) > proto.MaxCommandBytes || len(req.Cwd) > proto.MaxCommandBytes {
+		return nil, fmt.Errorf("命令或工作目录太长（上限 %d 字节）", proto.MaxCommandBytes)
+	}
 	s, err := a.addSession(id, max)
 	if err != nil {
 		return nil, err
@@ -270,7 +322,7 @@ func waitReady(s *session, d time.Duration) error {
 }
 
 func (a *agentConn) readLoop() {
-	defer a.closeAll()
+	defer a.shutdown()
 	_ = a.conn.SetReadDeadline(time.Now().Add(proto.PongWait))
 	a.conn.SetPongHandler(func(string) error {
 		return a.conn.SetReadDeadline(time.Now().Add(proto.PongWait))
@@ -317,6 +369,10 @@ func (a *agentConn) readLoop() {
 			select {
 			case s.ch <- chunk{stderr: msg.S == "e", b: payload}:
 			case <-s.closed:
+			case <-a.done:
+				// 连接在拆：客户端不读导致 s.ch 堵满时不把分发循环一起
+				// 拖死——done 一关这里就能退出，机器不会变幽灵。
+				return
 			}
 		case proto.TypeErr:
 			s.setErr(msg.Err)
@@ -352,12 +408,12 @@ func NewHub(maxSessions int) *Hub {
 func (h *Hub) Attach(name, token string, conn *websocket.Conn, hi AgentHello) *agentConn {
 	h.mu.Lock()
 	if old, ok := h.agents[name]; ok {
-		_ = old.conn.Close()
-		old.closeAll()
+		old.shutdown()
 		slog.Info("agent replaced", "id", name)
 	}
 	a := newAgent(name, token, conn, hi)
 	a.hub = h
+	a.done = make(chan struct{})
 	h.agents[name] = a
 	h.mu.Unlock()
 
@@ -408,7 +464,7 @@ func (h *Hub) PruneInvalid(check func(name, token string) bool) []string {
 			continue
 		}
 		slog.Warn("agent revoked", "id", e.name)
-		_ = e.a.conn.Close()
+		e.a.shutdown()
 		revoked = append(revoked, e.name)
 	}
 	return revoked
@@ -419,7 +475,7 @@ func (h *Hub) Detach(conn *websocket.Conn) {
 	defer h.mu.Unlock()
 	for name, a := range h.agents {
 		if a.conn == conn {
-			a.closeAll()
+			a.shutdown()
 			delete(h.agents, name)
 			slog.Info("agent disconnected", "id", name)
 			return

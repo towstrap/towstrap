@@ -16,6 +16,7 @@ import (
 
 	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/allow"
+	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
 	"github.com/towstrap/towstrap/internal/monitor"
@@ -374,6 +375,7 @@ func runServer(args []string) int {
 		AgentDefaults:     string(agentDefaults),
 		Register:          cfg.Register,
 		RegisterInvite:    cfg.RegisterInvite,
+		AllowPlainHTTP:    cfg.AllowPlainHTTP,
 		MaxSessions:       cfg.MaxSessions,
 		MaxConns:          cfg.MaxConns,
 		MaxConnsPerIP:     cfg.MaxConnsPerIP,
@@ -1030,7 +1032,10 @@ func usageMachine() {
   towstrap-server machine add    账号 机器名 [--agent-allow-ip 地址]... [--admin] [通用选项]
                                加一台机器并打印它的 agent token（只显示一次）。
                                SSH 登录名随之变成 账号+机器名（如 alice+build）。
-  towstrap-server machine list   [账号] [通用选项]                列机器（不给账号列全部）
+  towstrap-server machine list   [账号] [--show-tokens] [--admin] [通用选项]
+                               列机器（不给账号列全部）。token 默认只显首尾；
+                               --show-tokens 看明文：单账号要账号本人密码确认，
+                               跨账号整列必须 --admin，两种情况都记审计
   towstrap-server machine set    账号 机器名 [--agent-allow-ip 地址]...
                                [--clear-agent-allow]
                                [--oauth-only | --no-oauth-only]   只收 OAuth 凭据
@@ -1118,13 +1123,18 @@ func machineAdd(args []string) int {
 func machineList(args []string) int {
 	fs := flag.NewFlagSet("machine list", flag.ExitOnError)
 	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	auditLog := fs.String("audit-log", "", "")
+	admin := fs.Bool("admin", false, "")
+	showTokens := fs.Bool("show-tokens", false, "")
 	rest := parseMix(fs, args)
 	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
 	if !ok {
 		return 2
 	}
+	env.auditPath = cliAuditPath(*auditLog, *configPath)
 	var machines []accounts.Machine
-	if user := firstArg(rest); user != "" {
+	user := firstArg(rest)
+	if user != "" {
 		if _, exists := env.store.Get(user); !exists {
 			slog.Error(accounts.ErrNotFound.Error() + ": " + user)
 			return 2
@@ -1139,6 +1149,21 @@ func machineList(args []string) int {
 		fmt.Println("没有机器；用 towstrap-server machine add 账号 机器名 加一台")
 		return 0
 	}
+	if *showTokens {
+		// 批量看明文 token 是敏感操作：单账号列 = 账号本人确认（或 --admin
+		// 跳过）；跨账号整列只许 --admin（没法逐个验主人），两种都记审计。
+		if user != "" {
+			if !ownerOrAdmin(env, user, "*", "MACHINE-LIST-TOKENS-ADMIN", *admin) {
+				return 2
+			}
+		} else if !*admin {
+			fmt.Fprintln(os.Stderr, "跨账号列 token 只能管理员操作：加 --admin（会写一条审计）")
+			return 2
+		} else {
+			slog.Warn("以管理员身份导出全部机器 token，已记审计")
+			auditAdminAction(env.auditPath, "MACHINE-LIST-TOKENS-ADMIN", "scope", "all")
+		}
+	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "账号\t机器\t登录名\tagent来源\tOAuth\ttoken\t创建于")
 	for _, m := range machines {
@@ -1150,11 +1175,27 @@ func machineList(args []string) int {
 		if m.OAuthOnly {
 			oauthState = "仅OAuth"
 		}
+		tok := maskToken(m.Token)
+		if *showTokens {
+			tok = m.Token
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.Username, m.Name, m.ID(), ips, oauthState, m.Token, m.CreatedAt.Format("2006-01-02 15:04"))
+			m.Username, m.Name, m.ID(), ips, oauthState, tok, m.CreatedAt.Format("2006-01-02 15:04"))
 	}
 	tw.Flush()
+	if !*showTokens {
+		fmt.Println("（token 只显示首尾几位：单台明文用 machine token 账号 机器名；整列加 --show-tokens，单账号要本人密码、跨账号要 --admin）")
+	}
 	return 0
+}
+
+// maskToken 把 agent token 脱敏成「头4位…尾4位」：够认得出是哪台机器，
+// 又不能让拿到清单的人冒充 agent。
+func maskToken(t string) string {
+	if len(t) <= 10 {
+		return "***"
+	}
+	return t[:4] + "…" + t[len(t)-4:]
 }
 
 func machineSet(args []string) int {
@@ -1610,9 +1651,14 @@ func mcpPending(args []string) int {
 		return 0
 	}
 	for _, p := range list {
+		// Machine/Kind/Detail/Preview 是 LLM 给的原文——打进管理终端
+		// 前过一遍清洗，不然一条带转义序列的「命令」能画假提示清屏。
 		fmt.Printf("%s  %s  %-8s  %s  （等了 %s）\n",
-			p.ID, p.Machine, p.Kind, p.Detail,
+			p.ID, auditlog.Clean(p.Machine), auditlog.Clean(p.Kind), auditlog.Clean(p.Detail),
 			time.Since(p.Created).Round(time.Second))
+		if p.Preview != "" {
+			fmt.Printf("    ↳ %s\n", auditlog.Clean(p.Preview))
+		}
 	}
 	fmt.Println("\n批准：towstrap-server mcp approve [--remember] <id>|--all；拒绝：towstrap-server mcp deny <id>|--all")
 	return 0

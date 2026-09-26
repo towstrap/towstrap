@@ -61,8 +61,10 @@ func RefreshURL(server string) (string, error) {
 	return u.String(), nil
 }
 
-// PlainCheck 明文 ws:// 且目标不是本机回环时必须显式 AllowPlain——
-// 账号密码会走这条连接，不能裸奔出本机。
+// PlainCheck 明文传输（ws:// 或 http://）且目标不是本机回环时必须显式
+// AllowPlain——账号密码/token 会走这条连接，不能裸奔出本机。http://
+// 和 ws:// 一样明文；url.Parse 会把 scheme 归一成小写，WS:// 这类
+// 拼写绕不过。
 func PlainCheck(server string, allowPlain bool) error {
 	if allowPlain {
 		return nil
@@ -71,7 +73,7 @@ func PlainCheck(server string, allowPlain bool) error {
 	if err != nil {
 		return err
 	}
-	if u.Scheme != "ws" {
+	if u.Scheme != "ws" && u.Scheme != "http" {
 		return nil
 	}
 	host := u.Hostname()
@@ -81,7 +83,7 @@ func PlainCheck(server string, allowPlain bool) error {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	return fmt.Errorf("密码不能走明文 ws://，请用 wss:// 或确认内网后加 --allow-plain")
+	return fmt.Errorf("密码/token 不能走明文 %s://——请用 wss://（或 https://）；确认只在内网/隧道里用时加 --allow-plain", u.Scheme)
 }
 
 // secretReader 读密码/验证码：终端不回显，否则按行读；两次读共享一个

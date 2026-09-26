@@ -87,10 +87,13 @@ func warnIfRoot() {
 }
 
 // tokenState 是 agent 当前用的 token：服务器换发成功后 onToken 就地更新，
-// 每次重连前还会重读 token 文件（手动改过文件的也认）。
+// 每次重连前还会重读 token 文件（手动改过文件的也认）。prev 记着上一个
+// token——换发是「先写本地文件、再让服务端提交」的两步，服务端那步失败
+// 后本地拿新 token 永远 401，prev 兜底让下轮重连退回旧 token 自愈。
 type tokenState struct {
-	mu  sync.Mutex
-	cur string
+	mu   sync.Mutex
+	cur  string
+	prev string
 }
 
 func (t *tokenState) get() string {
@@ -101,8 +104,23 @@ func (t *tokenState) get() string {
 
 func (t *tokenState) set(tok string) {
 	t.mu.Lock()
+	if tok != t.cur {
+		t.prev = t.cur
+	}
 	t.cur = tok
 	t.mu.Unlock()
+}
+
+// fallback 在服务端拒了当前 token 时退回上一个：有 prev 则换上并把 prev
+// 清掉（只退一次，避免新旧都无效时来回抖），没有 prev 返回 false。
+func (t *tokenState) fallback() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.prev == "" {
+		return false
+	}
+	t.cur, t.prev = t.prev, ""
+	return true
 }
 
 // reloadFrom 重读 token 文件：内容变了（非空且和当前不同）就换上并返回
@@ -175,6 +193,17 @@ func Run(cfg Config) error {
 		}
 		start := time.Now()
 		if err := dialOnce(cfg, p, tokens); err != nil {
+			if errors.Is(err, errTokenRejected) && tokens.fallback() {
+				// 换发半途失败：本地文件已是新 token、服务端还认旧的。
+				// 把 prev 写回文件（reloadFrom 下轮会再读），用旧 token
+				// 重连自愈；prev 只退一次，服务端真换了库也不会死循环。
+				if cfg.TokenFile != "" {
+					if werr := writeTokenFile(cfg.TokenFile, tokens.get()); werr != nil {
+						slog.Error("回退 token 写文件失败", "err", werr)
+					}
+				}
+				slog.Warn("新 token 未被服务端接受，已回退旧 token 重试")
+			}
 			slog.Error("agent disconnected", "err", err)
 		}
 		if time.Since(start) >= time.Minute {
@@ -184,6 +213,10 @@ func Run(cfg Config) error {
 		delay = backoff(delay)
 	}
 }
+
+// errTokenRejected 标记握手被服务器以 401 拒绝——Run 循环据此触发
+// prev token 回退（换发半途失败的自愈路径）。
+var errTokenRejected = errors.New("token rejected")
 
 // backoff 每失败一轮等待时长翻倍，封顶 30 秒。
 func backoff(cur time.Duration) time.Duration {
@@ -306,10 +339,10 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 	}
 	conn, resp, err := dialer.Dial(u.String(), hdr)
 	if err != nil {
-		// 401 = 服务器明确不认这个 token（换过/作废）：给一句能看懂的提示，
-		// 重连退避照常。
+		// 401 = 服务器明确不认这个 token（换过/作废）：包一层哨兵错误，
+		// Run 循环认它做 prev 回退自愈，提示照旧能看懂。
 		if errors.Is(err, websocket.ErrBadHandshake) && resp != nil && resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("服务器拒绝了 token（可能已被更换或作废），请检查 token 文件")
+			return fmt.Errorf("服务器拒绝了 token（可能已被更换或作废）：%w", errTokenRejected)
 		}
 		return err
 	}
@@ -320,10 +353,24 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 
 	// Home/Dir 随 hello 上报：服务器拿它们把 MCP 文件工具收到的 ~/
 	// 和相对路径解析成绝对路径，才能和 ProtectPaths 精确对上。
+	// 上报前先过 EvalSymlinks：服务器把用户输入也解成文件系统真实路径
+	// 才比对——/var→/private/var、链接目录这类两边必须同一形态。
+	canon := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return p
+	}
+	protect := make([]string, len(cfg.ProtectPaths))
+	for i, p := range cfg.ProtectPaths {
+		protect[i] = canon(p)
+	}
 	home, _ := os.UserHomeDir()
+	home = canon(home)
 	wd, _ := os.Getwd()
+	wd = canon(wd)
 	if err := a.send(proto.Msg{T: proto.TypeHello, Name: cfg.ID, Ver: version.String(),
-		Protect: cfg.ProtectPaths, Home: home, Dir: wd, MCPPol: cfg.MCPPolicy}); err != nil {
+		Protect: protect, Home: home, Dir: wd, MCPPol: cfg.MCPPolicy}); err != nil {
 		return err
 	}
 	slog.Info("connected", "id", cfg.ID, "server", u.String())

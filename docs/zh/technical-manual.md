@@ -307,6 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 | `public_url` | string | 空 | 对外 wss:// 地址，生成安装命令用 / `--public-url` |
 | `tls` | bool | `false` | HTTPS/WSS / `--tls` |
 | `cert` / `key` | string | 空 | 证书 / `--cert` `--key`；空则自签到 `./tls_cert.pem` `./tls_key.pem` |
+| `allow_plain_http` | bool | `false` | 明文 HTTP + 非回环监听时拒绝启动的放行开关；确认内网/隧道才开（`mcp.allow_plain_http` 同效） |
 | `allow_ips` | []string | 空 | 全局白名单 / `--allow-ip`（可重复） |
 | `idle_verify` | duration | `30m` | TOTP 空闲重验阈值，`0` 关 / `--idle-verify` |
 | `min_agent_version` | string | 空 | agent 版本下限 / `--min-agent-version` |
@@ -427,7 +428,7 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 
 ## 13. 审计事件参考
 
-格式 `<RFC3339时间> <事件> k=v`；`cmd` 超 512 字节截断；值中控制字符被清洗。
+格式 `<RFC3339时间> <事件> k=v`；`cmd` 超 512 字节截断；值中控制字符（含 C1、U+2028/2029）被清洗，值含空格/`=`/引号时整值加引号（防止一个值伪造出第二个字段）。
 
 **服务器侧**（`server-audit.log`）：
 

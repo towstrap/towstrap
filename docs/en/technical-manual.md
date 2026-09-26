@@ -307,6 +307,7 @@ Execution goes through `mcpRunner.Run`: the machine must be in the client's gran
 | `public_url` | string | empty | public `wss://` address for install hints / `--public-url` |
 | `tls` | bool | `false` | HTTPS/WSS / `--tls` |
 | `cert` / `key` | string | empty | certs / `--cert` `--key`; empty self-signs to `./tls_cert.pem` `./tls_key.pem` |
+| `allow_plain_http` | bool | `false` | override for the plaintext+non-loopback start refusal; set only for intranet/tunnel (same effect as `mcp.allow_plain_http`) |
 | `allow_ips` | []string | empty | global allowlist / `--allow-ip` (repeatable) |
 | `idle_verify` | duration | `30m` | TOTP idle re-verify threshold, `0` off / `--idle-verify` |
 | `min_agent_version` | string | empty | agent version floor / `--min-agent-version` |

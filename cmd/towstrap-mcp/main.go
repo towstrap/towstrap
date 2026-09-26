@@ -18,26 +18,37 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
 	"github.com/towstrap/towstrap/internal/version"
 )
 
 func main() {
 	cfgPath := mcpsrv.DefaultPath()
+	approvalsDir := ""
 	args := os.Args[1:]
-	// 先摘出 --config，剩下的第一个词是子命令。
+	// 先摘出 --config / --approvals-dir，剩下的第一个词是子命令。
+	// --approvals-dir 是批准命令的指路牌（通知里提示的批准命令就带着
+	// 它），approve/deny/pending 三个子命令都认。
 	rest := args[:0]
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--config" && i+1 < len(args) {
+		switch {
+		case args[i] == "--config" && i+1 < len(args):
 			cfgPath = args[i+1]
 			i++
-			continue
+		case args[i] == "--approvals-dir" && i+1 < len(args):
+			approvalsDir = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--approvals-dir="):
+			approvalsDir = strings.TrimPrefix(args[i], "--approvals-dir=")
+		default:
+			rest = append(rest, args[i])
 		}
-		rest = append(rest, args[i])
 	}
 	args = rest
 
@@ -49,7 +60,7 @@ func main() {
 	case "serve":
 		serve(cfgPath)
 	case "pending":
-		pending(cfgPath)
+		pending(cfgPath, approvalsDir)
 	case "approve", "deny":
 		var id string
 		var all, rem bool
@@ -65,7 +76,7 @@ func main() {
 				}
 			}
 		}
-		settle(cfgPath, sub, id, all, rem)
+		settle(cfgPath, approvalsDir, sub, id, all, rem)
 	case "connect":
 		connect(cfgPath, args[1:])
 	case "version":
@@ -74,9 +85,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "未知子命令 %q\n\n", sub)
 		fmt.Fprintf(os.Stderr, `用法：
   towstrap-mcp [--config 路径] [serve]    起 stdio MCP server（默认）
-  towstrap-mcp [--config 路径] pending    列出等待批准的请求
-  towstrap-mcp [--config 路径] approve [--remember] <id>|--all   批准（--remember：本会话内相同命令不再问）
-  towstrap-mcp [--config 路径] deny <id>|--all      拒绝
+  towstrap-mcp [--config 路径] [--approvals-dir 目录] pending    列出等待批准的请求
+  towstrap-mcp [--approvals-dir 目录] approve [--remember] <id>|--all   批准（--remember：本会话内相同命令不再问）
+  towstrap-mcp [--approvals-dir 目录] deny <id>|--all      拒绝
   towstrap-mcp connect ...                把 towstrap skill 装进本机 AI 编码助手
                                         （connect help 看细项）
   towstrap-mcp version                    打印版本
@@ -85,21 +96,38 @@ func main() {
 	}
 }
 
-// loadForCLI 给 pending/approve/deny 找 approvals_dir：--config 给了就必须
-// 能读；没给就试默认路径，读不了用缺省目录（反正子命令只是往里面写文件）。
-func loadForCLI(cfgPath string) *mcpsrv.Config {
-	cfg, err := mcpsrv.LoadConfig(cfgPath)
-	if err == nil {
-		return cfg
+// loadForCLI 给 pending/approve/deny 找 approvals_dir：--approvals-dir
+// 直接指定最优先；--config 给了就必须能读；没给就试默认路径，读不了
+// 用缺省目录（反正子命令只是往里面写文件）。
+// HOME 没设时默认路径/缺省目录都推导不出来——明说原因，别去读 cwd
+// 相对路径（cwd 可能是别人给的目录，里面塞个 mcp.yaml 就成了配置）。
+func loadForCLI(cfgPath, approvalsDir string) *mcpsrv.Config {
+	if approvalsDir != "" {
+		return &mcpsrv.Config{ApprovalsDir: approvalsDir}
 	}
-	if cfgPath != mcpsrv.DefaultPath() {
-		fmt.Fprintf(os.Stderr, "读配置 %s 失败: %v\n", cfgPath, err)
+	if cfgPath != "" {
+		cfg, err := mcpsrv.LoadConfig(cfgPath)
+		if err == nil {
+			return cfg
+		}
+		if cfgPath != mcpsrv.DefaultPath() {
+			fmt.Fprintf(os.Stderr, "读配置 %s 失败: %v\n", cfgPath, err)
+			os.Exit(1)
+		}
+	}
+	dir := mcpsrv.DefaultApprovalsDir()
+	if dir == "" {
+		fmt.Fprintln(os.Stderr, "HOME 未设置，批准目录推导不出来——请用 --config 指定带 approvals_dir 的 mcp.yaml")
 		os.Exit(1)
 	}
-	return &mcpsrv.Config{ApprovalsDir: mcpsrv.DefaultApprovalsDir()}
+	return &mcpsrv.Config{ApprovalsDir: dir}
 }
 
 func serve(cfgPath string) {
+	if cfgPath == "" {
+		slog.Error("HOME 未设置，默认配置路径推导不出来——请用 --config 显式指定 mcp.yaml")
+		os.Exit(1)
+	}
 	cfg, err := mcpsrv.LoadConfig(cfgPath)
 	if err != nil {
 		slog.Error("读配置失败", "path", cfgPath, "err", err)
@@ -125,8 +153,8 @@ func serve(cfgPath string) {
 	}
 }
 
-func pending(cfgPath string) {
-	cfg := loadForCLI(cfgPath)
+func pending(cfgPath, approvalsDir string) {
+	cfg := loadForCLI(cfgPath, approvalsDir)
 	list, err := mcpsrv.Pending(cfg.ApprovalsDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读批准目录失败: %v\n", err)
@@ -137,15 +165,20 @@ func pending(cfgPath string) {
 		return
 	}
 	for _, p := range list {
+		// Detail/Machine/Preview 是 LLM 给的原文——打进终端前过一遍
+		// 清洗，不然一条带转义序列的「命令」能在审批人终端上画假提示。
 		fmt.Printf("%s  %s  %-8s  %s  （等了 %s）\n",
-			p.ID, p.Machine, p.Kind, p.Detail,
+			p.ID, auditlog.Clean(p.Machine), auditlog.Clean(p.Kind), auditlog.Clean(p.Detail),
 			time.Since(p.Created).Round(time.Second))
+		if p.Preview != "" {
+			fmt.Printf("    ↳ %s\n", auditlog.Clean(p.Preview))
+		}
 	}
 	fmt.Println("\n批准：towstrap-mcp approve [--remember] <id>|--all；拒绝：towstrap-mcp deny <id>|--all")
 }
 
-func settle(cfgPath, verb, id string, all, rem bool) {
-	cfg := loadForCLI(cfgPath)
+func settle(cfgPath, approvalsDir, verb, id string, all, rem bool) {
+	cfg := loadForCLI(cfgPath, approvalsDir)
 	var n int
 	var err error
 	if verb == "approve" {

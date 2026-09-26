@@ -801,6 +801,47 @@ func TestStatusScopeByCredential(t *testing.T) {
 	}
 }
 
+// /status 的管理口令是人选的短口令：错试必须累计进来源 IP 的锁定预算，
+// 不能让人无限猜。打满预算后同一来源连正确口令都拒（429）。
+func TestStatusAdminTokenThrottle(t *testing.T) {
+	srv, httpPort, _, _ := startServerOpt(t, server.Config{AdminToken: "s3cret"})
+	_ = srv
+
+	try := func(tok string) int {
+		t.Helper()
+		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/status", httpPort), nil)
+		if tok != "" {
+			req.Header.Set("X-Admin-Token", tok)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 先确认对的是 503（认证通过但没有机器在线）、错的 401
+	if c := try("s3cret"); c != 503 {
+		t.Fatalf("正确口令应 503（空机群）, got %d", c)
+	}
+	if c := try("wrong"); c != 401 {
+		t.Fatalf("错误口令应 401, got %d", c)
+	}
+	// 打满 IP 预算（60 次；第一次错误已计）
+	for i := 0; i < 70; i++ {
+		if c := try("wrong"); c == 429 {
+			// 已锁：正确口令也应被拒
+			if c2 := try("s3cret"); c2 != 429 {
+				t.Fatalf("锁定后正确口令也应 429, got %d", c2)
+			}
+			return
+		}
+	}
+	t.Fatal("连错 70 次还没触发 IP 锁定")
+}
+
 // TestServerAuditLog 服务器侧持久审计：认证成败、agent 上下线、会话开关都落盘。
 func TestServerAuditLog(t *testing.T) {
 	audit := filepath.Join(t.TempDir(), "server-audit.log")

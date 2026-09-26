@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -68,6 +70,11 @@ type Config struct {
 	// RegisterInvite 非空时注册要带邀请码。
 	Register       bool
 	RegisterInvite string
+	// AllowPlainHTTP：HTTP 口明文开在非回环地址上时的显式确认——
+	// /register、/totp/*、/token/refresh、/oauth/*、/agent 全在这条通道
+	// 收发密码和 token，明文 + 非回环监听没这个确认就拒绝启动。
+	// MCPAllowPlainHTTP 表态的是同一回事，任一个开都算数。
+	AllowPlainHTTP bool
 
 	// MCP 非 nil 时在 HTTP 口挂 Streamable HTTP 的 MCP 服务（路径 MCPPath，
 	// 默认 /mcp）。MCP.Machines 在这里只当元数据用（说明、roots）；实际
@@ -102,7 +109,7 @@ type Server struct {
 	mcpAuditAt map[string]time.Time // MCP-SESSION 审计去重窗口
 
 	sshMu   sync.Mutex
-	sshSess map[glssh.Session]string // 活跃交互 SSH 会话 → 账号（待批提示广播用）
+	sshSess map[glssh.Session]*sshOutbox // 活跃交互 SSH 会话 → 出队列（待批提示广播用）
 
 	oauth *oauthFlow // nil = 未配置 OAuth
 
@@ -150,12 +157,26 @@ func New(cfg Config) *Server {
 // 未开启监控时恒为 0。
 func (s *Server) MonitorDropped() int64 { return s.mon.Dropped() }
 
+// agentIPAllowed 复核这个调用的来源是否过得了机器的 agent_allow_ips：
+// 空名单放行，解析失败/不在名单都拒（fail-closed）。和 /agent 的
+// CheckAgentIP 同款判定，只是不写 agent_last_ip——token 复用型的
+// HTTP 端点不该为一次读取改数据库。
+func agentIPAllowed(m accounts.Machine, remote net.Addr) bool {
+	if len(m.AgentAllowIPs) == 0 {
+		return true
+	}
+	list, err := allow.Parse(m.AgentAllowIPs)
+	return err == nil && list.AllowsAddr(remote)
+}
+
 func (s *Server) Run() error {
-	// Bearer token 不能走明文出公网：起监听之前先拦。
-	if s.cfg.MCP != nil {
-		if err := mcpPlainHTTPAllowed(s.cfg.HTTPAddr, s.cfg.TLS, s.cfg.MCPAllowPlainHTTP); err != nil {
-			return err
-		}
+	// 凭据不能走明文出公网：整个 HTTP 口都收发密码/token（/register、
+	// /totp/*、/token/refresh、/oauth/*、/agent、/mcp），明文 + 非回环
+	// 监听默认拒绝启动；确认只在内网/隧道里用时显式 allow_plain_http。
+	// mcp.allow_plain_http 是旧开关，表态的是同一回事，任一个开都算数。
+	plainOK := s.cfg.AllowPlainHTTP || (s.cfg.MCP != nil && s.cfg.MCPAllowPlainHTTP)
+	if plainHTTPListenerBlocked(s.cfg.HTTPAddr, s.cfg.TLS) && !plainOK {
+		return fmt.Errorf("HTTP 监听开在明文非回环地址 %q 上：/register、/totp/*、/token/refresh、/agent 都会明文传凭据；请开 tls，或确认只在内网/隧道里用并设置 allow_plain_http: true", s.cfg.HTTPAddr)
 	}
 	// 监控事件同理：ws:// 明文只允许回环，否则要显式确认。
 	if s.mon != nil {

@@ -24,13 +24,32 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-latest
+    # 挂进 release 环境：在仓库 Settings → Environments 给 release 加
+    # required reviewers（或把 MINISIGN_KEY 挪进这个环境的 secrets），
+    # 打标签 alone 就够不着发布——光有 v* 标签不算数，得环境闸放行。
+    environment: release
     steps:
+      # fetch-depth 0：祖先校验需要完整提交历史。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
+      # 标签指的提交必须在主干上：不然任何能推 v* 标签的人都能把
+      # 私有分支的代码发成签名产物（审计证实 tag+VERSION 字符串匹配
+      # 这道闸是谁都能满足的）。
+      - name: Tag must point at a default-branch commit
+        run: |
+          def="${{ github.event.repository.default_branch }}"
+          git fetch --no-tags origin "$def"
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || {
+            echo "::error::tag $GITHUB_REF_NAME 指的提交不在 $def 主干上——发布只能从主干打标签"
+            exit 1
+          }
 
       # 标签是唯一版本来源；VERSION 文件必须和标签一致，不一致直接失败，
       # 防止「打了个 v0.3.0 但仓库里还写 0.2.0」两边漂移。

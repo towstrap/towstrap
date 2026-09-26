@@ -104,6 +104,14 @@ func TestPlainCheck(t *testing.T) {
 		{"ws://remote.example.com", false, true},
 		{"ws://10.0.0.1:8080", true, false},
 		{"wss://remote.example.com", false, false},
+		// http:// 同样是明文，拼写不能绕过闸门；大写 scheme 也一样。
+		{"http://10.0.0.1:8080", false, true},
+		{"http://remote.example.com", false, true},
+		{"http://127.0.0.1:8080", false, false},
+		{"HTTP://10.0.0.1:8080", false, true},
+		{"WS://10.0.0.1:8080", false, true},
+		{"https://remote.example.com", false, false},
+		{"http://10.0.0.1:8080", true, false},
 	}
 	for _, c := range cases {
 		err := plainCheck(c.server, c.allowPlain)

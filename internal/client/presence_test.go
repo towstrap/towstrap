@@ -123,8 +123,9 @@ func TestPresenceStartup(t *testing.T) {
 	if !strings.Contains(got, "AGENT-START version=0.3.0 id=box server=wss://srv:443") {
 		t.Fatalf("缺启动记录: %q", got)
 	}
-	if !strings.Contains(got, "shell=/bin/bashrm -rf /") {
-		t.Fatalf("shell 参数应去掉换行: %q", got)
+	// 换行剥掉后值里带空格 → 按审计格式约定整值加引号
+	if !strings.Contains(got, `shell="/bin/bashrm -rf /"`) {
+		t.Fatalf("shell 参数应去换行并加引号: %q", got)
 	}
 	if !strings.Contains(got, "insecure=true quiet=false") {
 		t.Fatalf("应记录 insecure/quiet: %q", got)

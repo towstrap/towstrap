@@ -117,7 +117,34 @@ func (s *Server) installServerURL(r *http.Request) string {
 	if r.TLS != nil {
 		scheme = "wss"
 	}
-	return scheme + "://" + r.Host
+	host := cleanHost(r.Host)
+	if host == "" {
+		// Host 头不干净时不回显——宁可退回监听地址也不让客户端
+		// 控制渲染出来的安装命令。
+		return scheme + "://" + s.cfg.HTTPAddr
+	}
+	return scheme + "://" + host
+}
+
+// cleanHost 把请求方给的 Host 收成干净形态：只放行主机名/IPv6 合法的
+// 字符集（字母数字 . _ - : [ ]），其他写法返回空串。r.Host 可能被客户端
+// 控制（absolute-form 请求行还绕得过 Go 的 Host 校验），而它要进安装
+// 脚本和落地页——$()、< > 这类字符混进去就是命令注入/插标记，白名单
+// 字符集里这些一个都没有。
+func cleanHost(h string) string {
+	if h == "" || len(h) > 253 {
+		return ""
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+			c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_' ||
+			c == ':' || c == '[' || c == ']'
+		if !ok {
+			return ""
+		}
+	}
+	return h
 }
 
 // sshPort 从配置的 SSH 监听地址里取端口号，给落地页和安装脚本结尾的

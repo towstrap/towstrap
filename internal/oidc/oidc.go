@@ -47,7 +47,12 @@ type Provider struct {
 	userinfoURL string
 	jwksURL     string
 	hc          *http.Client
+	jwks        *jwksStore // JWKS 缓存；WithRedirect 的副本共享同一份
+}
 
+// jwksStore 单独成指针结构体：WithRedirect 要值拷贝 Provider，锁和
+// 缓存表不能跟着复制。
+type jwksStore struct {
 	mu   sync.Mutex
 	keys map[string]crypto.PublicKey
 }
@@ -110,7 +115,17 @@ func Discover(ctx context.Context, cfg Config) (*Provider, error) {
 		userinfoURL: doc.UserinfoURL,
 		jwksURL:     doc.JWKSURL,
 		hc:          hc,
+		jwks:        &jwksStore{},
 	}, nil
+}
+
+// WithRedirect 返回一个换了 redirect_uri 的浅副本：端点、HTTP 客户端、
+// JWKS 缓存都共享。redirect_uri 按请求现算的场景用（配置没钉死时每个
+// 请求各自推导，不能把第一个请求的 Host 记一辈子）。
+func (p *Provider) WithRedirect(redirect string) *Provider {
+	q := *p
+	q.cfg.RedirectURL = redirect
+	return &q
 }
 
 // AuthorizeURL 拼浏览器跳转地址。state 防 CSRF、nonce 防 id_token 重放，
@@ -321,9 +336,9 @@ func (p *Provider) jwksKey(ctx context.Context, kid string) (crypto.PublicKey, e
 }
 
 func (p *Provider) jwksKeyCached(kid string) (crypto.PublicKey, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if k, ok := p.keys[kid]; ok {
+	p.jwks.mu.Lock()
+	defer p.jwks.mu.Unlock()
+	if k, ok := p.jwks.keys[kid]; ok {
 		return k, nil
 	}
 	return nil, fmt.Errorf("JWKS 里没有 kid=%s", kid)
@@ -395,8 +410,8 @@ func (p *Provider) refreshJWKS(ctx context.Context) error {
 			}
 		}
 	}
-	p.mu.Lock()
-	p.keys = keys
-	p.mu.Unlock()
+	p.jwks.mu.Lock()
+	p.jwks.keys = keys
+	p.jwks.mu.Unlock()
 	return nil
 }

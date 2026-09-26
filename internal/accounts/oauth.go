@@ -189,6 +189,17 @@ func (s *Store) UseSSHGrant(machine, secret string) bool {
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(secret)) != nil {
 		return false
 	}
-	_, _ = s.db.Exec(`UPDATE ssh_grants SET uses_left = uses_left - 1 WHERE pub_id = ?`, rest[:dot])
+	// 次数扣减必须原子：并发下两个请求都能读到 uses_left>0，谁先拿到
+	// 条件 UPDATE 的影响行才算数——不然限用 1 次的凭据能被同时刷两次。
+	res, err := s.db.Exec(
+		`UPDATE ssh_grants SET uses_left = uses_left - 1
+		 WHERE pub_id = ? AND uses_left > 0 AND expires_at > ?`,
+		rest[:dot], time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return false
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return false // 并发扣光了（或刚好过期）：这次不算数
+	}
 	return true
 }

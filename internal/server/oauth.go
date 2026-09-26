@@ -57,15 +57,17 @@ const (
 )
 
 // oauthFlow 持有 OIDC 提供方（懒初始化）和全部进行中的授权。
+// redirect_uri 不记忆：没配 redirect_url/public_url 时按每次请求各自
+// 推导——首个请求把它钉死的话，谁抢到第一次谁就能把所有人的回调
+// 指到自己的域名（审计证实：宽容 IdP 会真把 code 送去）。
 type oauthFlow struct {
 	s *Server
 
-	mu         sync.Mutex
-	prov       *oidc.Provider
-	provErrAt  time.Time // 上次发现失败的时间；一分钟内不重复打 IdP
-	redirectTo string    // 推导出来的 redirect_uri（首个请求定下来）
-	pend       map[string]*oauthPending
-	byState    map[string]*oauthPending
+	mu        sync.Mutex
+	prov      *oidc.Provider
+	provErrAt time.Time // 上次发现失败的时间；一分钟内不重复打 IdP
+	pend      map[string]*oauthPending
+	byState   map[string]*oauthPending
 }
 
 func newOAuthFlow(s *Server) *oauthFlow {
@@ -102,40 +104,39 @@ func (f *oauthFlow) oauthBase(r *http.Request) string {
 	if r != nil && r.TLS != nil {
 		scheme = "https"
 	}
+	// Host 头是客户端给的，redirect_uri 会带去 IdP——只认干净主机名，
+	// 不干净的退回监听地址（让管理员配 public_url 才是正道）。
 	if r != nil {
-		return scheme + "://" + r.Host
+		if host := cleanHost(r.Host); host != "" {
+			return scheme + "://" + host
+		}
 	}
 	return "http://" + f.s.cfg.HTTPAddr
 }
 
 // provider 懒初始化 OIDC 发现；失败结果缓存一分钟，避免每个回调都去
-// 打挂掉的 IdP。
+// 打挂掉的 IdP。返回的 Provider 已按本次请求套上 redirect_uri。
 func (f *oauthFlow) provider(r *http.Request) (*oidc.Provider, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.prov != nil {
-		return f.prov, nil
-	}
 	if time.Since(f.provErrAt) < oauthProvErrRetry {
 		return nil, fmt.Errorf("IdP 发现暂不可用")
 	}
-	if f.redirectTo == "" {
-		f.redirectTo = f.oauthBase(r) + "/oauth/callback"
+	if f.prov == nil {
+		cfg := f.s.cfg.OAuth
+		p, err := oidc.Discover(r.Context(), oidc.Config{
+			Issuer:       cfg.Issuer,
+			ClientID:     cfg.ClientID,
+			ClientSecret: cfg.ClientSecret,
+			Scopes:       cfg.Scopes,
+		})
+		if err != nil {
+			f.provErrAt = time.Now()
+			return nil, err
+		}
+		f.prov = p
 	}
-	cfg := f.s.cfg.OAuth
-	p, err := oidc.Discover(r.Context(), oidc.Config{
-		Issuer:       cfg.Issuer,
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-		RedirectURL:  f.redirectTo,
-		Scopes:       cfg.Scopes,
-	})
-	if err != nil {
-		f.provErrAt = time.Now()
-		return nil, err
-	}
-	f.prov = p
-	return p, nil
+	return f.prov.WithRedirect(f.oauthBase(r) + "/oauth/callback"), nil
 }
 
 // sweep 清掉过期的授权条目（随请求惰性执行，不起后台协程）。
@@ -160,6 +161,13 @@ func (s *Server) handleOAuthRequest(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.cfg.Users.MachineByToken(r.Header.Get("X-Agent-Token"))
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// 和 /token/refresh、/totp/* 同一条闸门：这台机器设了 agent 来源
+	// 白名单就也约束 OAuth 发起——token 挪到名单外的来源用一样拒。
+	if !agentIPAllowed(m, tcpAddr(r.RemoteAddr)) {
+		s.audit.Log("OAUTH-DENY", "machine", m.ID(), "ip", hostOnly(r.RemoteAddr), "reason", "agent-allow")
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	f := s.oauth
@@ -318,6 +326,12 @@ func (s *Server) handleOAuthResult(w http.ResponseWriter, r *http.Request) {
 	m, ok := s.cfg.Users.MachineByToken(r.Header.Get("X-Agent-Token"))
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// 取回的是 SSH 凭据——同样受机器 agent 白名单约束。
+	if !agentIPAllowed(m, tcpAddr(r.RemoteAddr)) {
+		s.audit.Log("OAUTH-DENY", "machine", m.ID(), "ip", hostOnly(r.RemoteAddr), "reason", "agent-allow")
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	f := s.oauth

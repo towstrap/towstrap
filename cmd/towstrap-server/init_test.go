@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/towstrap/towstrap/internal/config"
 )
 
 func TestNormPublicURL(t *testing.T) {
@@ -117,6 +119,50 @@ func TestWriteServerYAML_Preserves(t *testing.T) {
 	// 幂等：同值再来一遍
 	if writeServerYAML(p, true, "wss://new.example.com", true, true, nil) {
 		t.Error("同值重跑应该返回没变化")
+	}
+}
+
+// 扁平写法的老文件（键直接铺顶层）：新键必须也写顶层。往它追加
+// server: 小节会让那些顶层键全部被 LoadServer 忽略（tls/allow_ips/
+// admin_token 静默失效）。
+func TestWriteServerYAML_Flat(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "server.yaml")
+	orig := `# 扁平写法
+http: 127.0.0.1:7880
+ssh: :7822
+tls: true
+allow_ips: [10.0.0.0/8]
+`
+	if err := os.WriteFile(p, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !writeServerYAML(p, true, "wss://flat.example.com", true, true, nil) {
+		t.Fatal("扁平文件应该写成功")
+	}
+	b, _ := os.ReadFile(p)
+	s := string(b)
+	// 顶层键：原有保留 + 新键进顶层；不能长出 server: 小节
+	var root map[string]any
+	if err := yaml.Unmarshal(b, &root); err != nil {
+		t.Fatal(err)
+	}
+	if root["tls"] != true || root["http"] != "127.0.0.1:7880" {
+		t.Fatalf("扁平键丢了: %v", root)
+	}
+	if root["public_url"] != "wss://flat.example.com" || root["register"] != true {
+		t.Fatalf("新键没落到顶层: %v", root)
+	}
+	if _, hasServer := root["server"]; hasServer {
+		t.Fatalf("扁平文件不该出现 server: 顶层键:\n%s", s)
+	}
+	// LoadServer 能读回全量（扁平+新键都在）
+	cfg, err := config.LoadServer(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TLS || cfg.PublicURL != "wss://flat.example.com" || !cfg.Register {
+		t.Fatalf("LoadServer 读回不对: %+v", cfg)
 	}
 }
 

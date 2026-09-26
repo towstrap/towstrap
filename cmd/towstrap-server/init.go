@@ -89,18 +89,15 @@ func runInit(args []string) int {
 		}
 	}
 
-	// 现状：能读就读（没有会现场建最小文件）。
-	// 注意 yaml 是 server: 包一层的，得套个壳解，直接 Unmarshal 到
-	// config.Server 永远解不出东西。
+	// 现状：能读就读（没有会现场建最小文件）。LoadServer 两种写法都认
+	// （server: 小节 / 顶层扁平键）——直接 Unmarshal 一个 {Server} 壳会
+	// 把扁平文件的现状全部看成零值，默认值提示会把真配置盖掉。
 	cur := config.Server{}
 	exists := false
-	if b, err := os.ReadFile(path); err == nil {
+	if _, err := os.ReadFile(path); err == nil {
 		exists = true
-		var w struct {
-			Server config.Server `yaml:"server"`
-		}
-		if yaml.Unmarshal(b, &w) == nil {
-			cur = w.Server
+		if c, err := config.LoadServer(path); err == nil {
+			cur = c
 		}
 	}
 	fmt.Fprintf(os.Stderr, "配置文件：%s\n", path)
@@ -187,17 +184,12 @@ func runInit(args []string) int {
 		fmt.Fprintln(os.Stderr, ">> 配置没变化")
 	}
 
-	// 重新读最终配置拿 users_db / ssh 端口
+	// 重新读最终配置拿 users_db / ssh 端口（扁平/嵌套都认）
 	final := config.Server{SSH: ":7822"}
-	if b, err := os.ReadFile(path); err == nil {
-		var w struct {
-			Server config.Server `yaml:"server"`
-		}
-		if yaml.Unmarshal(b, &w) == nil {
-			final = w.Server
-			if final.SSH == "" {
-				final.SSH = ":7822"
-			}
+	if c, err := config.LoadServer(path); err == nil {
+		final = c
+		if final.SSH == "" {
+			final.SSH = ":7822"
 		}
 	}
 	db := *usersDB
@@ -317,13 +309,31 @@ func writeServerYAML(path string, exists bool, publicURL string, setReg bool, re
 	}
 	srv := yamlMapGet(doc, "server")
 	if srv == nil {
-		srv = &yaml.Node{Kind: yaml.MappingNode}
-		doc.Content = append(doc.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Value: "server"}, srv)
+		// 老文件可能是扁平写法（键直接铺顶层）：往它追加 server: 小节
+		// 会让那些顶层键全部静默失效——LoadServer 只要见到 server:
+		// 是 mapping 就只认它。扁平文件就把新键也写在顶层。
+		if hasFlatServerKeys(doc) {
+			srv = doc
+			fmt.Fprintln(os.Stderr, ">> 配置是扁平写法（键在顶层），新键写到顶层——格式保持原样")
+		} else {
+			srv = &yaml.Node{Kind: yaml.MappingNode}
+			doc.Content = append(doc.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "server"}, srv)
+		}
 	}
 	if srv.Kind != yaml.MappingNode {
 		fmt.Fprintln(os.Stderr, "server: 不是 mapping，没敢动")
 		return false
+	}
+	if srv != doc {
+		// server: 小节存在但顶层还躺着扁平键——那些键已经不生效了，
+		// 说一声免得运维以为 tls/allow_ips 还在起作用。
+		for k := range flatServerKeys {
+			if yamlMapGet(doc, k) != nil {
+				fmt.Fprintf(os.Stderr, ">> 注意：顶层有扁平键（%s 等）被 server: 小节遮住不生效——建议挪进 server: 段\n", k)
+				break
+			}
+		}
 	}
 
 	changed := false
@@ -387,6 +397,30 @@ func writeServerYAML(path string, exists bool, publicURL string, setReg bool, re
 		return false
 	}
 	return true
+}
+
+// flatServerKeys 是服务端配置在扁平写法下会出现在顶层的键（只收服务端
+// 专有的；audit_log/mirror_idle 这类和 agent 共用的不算——不然一份纯
+// agent.yaml 会被当成扁平服务端配置）。
+var flatServerKeys = map[string]bool{
+	"http": true, "ssh": true, "host_key": true, "tls": true,
+	"cert": true, "key": true, "users_db": true, "users_key": true,
+	"admin_token": true, "public_url": true, "allow_ips": true,
+	"idle_verify": true, "max_sessions": true, "max_conns": true,
+	"max_conns_per_ip": true, "ssh_idle_timeout": true,
+	"ssh_max_timeout": true, "min_agent_version": true,
+	"agent_defaults": true, "register": true, "register_invite": true,
+	"allow_plain_http": true, "mcp": true, "monitor": true, "oauth": true,
+}
+
+// hasFlatServerKeys 判断这份顶层 mapping 是否在用扁平写法写服务端配置。
+func hasFlatServerKeys(doc *yaml.Node) bool {
+	for k := range flatServerKeys {
+		if yamlMapGet(doc, k) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func yamlMapGet(m *yaml.Node, key string) *yaml.Node {
