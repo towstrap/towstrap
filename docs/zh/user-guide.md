@@ -272,6 +272,16 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 注意单元里是 `ProtectSystem=true` 而不是 `full`：full 会把 `/etc` 挂成只读，token 换发时 agent 重写不了 token 文件。
 
+### launchd（macOS）
+
+安装脚本加 `--launchd` 即注册 launchd 服务：普通用户写 `~/Library/LaunchAgents/com.towstrap.agent.plist` 并 `launchctl bootstrap gui/$UID` 加载（`RunAtLoad`+`KeepAlive`，日志在 `~/.towstrap/towstrap.log`）；root 写 `/Library/LaunchDaemons/` 系统守护项（日志 `/var/log/towstrap-agent.log`——注意这等于把远程会话开成 root shell）。升级重装时已加载的服务会 `kickstart -k` 重启生效；没 token 时只写 plist 不加载，`towstrap register` 建号后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` 拉起。
+
+卸载：`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist`（或 `system` 域 + sudo）后删 plist。
+
+### 状态查看
+
+`towstrap status` 一条命令回答「装完了到底跑没跑」：进程存活（pid/启动时长）、与服务器连接状态（握手时间、拨号次数、上次断开原因）、活跃远程会话与镜像终端数、agent.yaml 与 token 文件就位情况、系统服务（systemd/launchd/计划任务）注册状态。没在跑时直接给出启动指引。退出码三档可进脚本：`0` 在跑且已连上、`3` 在跑未连上、`1` 没在跑；`-q` 静默只给退出码。
+
 ### 被控端感知
 
 agent 默认让机器主人能感知到远程访问：

@@ -51,6 +51,8 @@ func main() {
 		os.Exit(runTOTP(args[2:]))
 	case "update":
 		os.Exit(runUpdate(args[2:]))
+	case "status":
+		os.Exit(runStatus(args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -80,6 +82,7 @@ func usage() {
                                        （install.sh 会把它软链成 mirror，直接敲 mirror work）
   towstrap update [--version vX.Y.Z] [--check]   自升级：从官方 Release 拉新版，
                                        核 SHA256 后替换自身；服务托管的自动重启
+  towstrap status [-q]               看这台机器上的 agent 跑没跑、连没连上
   towstrap version
 
 选项:
@@ -142,11 +145,20 @@ func runAgent(args []string) int {
 	// 位置参数没有意义——拼错的子命令会落到这里，不拦就当成启动
 	// agent 跑起来了，报错比误解安全。
 	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "未知参数 %q——是不是想打某个子命令？（oauth/register/totp/mirror/update/version）\n", fs.Args())
+		fmt.Fprintf(os.Stderr, "未知参数 %q——是不是想打某个子命令？（oauth/register/totp/mirror/update/status/version）\n", fs.Args())
 		return 2
 	}
 
 	var file config.Agent
+	if *configPath == "" {
+		// 不带 --config 时自动用安装脚本落的默认位置（root→/etc/towstrap，
+		// 用户→~/.config/towstrap，Windows→%LOCALAPPDATA%\TowStrap）：
+		// 装完裸跑 towstrap 就能起，配置不是必需品而是默认值。
+		if d := config.DefaultAgentPath(); fileExists(d) {
+			*configPath = d
+			slog.Info("未带 --config，用默认安装位置", "config", d)
+		}
+	}
 	if *configPath != "" {
 		var err error
 		file, err = config.LoadAgent(*configPath)
@@ -259,6 +271,11 @@ func resolveAgentToken(flagToken, flagFile, envToken, yamlToken, yamlFile string
 		return tok, "配置 agent_token_file " + yamlFile, yamlFile, nil
 	}
 	return "", "", "", fmt.Errorf("必须提供 agent token：--agent-token、--agent-token-file 文件、环境变量 TOWSTRAP_AGENT_TOKEN 或配置文件 agent_token/agent_token_file")
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 // absPath 把用户给的路径清洗成绝对路径（相对路径按当前工作目录解析），

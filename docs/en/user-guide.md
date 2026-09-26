@@ -273,6 +273,16 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 Note the unit uses `ProtectSystem=true`, not `full`: `full` mounts `/etc` read-only, which would break the atomic token-file rewrite during rotation.
 
+### launchd (macOS)
+
+`install.sh --launchd` registers a launchd service: for a regular user it writes `~/Library/LaunchAgents/com.towstrap.agent.plist` and loads it via `launchctl bootstrap gui/$UID` (`RunAtLoad`+`KeepAlive`, log at `~/.towstrap/towstrap.log`); as root it writes a `/Library/LaunchDaemons/` daemon instead (log `/var/log/towstrap-agent.log` — note this exposes remote sessions as a root shell). On reinstall, an already-loaded service is restarted via `kickstart -k` so the new binary takes effect; without a token only the plist is written — load it after `towstrap register` with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist`.
+
+Unload: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` (or the `system` domain with sudo), then delete the plist.
+
+### Status
+
+`towstrap status` answers "is the agent actually running after install": process liveness (pid/uptime), server connection state (last handshake, dial count, last disconnect reason), active remote sessions and mirrors, whether `agent.yaml` and the token file are in place, and service-manager registration (systemd/launchd/scheduled task). When it isn't running it prints how to start it. Exit codes for scripting: `0` running and connected, `3` running but not connected, `1` not running; `-q` suppresses output.
+
 ### On-machine visibility
 
 The agent keeps the machine's owner in the loop by default:

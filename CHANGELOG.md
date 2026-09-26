@@ -1,5 +1,14 @@
 # Changelog
 
+## 未发布
+
+### 新增
+
+- **`towstrap status` 子命令**：显示本机 agent 跑没跑、连没连上服务器、上次断开原因、活跃远程会话/镜像数。数据走本机 mirror.sock 的 `status` 操作（实时权威），socket 不应答时退到进程表探测，再查 systemd/launchd/计划任务状态和 agent.yaml 凭据就位情况，没在跑时给启动指引。退出码：0 已连上、3 在跑未连、1 没在跑；`-q` 静默
+- **裸跑 `towstrap` 自动加载默认配置**：不带 `--config` 时按安装脚本落点找 agent.yaml（root→/etc/towstrap，用户→~/.config/towstrap，Windows→%LOCALAPPDATA%\TowStrap），装完直接 `towstrap` 即起
+- **`install.sh --launchd`（macOS 服务化）**：root 写 /Library/LaunchDaemons 守护项，普通用户写 ~/Library/LaunchAgents 并 `launchctl bootstrap`；已加载时 `kickstart -k` 重启让升级生效；无 token 时写 plist 不加载
+- mirror.sock 新增 `status` 操作；root 连他人 agent socket 降为受限连接，只放行 status 只读查询
+
 ## v0.3.5（2026-09-26）
 
 ### 修复

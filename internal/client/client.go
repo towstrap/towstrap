@@ -160,8 +160,9 @@ func ConnectOnce(cfg Config) error {
 	}
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
-	serveMirrorSock(newMirrors(cfg, p), p)
-	return dialOnce(cfg, p, &tokenState{cur: cfg.AgentToken})
+	st := newConnState(cfg.ID, cfg.Server)
+	serveMirrorSock(newMirrors(cfg, p), p, st)
+	return dialOnce(cfg, p, &tokenState{cur: cfg.AgentToken}, st)
 }
 
 func Run(cfg Config) error {
@@ -175,7 +176,8 @@ func Run(cfg Config) error {
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
 	//镜像终端登记处和本机 socket 都建在连接循环外：服务器断线期间
 	//镜像和本机接入照常活着。
-	serveMirrorSock(newMirrors(cfg, p), p)
+	st := newConnState(cfg.ID, cfg.Server)
+	serveMirrorSock(newMirrors(cfg, p), p, st)
 	slog.Info("towstrap agent 运行中（远程访问，本机可感知）",
 		"server", cfg.Server, "shell", cfg.Shell, "insecure", cfg.Insecure,
 		"audit_log", p.path, "notify", !cfg.Quiet)
@@ -192,7 +194,8 @@ func Run(cfg Config) error {
 			slog.Info("token 文件已更新，改用新 token", "path", cfg.TokenFile)
 		}
 		start := time.Now()
-		if err := dialOnce(cfg, p, tokens); err != nil {
+		if err := dialOnce(cfg, p, tokens, st); err != nil {
+			st.disconnected(err)
 			if errors.Is(err, errTokenRejected) && tokens.fallback() {
 				// 换发半途失败：本地文件已是新 token、服务端还认旧的。
 				// 把 prev 写回文件（reloadFrom 下轮会再读），用旧 token
@@ -309,7 +312,8 @@ func (a *agent) closeAll() {
 	a.sessMu.Unlock()
 }
 
-func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
+func dialOnce(cfg Config, p *presence, tokens *tokenState, st *connState) error {
+	st.dialing()
 	u, err := url.Parse(cfg.Server)
 	if err != nil {
 		return err
@@ -374,6 +378,7 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState) error {
 		return err
 	}
 	slog.Info("connected", "id", cfg.ID, "server", u.String())
+	st.connected()
 	return a.loop()
 }
 

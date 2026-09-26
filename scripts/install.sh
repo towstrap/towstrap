@@ -28,6 +28,7 @@ PREFIX=""
 TOKEN="${TOWSTRAP_AGENT_TOKEN:-}"
 SERVER="${TOWSTRAP_SERVER:-$DEFAULT_SERVER}"
 SYSTEMD=0
+LAUNCHD=0
 CHECK=0
 NOVERIFY=0
 
@@ -39,8 +40,10 @@ usage() {
   --server wss://..  服务器地址（也可用 TOWSTRAP_SERVER；默认官方服务器）
   --version vX.Y.Z   版本，默认与下发服务器同版本（GitHub 直拉时 latest）
   --prefix 目录      安装目录，默认 /usr/local/bin（可写）或 ~/.local/bin
-  --systemd          装 systemd 服务：root 跑建 towstrap 用户 + 系统单元并启动；
+  --systemd          装 systemd 服务（Linux）：root 跑建 towstrap 用户 + 系统单元并启动；
                      普通用户建 ~/.config/systemd/user 单元（需自己 enable）
+  --launchd          装 launchd 服务（macOS）：root 写 LaunchDaemon 常驻并加载；
+                     普通用户写 ~/Library/LaunchAgents 并加载
   --check            干跑：打印解析出的服务器/版本/SSH 地址后退出（不安装）
   --no-verify        跳过 SHA256 校验（不推荐；只在校验确实拉不动时用）
   -h, --help
@@ -56,6 +59,7 @@ while [ $# -gt 0 ]; do
 	--version) VERSION="${2:-}"; shift 2 ;;
 	--prefix) PREFIX="${2:-}"; shift 2 ;;
 	--systemd) SYSTEMD=1; shift ;;
+	--launchd) LAUNCHD=1; shift ;;
 	--check) CHECK=1; shift ;;
 	--no-verify) NOVERIFY=1; shift ;;
 	-h|--help) usage; exit 0 ;;
@@ -322,15 +326,67 @@ EOF
 	fi
 fi
 
+if [ "$LAUNCHD" = 1 ]; then
+	[ "$os" = darwin ] || die "--launchd 只在 macOS 上用（Linux 用 --systemd）"
+	label=com.towstrap.agent
+	if [ "$(id -u)" = 0 ]; then
+		plist="/Library/LaunchDaemons/$label.plist"
+		domain="system"
+		logpath="/var/log/towstrap-agent.log"
+	else
+		plist="$HOME/Library/LaunchAgents/$label.plist"
+		domain="gui/$(id -u)"
+		logpath="$HOME/.towstrap/towstrap.log"
+		mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.towstrap"
+	fi
+	cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$label</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$PREFIX/towstrap</string>
+		<string>--config</string>
+		<string>$agentyaml</string>
+	</array>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>ThrottleInterval</key><integer>5</integer>
+	<key>StandardOutPath</key><string>$logpath</string>
+	<key>StandardErrorPath</key><string>$logpath</string>
+</dict>
+</plist>
+EOF
+	chmod 644 "$plist"
+	if [ "$(id -u)" = 0 ]; then
+		chown root:wheel "$plist"
+		echo ">> 注意：LaunchDaemon 以 root 跑 agent——远程会话拿到的是 root shell"
+	fi
+	if launchctl print "$domain/$label" >/dev/null 2>&1; then
+		# 已加载 = 升级重装：kickstart -k 重启，新二进制才生效
+		launchctl kickstart -k "$domain/$label"
+		echo ">> launchd 服务已重启，新二进制生效（日志 ${logpath}）"
+	elif [ "$have_token" = 1 ] || [ -f "$tokenfile" ]; then
+		launchctl bootstrap "$domain" "$plist"
+		echo ">> launchd 服务已加载启动（日志 ${logpath}；查状态 launchctl print $domain/$label）"
+	else
+		# 没 token 加载必崩退（KeepAlive 会刷重启循环）——plist 照写，
+		# 等 register 拿到 token 再加载。
+		echo ">> plist 已写好；没 token 先别加载：跑 towstrap register 建号后 launchctl bootstrap $domain $plist"
+	fi
+fi
+
 echo ""
 if [ "$have_token" = 0 ] && [ ! -f "$tokenfile" ]; then
 	echo "完成（未提供 token）。下一步建号拿凭据："
 	echo "  towstrap register --server $SERVER   # 服务器开了自助注册时"
 	echo "或把管理员签发的 token 写入 $tokenfile 后直接跑："
-	echo "  towstrap --config $agentyaml"
+	echo "  towstrap   （会自动加载 ${agentyaml}）"
 else
 	echo "完成。没装服务的话这样跑："
-	echo "  towstrap --config $agentyaml"
+	echo "  towstrap   （自动加载 ${agentyaml}；查状态：towstrap status）"
 	echo "或直接用旗标："
 	echo "  towstrap --server $SERVER --agent-token-file $tokenfile"
 fi

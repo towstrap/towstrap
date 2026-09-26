@@ -482,7 +482,7 @@ func TestMirrorSock(t *testing.T) {
 	m := newMirrorManager("/bin/sh")
 	cli, srv := net.Pipe()
 	defer cli.Close()
-	go serveMirrorConn(srv, m, nil)
+	go serveMirrorConn(srv, m, nil, newConnState("t", "wss://t"), false)
 	dec := json.NewDecoder(cli)
 	enc := json.NewEncoder(cli)
 
@@ -502,7 +502,7 @@ func TestMirrorSock(t *testing.T) {
 	// attach：新建名为 work 的 cat
 	cli, srv = net.Pipe()
 	defer cli.Close()
-	go serveMirrorConn(srv, m, nil)
+	go serveMirrorConn(srv, m, nil, newConnState("t", "wss://t"), false)
 	dec = json.NewDecoder(cli)
 	enc = json.NewEncoder(cli)
 	if err := enc.Encode(mirrorSockMsg{Op: "attach", Name: "work", Cmd: "cat", Cols: 80, Rows: 24}); err != nil {
@@ -551,7 +551,7 @@ func TestMirrorSock(t *testing.T) {
 	// kill
 	cli2, srv2 := net.Pipe()
 	defer cli2.Close()
-	go serveMirrorConn(srv2, m, nil)
+	go serveMirrorConn(srv2, m, nil, newConnState("t", "wss://t"), false)
 	dec2 := json.NewDecoder(cli2)
 	enc2 := json.NewEncoder(cli2)
 	if err := enc2.Encode(mirrorSockMsg{Op: "kill", Name: "work"}); err != nil {
@@ -569,7 +569,7 @@ func TestMirrorSock(t *testing.T) {
 	// 再 ls 空了
 	cli3, srv3 := net.Pipe()
 	defer cli3.Close()
-	go serveMirrorConn(srv3, m, nil)
+	go serveMirrorConn(srv3, m, nil, newConnState("t", "wss://t"), false)
 	if err := json.NewEncoder(cli3).Encode(mirrorSockMsg{Op: "ls"}); err != nil {
 		t.Fatal(err)
 	}

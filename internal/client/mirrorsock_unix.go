@@ -44,6 +44,7 @@ type mirrorSockMsg struct {
 	Created bool         `json:"created,omitempty"`
 	Err     string       `json:"err,omitempty"`
 	Mirrors []mirrorInfo `json:"mirrors,omitempty"`
+	Status  *StatusInfo  `json:"status,omitempty"`
 }
 
 // DefaultMirrorSockPath socket 默认位置：审计日志同目录（root 装法
@@ -54,7 +55,7 @@ func DefaultMirrorSockPath() string {
 
 // serveMirrorSock 起本机 socket 监听；起不来只告警不致命（远端接入不受影响）。
 // 监听贯穿 agent 整个进程生命，跟连接循环无关。
-func serveMirrorSock(m *mirrorManager, p *presence) {
+func serveMirrorSock(m *mirrorManager, p *presence, st *connState) {
 	path := os.Getenv("TOWSTRAP_MIRROR_SOCK")
 	if path == "" {
 		path = DefaultMirrorSockPath()
@@ -96,21 +97,28 @@ func serveMirrorSock(m *mirrorManager, p *presence) {
 			// 文件权限之外再核一次对端身份：Listen 到 Chmod 之间有个窗口，
 			// 目录也可能不是 0700（审计日志先建的目录是 0755）。连进来的
 			// 就等于拿到本用户的 shell，只放同一个用户（root 跑时只放 root）。
+			// 例外：uid 0 连别的用户的 socket 标记为受限——只能跑 status
+			// 这类只读查询，开 shell 的操作仍要同一用户。
+			restricted := false
 			if peer, ok := peerUID(c); ok && peer != uid {
-				slog.Warn("拒绝别的用户连 mirror socket", "peer_uid", peer)
-				_ = c.Close()
-				continue
+				if peer != 0 {
+					slog.Warn("拒绝别的用户连 mirror socket", "peer_uid", peer)
+					_ = c.Close()
+					continue
+				}
+				restricted = true
 			}
-			go serveMirrorConn(c, m, p)
+			go serveMirrorConn(c, m, p, st, restricted)
 		}
 	}()
 }
 
 var mirrorLocalSeq atomic.Int64
 
-// serveMirrorConn 处理一条本机连接：首行是操作，ls/kill 一答即走，attach
-// 进入双向流直到脱离/断连/镜像退出。
-func serveMirrorConn(c net.Conn, m *mirrorManager, p *presence) {
+// serveMirrorConn 处理一条本机连接：首行是操作，ls/kill/status 一答即走，
+// attach 进入双向流直到脱离/断连/镜像退出。restricted 连接（root 查别的
+// 用户起的 agent）只允许 status 只读操作。
+func serveMirrorConn(c net.Conn, m *mirrorManager, p *presence, st *connState, restricted bool) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 	dec := json.NewDecoder(c)
@@ -122,10 +130,26 @@ func serveMirrorConn(c net.Conn, m *mirrorManager, p *presence) {
 	replyErr := func(format string, args ...any) {
 		_ = enc.Encode(mirrorSockMsg{Err: fmt.Sprintf(format, args...)})
 	}
+	if restricted && first.Op != "status" {
+		replyErr("受限连接只允许 status 查询")
+		return
+	}
 
 	switch first.Op {
 	case "ls":
 		_ = enc.Encode(mirrorSockMsg{OK: true, Mirrors: m.list()})
+		return
+	case "status":
+		info := st.snapshot()
+		if p != nil {
+			info.Sessions = p.sessions()
+		}
+		for _, t := range m.list() {
+			if !t.Exited {
+				info.Mirrors++
+			}
+		}
+		_ = enc.Encode(mirrorSockMsg{OK: true, Status: &info})
 		return
 	case "kill":
 		if !m.kill(first.Name) {
@@ -227,4 +251,29 @@ func (s *sockSink) SendExit(code int) {
 	defer s.mu.Unlock()
 	_ = s.enc.Encode(mirrorSockMsg{Code: &code})
 	_ = s.c.Close()
+}
+
+// QueryStatus 向本机 mirror.sock 发 status 查询。三个返回值分三种情况：
+//   info 非空    —— agent 在跑且应答了实时状态
+//   errReply 非空 —— socket 活着但 op 被拒（旧版本 agent 不认识 status，
+//                   或受限对端）——进程在跑，只是拿不到详情
+//   err 非空     —— 传输层失败（socket 不存在/连不上），agent 多半没在跑
+func QueryStatus(path string) (info *StatusInfo, errReply string, err error) {
+	c, err := net.DialTimeout("unix", path, 3*time.Second)
+	if err != nil {
+		return nil, "", err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(c).Encode(mirrorSockMsg{Op: "status"}); err != nil {
+		return nil, "", err
+	}
+	var m mirrorSockMsg
+	if err := json.NewDecoder(c).Decode(&m); err != nil {
+		return nil, "", err
+	}
+	if m.Err != "" {
+		return nil, m.Err, nil
+	}
+	return m.Status, "", nil
 }

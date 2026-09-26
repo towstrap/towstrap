@@ -146,6 +146,13 @@ func (p *presence) sessionStart(id, from, mode, cmd string) {
 	}
 }
 
+// sessions 当前活跃远程会话数（status 查询用）。
+func (p *presence) sessions() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.count
+}
+
 func (p *presence) sessionEnd(id string) {
 	var fire bool
 	p.mu.Lock()

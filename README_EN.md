@@ -112,7 +112,7 @@ curl -fsSL https://towstrap.vast-plan.com/install.sh | sh            # official 
 curl -fsSL http://S:7880/install.sh | sh -s -- --token tsa-…        # self-hosted server
 ```
 
-Options: `--systemd` registers a system service; `--token tsa-…` supplies the credential directly (or run `towstrap register` after install for self-service signup).
+Options: `--systemd` registers a systemd unit (Linux); `--launchd` registers a launchd service (macOS); `--token tsa-…` supplies the credential directly (or run `towstrap register` after install for self-service signup). A bare `towstrap` picks up `agent.yaml` from the default install location; `towstrap status` reports process and connection state.
 
 Server:
 
