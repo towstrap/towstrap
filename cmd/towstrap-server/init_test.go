@@ -181,6 +181,40 @@ func TestWriteServerYAML_ClearInvite(t *testing.T) {
 	}
 }
 
+// init 收尾必须把实际监听地址打出来——装完的人要靠这两行接着干活。
+// 走 --yes 非交互路径（配置不动），截获 stdout 核对就绪段。
+func TestRunInit_PrintsAccessInfo(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "server.yaml")
+	os.WriteFile(p, []byte("server:\n    http: 0.0.0.0:9999\n    ssh: :8822\n    users_db: "+filepath.Join(dir, "users.db")+"\n"), 0o600)
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	code := runInit([]string{"--yes", "--config", p, "--no-restart"})
+	w.Close()
+	os.Stdout = old
+	if code != 0 {
+		t.Fatalf("runInit = %d", code)
+	}
+	buf := make([]byte, 64<<10)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+	for _, want := range []string{
+		"配置文件：  " + p,
+		"HTTP 监听： 0.0.0.0:9999",
+		"SSH 监听：  :8822",
+		"对外地址：  没填",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("就绪段缺 %q:\n%s", want, out)
+		}
+	}
+}
+
 // ssh 端口拆分："​:7822" 和 "0.0.0.0:9999" 都要能拿出端口。
 func TestSplitHostPort(t *testing.T) {
 	for in, wantP := range map[string]string{

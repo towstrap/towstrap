@@ -203,6 +203,13 @@ func TestInstallEndpoints(t *testing.T) {
 		if !strings.Contains(body, "towstrap-server-") || !strings.Contains(body, "server.yaml") {
 			t.Fatal("内容不像服务端安装脚本")
 		}
+		// 收尾必须打印本机实际访问信息（监听地址/接入命令），不然装完的人
+		// 不知道端口在哪、下一步往哪连。
+		for _, want := range []string{"本机访问信息", "HTTP 监听", "SSH 监听", "SSH 登录示例"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("install-server.sh 缺收尾访问信息 %q", want)
+			}
+		}
 		// 真跑一遍 --check：下发的字节可执行且解析正常。
 		if runtime.GOOS != "windows" {
 			sh := filepath.Join(t.TempDir(), "install-server.sh")

@@ -240,15 +240,22 @@ func runInit(args []string) int {
 	if _, p, err := splitHostPort(sshPort); err == nil {
 		sshPort = p
 	}
+	httpAddr := final.HTTP
+	if httpAddr == "" {
+		httpAddr = ":7880"
+	}
 	fmt.Println()
 	fmt.Println("—— 就绪 ——")
+	fmt.Printf("配置文件：  %s\n", path)
+	fmt.Printf("HTTP 监听： %s\n", httpAddr)
+	fmt.Printf("SSH 监听：  %s\n", final.SSH)
 	if host != "" {
 		if acct != "" {
 			fmt.Printf("SSH 登录：  ssh -p %s %s@%s\n", sshPort, acct, host)
 		}
 		fmt.Printf("落地页：    %s\n", strings.Replace(pub, "wss://", "https://", 1))
 	} else {
-		fmt.Printf("SSH 端口：  %s（对外地址没填，安装命令里的地址要手工补 public_url 后再跑一遍 init）\n", sshPort)
+		fmt.Printf("对外地址：  没填——安装命令里的地址要手工补 public_url 后再跑一遍 init\n")
 	}
 	if acct != "" && token != "" {
 		fmt.Printf("这台机器的 agent token：%s\n", token)

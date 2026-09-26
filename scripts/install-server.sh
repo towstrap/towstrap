@@ -140,6 +140,25 @@ else
 	echo ">> $srvyaml 已存在，没动它"
 fi
 
+# —— 收尾打印实际访问信息 ——
+# 从 server.yaml 抠出真实监听地址（扁平/嵌套写法都认：第一个 http:/ssh:
+# 标量即生效值），再尽力猜一个对外地址拼接入命令。
+yamlval() {
+	sed -n "s/^ *$1: *//p" "$srvyaml" | head -1 | sed 's/#.*//; s/^["'"'"']*//; s/["'"'"' ]*$//'
+}
+http_listen=$(yamlval http); [ -n "$http_listen" ] || http_listen="127.0.0.1:7880"
+ssh_listen=$(yamlval ssh);   [ -n "$ssh_listen" ]  || ssh_listen=":7822"
+ssh_port=${ssh_listen##*:}
+http_port=${http_listen##*:}
+
+# 猜本机对外地址：Linux hostname -I 第一个地址；macOS ipconfig；都没有留占位符
+hosthint=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -n "$hosthint" ] || hosthint=$(ipconfig getifaddr en0 2>/dev/null || true)
+[ -n "$hosthint" ] || hosthint="<服务器地址>"
+
+loopback=0
+case "$http_listen" in 127.*|::1:*|localhost*) loopback=1 ;; esac
+
 if [ "$wantsvc" = 1 ]; then
 	cat >/etc/systemd/system/towstrap-server.service <<EOF
 [Unit]
@@ -177,13 +196,32 @@ fi
 
 cat <<EOF
 
+—— 本机访问信息 ——
+  HTTP 监听：  ${http_listen}
+  SSH 监听：   ${ssh_listen}
+  配置文件：   ${srvyaml}
+  SSH 登录示例：ssh -p ${ssh_port} <账号>@${hosthint}
+EOF
+if [ "$loopback" = 1 ]; then
+	cat <<EOF
+  注意：HTTP 面当前只监听回环（${http_listen}），被控机从外面够不着
+  install.sh——init 时给 public_url 配对外域名（走 nginx 443 反代回这个口），
+  或把 server.yaml 的 http 改成 :${http_port} 直接对外。
+EOF
+else
+	cat <<EOF
+  被控机安装：curl -fsSL http://${hosthint}:${http_port}/install.sh | sh
+EOF
+fi
+cat <<EOF
+
 接下来：
   1. 跑初始化向导（对外地址 / 自助注册 / 第一个账号，可反复跑）：
        sudo towstrap-server init --config $srvyaml
-  2. 对外只露两个口：HTTPS 443（nginx → $CONFDIR 里 http 的口，分发见 examples/nginx.conf）
-     和 SSH 7822（裸 TCP，直出）
+  2. 对外只露两个口：HTTPS 443（nginx → ${http_listen}，分发见 examples/nginx.conf）
+     和 SSH ${ssh_port}（裸 TCP，直出）
   3. 不想跑向导就手工改 $srvyaml（register: true 开自助建号；
      towstrap-server user add 名字 --config $srvyaml 建号发 token）
-  4. 被控机装 agent：curl -fsSL https://<你的域名>/install.sh | sh -s -- --token tsa-...
+  4. 被控机装 agent：curl -fsSL https://<对外域名>/install.sh | sh -s -- --token tsa-...
      （开了 register 就不用 token：装完跑 towstrap register）
 EOF
