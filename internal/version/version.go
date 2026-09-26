@@ -1,7 +1,7 @@
 package version
 
 var (
-	Version = "0.3.5"
+	Version = "0.3.6"
 	Commit  = ""
 )
 
