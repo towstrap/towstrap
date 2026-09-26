@@ -55,6 +55,12 @@ func TestInstallEndpoints(t *testing.T) {
 		if !strings.Contains(body, "--token") {
 			t.Fatal("脚本不像 install.sh")
 		}
+		// token 必须可省略：开自助注册的服务器在落地页给的命令不带
+		// --token，装完跑 towstrap register 补齐——硬性 die 会让这条
+		// 命令必挂（真实踩过的坑）。
+		if strings.Contains(body, `die "没有 agent token`) {
+			t.Fatal("install.sh 对无 token 又硬性失败了——自助注册流程装不上")
+		}
 
 		code, body = get(t, ts.URL, "/install.ps1")
 		if code != 200 || !strings.Contains(body, "wss://ts.example.com:8443") {

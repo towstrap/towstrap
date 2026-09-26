@@ -2,6 +2,11 @@
 
 ## 未发布
 
+### 修复
+
+- **`install.sh`/`install.ps1` 无 token 不能安装**：服务端开自助注册（`register`）时落地页下发的是不带 `--token` 的安装命令，但脚本硬要 token——现在 token 改为可选，装完跑 `towstrap register` 自助建号补齐；`--systemd` 无 token 时写好单元但不启动，避免崩退循环
+- **`install.sh` 变量后紧跟全角字符触发 unbound variable**：`$asset（` 这类写法在部分 shell 下会把括号的首字节并进变量名，所有 `$var` 紧跟非 ASCII 的位置改为 `${var}`
+
 ### 文档
 
 - 落地页文案改为正式书面风格

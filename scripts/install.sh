@@ -33,8 +33,9 @@ NOVERIFY=0
 
 usage() {
 	cat <<'EOF'
-用法: install.sh --token tsa-xxx [选项]
-  --token tsa-...    agent token（machine add 时打印的那个；也可用环境变量 TOWSTRAP_AGENT_TOKEN）
+用法: install.sh [--token tsa-xxx] [选项]
+  --token tsa-...    agent token（machine add 时打印的那个；也可用环境变量 TOWSTRAP_AGENT_TOKEN）。
+                     服务器开了自助注册时可省略——装完跑 towstrap register 交互建号
   --server wss://..  服务器地址（也可用 TOWSTRAP_SERVER；默认官方服务器）
   --version vX.Y.Z   版本，默认与下发服务器同版本（GitHub 直拉时 latest）
   --prefix 目录      安装目录，默认 /usr/local/bin（可写）或 ~/.local/bin
@@ -89,7 +90,9 @@ if [ "$CHECK" = 1 ]; then
 		"$SERVER" "$VERSION" "$SSH_PORT" "$sshhost" "$AGENT_CONF"
 	exit 0
 fi
-[ -n "$TOKEN" ] || die "没有 agent token：加 --token tsa-xxx，或设 TOWSTRAP_AGENT_TOKEN"
+# token 允许为空：服务器开了自助注册时，落地页给的安装命令就不带
+# --token——装完跑 towstrap register 交互建号，token 由它写进同一位置。
+if [ -n "$TOKEN" ]; then have_token=1; else have_token=0; fi
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$os" in linux | darwin) ;; *) die "不支持的系统 $os（Windows 用 install.ps1）" ;; esac
@@ -109,7 +112,7 @@ asset="towstrap-$os-$arch"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo ">> 下载 $asset（$VERSION）"
+echo ">> 下载 ${asset}（${VERSION}）"
 if ! curl -fsSL "$relbase/$asset" -o "$tmp/$asset"; then
 	# 旧版本发布资产名是 towstrap-agent-<os>-<arch>
 	asset="towstrap-agent-$os-$arch"
@@ -208,9 +211,13 @@ mkdir -p "$confdir"
 chmod 700 "$confdir"
 tokenfile="$confdir/agent-token"
 if [ ! -f "$tokenfile" ]; then
-	printf '%s\n' "$TOKEN" >"$tokenfile"
-	chmod 600 "$tokenfile"
-	echo ">> token 写入 $tokenfile（0600，token refresh 能远程换发）"
+	if [ "$have_token" = 1 ]; then
+		printf '%s\n' "$TOKEN" >"$tokenfile"
+		chmod 600 "$tokenfile"
+		echo ">> token 写入 ${tokenfile}（0600，token refresh 能远程换发）"
+	else
+		echo ">> 未提供 token：跳过写 ${tokenfile}（自助注册由 towstrap register 补齐）"
+	fi
 else
 	echo ">> $tokenfile 已存在，没动它（要换 token 请手工写或等 token refresh）"
 fi
@@ -277,9 +284,13 @@ EOF
 			# 必须 restart 才能让刚装的新二进制真正跑起来。
 			systemctl restart towstrap
 			echo ">> towstrap 服务已重启，新二进制生效（journalctl -u towstrap 看日志）"
-		else
+		elif [ "$have_token" = 1 ] || [ -f "$tokenfile" ]; then
 			systemctl enable --now towstrap
 			echo ">> systemd 服务 towstrap 已启动（journalctl -u towstrap 看日志）"
+		else
+			# 没 token 启动必崩退（Restart=always 会刷失败循环）——
+			# 单元照写，等 register 拿到 token 再启用。
+			echo ">> 单元已写好；没 token 先别启动：跑 towstrap register 建号后 systemctl enable --now towstrap"
 		fi
 	else
 		mkdir -p "$HOME/.config/systemd/user"
@@ -301,19 +312,28 @@ EOF
 			systemctl --user restart towstrap &&
 				echo ">> 用户级服务 towstrap 已重启，新二进制生效" ||
 				echo ">> restart 失败，手工跑: systemctl --user restart towstrap"
-		else
+		elif [ "$have_token" = 1 ] || [ -f "$tokenfile" ]; then
 			systemctl --user enable --now towstrap 2>/dev/null &&
 				echo ">> 用户级服务 towstrap 已启动" ||
 				echo ">> 单元已写好（~/.config/systemd/user/towstrap.service），enable 失败的话手工: systemctl --user enable --now towstrap"
+		else
+			echo ">> 单元已写好；没 token 先别启动：跑 towstrap register 建号后 systemctl --user enable --now towstrap"
 		fi
 	fi
 fi
 
 echo ""
-echo "完成。没装服务的话这样跑："
-echo "  towstrap --config $agentyaml"
-echo "或直接用旗标："
-echo "  towstrap --server $SERVER --agent-token-file $tokenfile"
+if [ "$have_token" = 0 ] && [ ! -f "$tokenfile" ]; then
+	echo "完成（未提供 token）。下一步建号拿凭据："
+	echo "  towstrap register --server $SERVER   # 服务器开了自助注册时"
+	echo "或把管理员签发的 token 写入 $tokenfile 后直接跑："
+	echo "  towstrap --config $agentyaml"
+else
+	echo "完成。没装服务的话这样跑："
+	echo "  towstrap --config $agentyaml"
+	echo "或直接用旗标："
+	echo "  towstrap --server $SERVER --agent-token-file $tokenfile"
+fi
 echo ""
 echo "远程进这台机器（标准 SSH 直连）："
 echo "  ssh -p $SSH_PORT <账号名>@$sshhost"

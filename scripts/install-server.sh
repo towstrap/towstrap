@@ -222,7 +222,7 @@ cat <<EOF
        sudo towstrap-server init --config $srvyaml
   2. 对外只露两个口：HTTPS 443（nginx → ${http_listen}，分发见 examples/nginx.conf）
      和 SSH ${ssh_port}（裸 TCP，直出）
-  3. 不想跑向导就手工改 $srvyaml（register: true 开自助建号；
+  3. 不想跑向导就手工改 ${srvyaml}（register: true 开自助建号；
      towstrap-server user add 名字 --config $srvyaml 建号发 token）
   4. 被控机装 agent：curl -fsSL https://<对外域名>/install.sh | sh -s -- --token tsa-...
      （开了 register 就不用 token：装完跑 towstrap register）

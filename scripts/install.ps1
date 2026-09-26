@@ -37,7 +37,9 @@ if ($SshPort -like "*__TOWSTRAP*") { $SshPort = "7822" }
 if ($Server -eq "") {
     Die "没有服务器地址：加 -Server wss://主机:端口，或设 TOWSTRAP_SERVER（从服务器 /install.ps1 拉的脚本会自动带上）"
 }
-if (-not $Token) { Die "没有 agent token：加 -Token tsa-xxx，或设 TOWSTRAP_AGENT_TOKEN" }
+# token 允许为空：服务器开自助注册时落地页的命令不带 -Token——
+# 装完跑 towstrap register 交互建号，token 由它写进同一位置。
+$haveToken = [bool]$Token
 
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) { "ARM64" { "arm64" } default { "amd64" } }
 if ($Version -eq "latest") {
@@ -95,8 +97,12 @@ Write-Host ">> 已装到 $exe"
 
 $tokenfile = Join-Path $Prefix "agent-token"
 if (-not (Test-Path $tokenfile)) {
-    Set-Content -Path $tokenfile -Value $Token -Encoding ascii -NoNewline
-    Write-Host ">> token 写入 $tokenfile（用户目录内，仅此账号可读）"
+    if ($haveToken) {
+        Set-Content -Path $tokenfile -Value $Token -Encoding ascii -NoNewline
+        Write-Host ">> token 写入 $tokenfile（用户目录内，仅此账号可读）"
+    } else {
+        Write-Host ">> 未提供 token：跳过写 $tokenfile（自助注册由 towstrap register 补齐）"
+    }
 } else {
     Write-Host ">> $tokenfile 已存在，没动它"
 }
@@ -125,8 +131,15 @@ if ($wasManual) {
     Write-Host ">> 注意：之前手工跑的 towstrap 进程已停，用下面的命令重启它"
 }
 Write-Host ""
-Write-Host "完成。跑起来："
-Write-Host "  & `"$exe`" --config `"$agentyaml`""
+if (-not $haveToken -and -not (Test-Path $tokenfile)) {
+    Write-Host "完成（未提供 token）。下一步建号拿凭据："
+    Write-Host "  & `"$exe`" register --server $Server   # 服务器开了自助注册时"
+    Write-Host "或把管理员签发的 token 写入 $tokenfile 后直接跑："
+    Write-Host "  & `"$exe`" --config `"$agentyaml`""
+} else {
+    Write-Host "完成。跑起来："
+    Write-Host "  & `"$exe`" --config `"$agentyaml`""
+}
 Write-Host "要开机自启可以注册计划任务（示例，按需调整）："
 Write-Host "  schtasks /create /tn towstrap /sc onlogon /rl limited /tr `"`"$exe`" --config `"`"$agentyaml`"`"`""
 Write-Host ""
