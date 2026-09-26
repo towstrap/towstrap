@@ -125,7 +125,9 @@ if [ ! -f "$srvyaml" ]; then
 	cat >"$srvyaml" <<'YAML'
 # towstrap-server 配置——最小可用集。全部选项见仓库 examples/server.yaml。
 server:
-  http: "127.0.0.1:7880"      # HTTP 面：落地页 /install.sh /agent WS——对外建议走 nginx 443 按路径分发
+  http: "127.0.0.1:7880"      # HTTP 面：落地页 /install.sh /agent WS——对外建议走 nginx 443 按路径分发。
+                              # 反代在 Docker 里（NPM 等）时 127.0.0.1 指容器自身：改绑 docker0
+                              # 网桥（默认 172.17.0.1）或内网 IP 并设 allow_plain_http: true
   ssh: ":7822"                # SSH 入口：裸 TCP 协议没有路径概念，nginx 分不了流，对外单独开端口
   users_db: /etc/towstrap/users.db   # 账号库（SQLite）：账号/token/TOTP/机器指纹都在这
 

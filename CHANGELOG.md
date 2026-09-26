@@ -1,5 +1,12 @@
 # Changelog
 
+## 未发布
+
+### 文档
+
+- 落地页文案改为正式书面风格
+- 反向代理部署注意事项成文（用户手册新增「反向代理部署」节，`examples/server.yaml`/`nginx.conf`/`install-server.sh` 骨架注释补充）：容器化反代（NPM 等面板）转发 `127.0.0.1` 必 502——容器内回环是容器自身；需把 `http` 绑到 docker0 网桥或内网 IP 并设 `allow_plain_http: true`、开 WebSocket 转发、防火墙收公网；扁平顶层键与 `server:` 小节混用时顶层不生效
+
 ## v0.3.4（2026-09-26）
 
 ### 新增

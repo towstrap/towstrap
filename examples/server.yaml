@@ -1,5 +1,10 @@
 server:
-  http: "127.0.0.1:7880" # /health、/agent、/status——对外只经 nginx（见 examples/nginx.conf）
+  http: "127.0.0.1:7880" # /health、/agent、/status——对外只经 nginx（见 examples/nginx.conf）。
+                       # 注意：反代跑在 Docker 里（Nginx Proxy Manager 等面板常见形态）时，
+                       # 容器内的 127.0.0.1 是容器自己，转发 127.0.0.1:7880 必然 502。
+                       # 把这里改成 docker0 网桥地址（默认 172.17.0.1）或本机内网 IP，
+                       # 并设 allow_plain_http: true（非回环明文需显式确认）；
+                       # 同时防火墙对公网收掉该端口，只留容器和本机可达。
   ssh: ":7822"         # SSH 入口（裸协议没有路径，nginx 按路径分发不了，单独开端口）
   host_key: /var/lib/towstrap/ssh_host_key
   users_db: /etc/towstrap/users.db    # 账号 SQLite 库（towstrap-server user 改的就是它）

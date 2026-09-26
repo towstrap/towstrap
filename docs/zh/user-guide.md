@@ -176,6 +176,21 @@ towstrap-server --tls --http :443
 
 TLS 开不开只影响 HTTP 口（agent 的 WebSocket、`/mcp`、`/status` 等）；SSH 口自带加密，与此无关。
 
+### 反向代理部署
+
+推荐形态：`http` 绑回环 `127.0.0.1:7880`，nginx 443 终结 TLS 后按路径反代（完整示例 `examples/nginx.conf`；`/agent` 是 WebSocket，Upgrade/Connection 头与读写超时必须按示例配置）。SSH `:7822` 是裸 TCP，不走 nginx，直接放行端口。
+
+挂反代后服务端看到的来源全部是回环地址：`agent_allow_ips`、登录限速等按 IP 的控制在 HTTP 面上失效（SSH 直连不受影响），`X-Forwarded-For` 可被客户端伪造、不用于判定。
+
+**反代跑在 Docker 容器里（Nginx Proxy Manager 等面板）**：容器内的 `127.0.0.1` 是容器自身，转发到它必然 502。处理方式：
+
+1. `server.yaml` 的 `http` 改绑 docker0 网桥地址（默认 `172.17.0.1`，`ip addr show docker0` 确认）或本机内网 IP；
+2. 非回环监听需显式确认明文：`allow_plain_http: true`（明文只存在于宿主机内部通道，对外仍是反代的 HTTPS）；
+3. 反代目标填该地址（不是 `127.0.0.1`），并确认面板开了 WebSocket 转发；
+4. 防火墙对公网收掉该端口，只留容器与本机可达。
+
+**配置写法提醒**：`http`/`ssh`/`allow_plain_http` 等键必须缩进在 `server:` 小节内；顶层扁平写法与 `server:` 小节混用时，顶层键不生效。排查实际生效值看启动日志的「生效配置」行，或 `timeout 2 towstrap-server --config <路径>`。
+
 ### 审计日志与资源限制
 
 审计日志位置见上表；文件超 16MB 自动轮转成 `.1`（旧档被覆盖），权限 0600。连接与会话限额：`max_sessions`、`max_conns`、`max_conns_per_ip`、`ssh_idle_timeout`、`ssh_max_timeout`，HTTP 口另有固定的 10 秒请求头超时（防 Slowloris）和 2 分钟空闲超时，`/agent` 长连接不受影响。

@@ -35,7 +35,7 @@ func TestLanding(t *testing.T) {
 		if i := strings.Index(page, "{{"); i >= 0 {
 			t.Fatalf("register=%v：页面还有未替换的占位符：…%s", register, page[i:i+40])
 		}
-		for _, want := range []string{"安装 agent", "SSH 客户端推荐", "自建一套", "/install-server.sh", "Termius", "mirror"} {
+		for _, want := range []string{"安装 agent", "SSH 客户端推荐", "自行部署", "/install-server.sh", "Termius", "mirror"} {
 			if !strings.Contains(page, want) {
 				t.Fatalf("register=%v：落地页缺 %q", register, want)
 			}

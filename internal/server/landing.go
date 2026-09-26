@@ -61,12 +61,12 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 
 	// 开了自助注册：安装命令不带 --token，下面多一步 register；没开则
 	// 保持管理员发 token 的传统流程。
-	intro := `向管理员要到 agent token（<code>tsa-…</code>）后选一条：`
+	intro := `获取管理员签发的 agent token（<code>tsa-…</code>）后，选择任一方式安装：`
 	shTok, psTok, regStep := " --token tsa-…", " -Token tsa-…", ""
 	if s.cfg.Register {
-		intro = "这台服务器开了自助注册——装好二进制后跑 <code>towstrap register</code> 建账号拿 token，不用找管理员："
+		intro = "本服务器已开启自助注册——安装完成后执行 <code>towstrap register</code> 创建账号并获取 token，无需管理员签发："
 		shTok, psTok = "", ""
-		regStep = `<pre><span class="c"># 装完注册：交互问账号名和密码，写 token 和配置；一台机器只许注册一个账号</span>
+		regStep = `<pre><span class="c"># 安装后注册：交互输入账号名与密码，自动写入 token 与配置；一台机器仅允许注册一个账号</span>
 towstrap register` + html.EscapeString(regServerArg(server)) + `</pre>`
 	}
 

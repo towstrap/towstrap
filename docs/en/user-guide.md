@@ -177,6 +177,21 @@ With a self-signed cert, agents need `--insecure` (skips server identity verific
 
 TLS only affects the HTTP port (agent WebSocket, `/mcp`, `/status`, …); the SSH port has its own encryption either way.
 
+### Reverse proxy deployment
+
+Recommended layout: bind `http` to loopback `127.0.0.1:7880` and let nginx terminate TLS on 443 with path-based proxying (full example in `examples/nginx.conf`; `/agent` is WebSocket — Upgrade/Connection headers and read/write timeouts must follow the example). SSH `:7822` is raw TCP and cannot be routed by nginx — expose the port directly.
+
+Behind a reverse proxy, the server sees only loopback peers: IP-based controls (`agent_allow_ips`, login rate limits) stop working on the HTTP surface (direct SSH is unaffected). `X-Forwarded-For` is client-spoofable and never used for decisions.
+
+**Proxy inside Docker (Nginx Proxy Manager and similar panels)**: `127.0.0.1` inside the container is the container itself — forwarding to `127.0.0.1:7880` always yields 502. Fix:
+
+1. Point `http` in `server.yaml` at the docker0 bridge address (default `172.17.0.1`, verify via `ip addr show docker0`) or the host's LAN IP;
+2. Non-loopback plaintext listeners need explicit confirmation: `allow_plain_http: true` (plaintext stays confined to the host-internal channel; clients still reach the proxy over HTTPS);
+3. Set the proxy target to that address (not `127.0.0.1`) and enable WebSocket forwarding in the panel;
+4. Firewall the port from the public internet — only containers and localhost should reach it.
+
+**Config caveat**: `http`/`ssh`/`allow_plain_http` and friends must be indented under the `server:` block; flat top-level keys are ignored when a `server:` section exists. Check the startup log's "effective config" line (or `timeout 2 towstrap-server --config <path>`) for what actually took effect.
+
 ### Audit log & resource limits
 
 See the table above for audit log paths; the file rotates to `.1` at 16MB (the old file is overwritten) with 0600 permissions. Connection/session limits: `max_sessions`, `max_conns`, `max_conns_per_ip`, `ssh_idle_timeout`, `ssh_max_timeout`. The HTTP port additionally enforces a fixed 10s header-read timeout (Slowloris) and 2-minute idle timeout; `/agent` long-lived connections are unaffected.
