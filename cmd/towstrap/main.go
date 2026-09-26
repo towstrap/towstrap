@@ -28,7 +28,17 @@ func main() {
 	case "mirror", "towstrap-mirror":
 		args = append([]string{args[0], "mirror"}, args[1:]...)
 	}
-	if len(args) < 2 || args[1] == "-h" || args[1] == "--help" {
+	if len(args) < 2 {
+		// 裸跑：装过的机器（默认路径有 agent.yaml）或环境变量已给足
+		// 凭据时直接起 agent；什么都没装的机器才显示用法。
+		if fileExists(config.DefaultAgentPath()) ||
+			os.Getenv("TOWSTRAP_AGENT_TOKEN") != "" || os.Getenv("TOWSTRAP_SERVER") != "" {
+			os.Exit(runAgent(nil))
+		}
+		usage()
+		os.Exit(2)
+	}
+	if args[1] == "-h" || args[1] == "--help" {
 		usage()
 		os.Exit(2)
 	}

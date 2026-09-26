@@ -9,6 +9,10 @@
 - **`install.sh --launchd`（macOS 服务化）**：root 写 /Library/LaunchDaemons 守护项，普通用户写 ~/Library/LaunchAgents 并 `launchctl bootstrap`；已加载时 `kickstart -k` 重启让升级生效；无 token 时写 plist 不加载
 - mirror.sock 新增 `status` 操作；root 连他人 agent socket 降为受限连接，只放行 status 只读查询
 
+### 修复
+
+- **裸 `towstrap` 只打帮助不起 agent**：入口 `len(args)<2` 直接进用法，默认配置自动加载轮不到——现在默认路径有 agent.yaml（或 TOWSTRAP_* 环境变量已给凭据）时裸跑即启动 agent，什么都没装的机器才显示用法
+
 ## v0.3.5（2026-09-26）
 
 ### 修复
