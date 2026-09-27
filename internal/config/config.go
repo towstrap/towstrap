@@ -530,8 +530,8 @@ func AgentInstallHint(publicURL, token string) string {
 	}
 	return fmt.Sprintf(`在那台机器上一条命令装好（脚本自带服务器地址）：
   curl -fsSL %s/install.sh | sh -s -- --token %s
-Windows 用 PowerShell：
-  powershell -Command "& { $(irm %s/install.ps1) } -Token %s"
+Windows 用 PowerShell（这条命令不含双引号，cmd 粘贴也安全）：
+  powershell -Command "& ([scriptblock]::Create((irm %s/install.ps1))) -Token %s"
 脚本默认注册并启动常驻服务（systemd/launchd/计划任务）；只放二进制加 --no-service。
 已装好二进制的也可以直接跑：
   towstrap --server %s --agent-token-file <token文件路径>

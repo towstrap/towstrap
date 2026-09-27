@@ -2,8 +2,11 @@
 #
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -Token tsa-xxx
 #
-# 或一条命令（地址由服务器下发时已填好）：
-#   powershell -Command "& { $(irm https://<服务器>/install.ps1) } -Token tsa-xxx"
+# 或一条命令（地址由服务器下发时已填好）。全程没有双引号，
+# cmd 和 PowerShell 粘贴都安全（powershell -Command 会剥双引号，
+# "$(irm)" 那种写法在 PowerShell 里会先被外层展开、再被剥引号弄坏）：
+#   powershell -Command "& ([scriptblock]::Create((irm https://<服务器>/install.ps1))) -Token tsa-xxx"
+# 已在 PowerShell 里的话去掉 powershell -Command "…" 直接跑 & (…) 那段。
 #
 # 从 GitHub raw 拉的脚本默认指向官方服务器；自建用 -Server 换地址。
 param(

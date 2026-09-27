@@ -93,8 +93,8 @@ The server serves the install script itself — whichever server you download it
 # Linux / macOS
 curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 
-# Windows (PowerShell)
-powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
+# Windows (PowerShell — no double quotes, safe to paste from cmd too)
+powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.com/install.ps1))) -Token tsa-…"
 ```
 
 What the script does: downloads the `towstrap` binary for your OS/arch from GitHub Releases, verifies it against `SHA256SUMS`, installs to `/usr/local/bin` (falling back to `~/.local/bin`), writes a `0600` token file and an `agent.yaml` (under `/etc/towstrap` when root, `~/.config/towstrap` otherwise). **A script served by a server installs the same version as that server** (`--version vX.Y.Z` overrides) and bakes the server's `agent_defaults:` preset working config (`shell`, `mirror_idle`, `mcp_policy`, …) into `agent.yaml`; a script pulled from GitHub defaults to latest with no preset. At the end the script prints the machine's SSH login address (host derived from `--server`, port from the server's configured SSH port). With `--systemd` it also installs a service: as root it creates a dedicated `towstrap` user plus a system unit and starts it; as a regular user it writes a `~/.config/systemd/user` unit. **Persistence is the default**: systemd unit when `systemctl` exists on Linux, a launchd item on macOS, and a "run at logon" scheduled task on Windows; add `--no-service` (`-NoService` in `install.ps1`) for a binary+config-only install (temporary use, containers). **Retrofitting**: machines installed with `--no-service` or started via nohup can be made persistent afterwards with `towstrap service install` (launchd on macOS / systemd on Linux / a logon scheduled task on Windows — same semantics as the install script; `service status` and `service uninstall` inspect and remove it). Install is refused when no token is present — run `towstrap register` first. The server side has the matching `towstrap-server service` (`install` requires `--config server.yaml`).
@@ -106,7 +106,7 @@ You can also pull the script straight from GitHub (defaults to the official serv
 curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-…
 
 # Windows (PowerShell)
-powershell -Command "& { $(irm https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.ps1) } -Token tsa-…"
+powershell -Command "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.ps1))) -Token tsa-…"
 ```
 
 `machine add` / `user add` / `@machine add` print this one-liner in their install hint. With a self-signed cert add `-k` to curl.

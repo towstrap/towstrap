@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布
+
+### 修复
+
+- **Windows 一键安装命令不再被 powershell 剥引号弄坏**：原来文档和 `machine add` 指引里的 `powershell -Command "& { $(irm …) } -Token …"` 在 PowerShell 里跑会先被外层展开 `$(irm)`、再由 `powershell -Command` 把脚本里所有双引号剥掉，直接语法报错。换成全程不含双引号的 `& ([scriptblock]::Create((irm …))) -Token …` 写法——cmd 和 PowerShell 粘贴都安全，装在哪边都一样跑。README、中英文用户手册、`install.ps1` 头注释、`machine add`/`user add`/`@machine add` 打印的接入指引全部更新；安装命令也按平台分开写（Linux/macOS 用 install.sh，Windows 用 install.ps1）
+
 ## v0.6.0（2026-09-27）
 
 ### 新增

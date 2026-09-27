@@ -112,9 +112,9 @@ Controlled machine (agent):
 curl -fsSL https://towstrap.vast-plan.com/install.sh | sh            # official server
 curl -fsSL http://S:7880/install.sh | sh -s -- --token tsa-…        # self-hosted server
 
-# Windows (PowerShell)
-powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) }"
-powershell -Command "& { $(irm http://S:7880/install.ps1) } -Token tsa-…"   # self-hosted server
+# Windows (PowerShell — no double quotes, safe to paste from cmd too)
+powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.com/install.ps1)))"
+powershell -Command "& ([scriptblock]::Create((irm http://S:7880/install.ps1))) -Token tsa-…"   # self-hosted server
 ```
 
 A persistent service is registered by default: a systemd unit on Linux (when `systemctl` exists), a launchd item on macOS (root installs run under dedicated service accounts — `towstrap` on Linux, auto-created `_towstrap` on macOS), a "run at logon" scheduled task on Windows (`--no-service` / `-NoService` opts out). Options: `--token tsa-…` supplies the credential directly (or run `towstrap register` after install for self-service signup). A bare `towstrap` picks up `agent.yaml` from the default install location; `towstrap status` reports process and connection state.

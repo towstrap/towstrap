@@ -92,8 +92,8 @@ sudo towstrap-server init
 # Linux / macOS
 curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 
-# Windows（PowerShell）
-powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -Token tsa-…"
+# Windows（PowerShell，全程无双引号，cmd 粘贴也安全）
+powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.com/install.ps1))) -Token tsa-…"
 ```
 
 脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。**常驻是默认行为**：Linux 有 `systemctl` 就建 systemd 单元，macOS 建 launchd 项，Windows 注册「登录自起」计划任务；临时用/容器场景加 `--no-service`（`install.ps1` 用 `-NoService`）只放二进制和配置。**事后补票**：当时 `--no-service` 或手动/nohup 跑的机器，跑 `towstrap service install` 就能注册成常驻服务（macOS launchd / Linux systemd / Windows 计划任务，语义和安装脚本一致；`service status`、`service uninstall` 查和拆）。没发现 token 时拒绝安装——先 `towstrap register` 再装。服务端对应 `towstrap-server service`（`install` 要 `--config server.yaml`）。
@@ -105,7 +105,7 @@ powershell -Command "& { $(irm https://towstrap.vast-plan.com/install.ps1) } -To
 curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s -- --token tsa-…
 
 # Windows（PowerShell）
-powershell -Command "& { $(irm https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.ps1) } -Token tsa-…"
+powershell -Command "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.ps1))) -Token tsa-…"
 ```
 
 `machine add` / `user add` / `@machine add` 打印的接入指引里就带这条一键命令。自签证书时 curl 加 `-k`。
