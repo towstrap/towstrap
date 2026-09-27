@@ -411,7 +411,7 @@ towstrap-server user set bot --ssh-key-file ~/.ssh/towstrap_bot.pub   # 补登
 
 公钥登录不要求 TOTP、不进限速器（客户端会连着试几把钥匙，计失败会误锁）。自动化账号建议同时配 `--allow-ip` 锁来源。公钥登录**不能**跑 `@machine` 管理命令。
 
-**自助挂公钥**（不找管理员）：密码登进 SSH 会话后跑 `@sshkey add`（粘公钥行）/ `@sshkey list` / `@sshkey remove <指纹>`；或在 agent 机器上跑 `towstrap ssh-key add`（默认登记 `~/.ssh/id_*.pub`，`--file`/公钥行也可以）——鉴权是本机 token + 密码 + TOTP（已绑的话）。典型用法：手机/新设备生成密钥对，先密码登一次把它的公钥挂上，之后 `ssh -i` 免密。
+**自助挂公钥**（不找管理员）：密码登进 SSH 会话后跑 `@sshkey add`（粘公钥行）/ `@sshkey list` / `@sshkey remove <指纹>`；或在 agent 机器上跑 `towstrap ssh-key add`（默认登记 `~/.ssh/id_*.pub`，`--file`/公钥行也可以）——鉴权是本机 token + 密码 + TOTP（已绑的话）。典型用法：手机/新设备生成密钥对，先密码登一次把它的公钥挂上，之后 `ssh -i` 免密。也可以在 agent 机器上一条命令搞定密钥对本身：`towstrap ssh-key gen --add`——生成 ed25519 密钥对（`--file` 自定路径、默认 `~/.ssh/id_ed25519`，已有私钥不会被覆盖）、公钥直接挂上账号，并打印私钥内容供粘贴进手机/其他 SSH 软件。
 
 ### 限速与锁定
 

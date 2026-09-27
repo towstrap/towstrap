@@ -412,7 +412,7 @@ towstrap-server user set bot --ssh-key-file ~/.ssh/towstrap_bot.pub   # add to e
 
 Public-key login skips TOTP and the rate limiter (clients try several keys; counting failures would cause false lockouts). Pair it with `--allow-ip` to pin the source. Public-key logins **cannot** run `@machine` management commands.
 
-**Self-service key registration** (no admin needed): after a password login, run `@sshkey add` (paste the pubkey line) / `@sshkey list` / `@sshkey remove <fingerprint>` inside the SSH session; or on the agent machine run `towstrap ssh-key add` (registers `~/.ssh/id_*.pub` by default, or pass a key line / `--file`) — authenticated by the local agent token + account password + TOTP if enrolled. Typical flow: generate a keypair on the phone/new device, log in once with a password to register its public key, then `ssh -i` from then on.
+**Self-service key registration** (no admin needed): after a password login, run `@sshkey add` (paste the pubkey line) / `@sshkey list` / `@sshkey remove <fingerprint>` inside the SSH session; or on the agent machine run `towstrap ssh-key add` (registers `~/.ssh/id_*.pub` by default, or pass a key line / `--file`) — authenticated by the local agent token + account password + TOTP if enrolled. Typical flow: generate a keypair on the phone/new device, log in once with a password to register its public key, then `ssh -i` from then on. You can also create the keypair itself on the agent machine in one step: `towstrap ssh-key gen --add` generates an ed25519 keypair (`--file` sets the private-key path, default `~/.ssh/id_ed25519`; existing private keys are never overwritten), registers the public key, and prints the private key to paste into a phone or other SSH client.
 
 ### Rate limiting & lockout
 

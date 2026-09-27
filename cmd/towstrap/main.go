@@ -93,7 +93,7 @@ func usage() {
   towstrap register [选项]            首次接入：没账号建号（服务器开 register:）、有账号登录加机
   towstrap totp [remove] [选项]       绑/换绑/解绑账号的 TOTP 二因素（SSH 里也能用 @totp）
   towstrap passwd [选项]              改账号的 SSH/登录密码（本机 token + 旧密码鉴权）
-  towstrap ssh-key <list|add|remove>  自助管理账号的 SSH 登录公钥（本机 token + 密码鉴权）
+  towstrap ssh-key <gen|list|add|remove>  自助管理账号的 SSH 登录公钥（本机 token + 密码鉴权）
   towstrap mirror [ls|kill|<名字> [命令]]   本机的可接力终端（Ctrl-\ 脱离）
                                        （install.sh 会把它软链成 mirror，直接敲 mirror work）
   towstrap update [--version vX.Y.Z] [--check]   自升级：从官方 Release 拉新版，

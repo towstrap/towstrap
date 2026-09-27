@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // TestParsePosInterleaved flag 包遇到位置参数就停，交错解析要保证
@@ -47,5 +49,61 @@ func TestResolveAddKey(t *testing.T) {
 	// 两个结果都合法——这里只验不 panic 且 err 文案说得清。
 	if l, err := resolveAddKey("", nil); err == nil && l == "" {
 		t.Fatal("找到默认 key 时 line 不应为空")
+	}
+}
+
+// TestGenKeyPair 生成的密钥对要能双向对上：私钥可解析、公钥行可解析且
+// 两者指纹一致；同名路径再生成必须拒（不覆盖私钥）。
+func TestGenKeyPair(t *testing.T) {
+	dir := t.TempDir()
+	privPath := filepath.Join(dir, "sub", "id_test")
+
+	gotPath, pubLine, privPEM, err := genKeyPair(privPath, "phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != privPath {
+		t.Fatalf("返回路径不对: %q", gotPath)
+	}
+
+	pk, comment, _, _, err := gossh.ParseAuthorizedKey([]byte(pubLine))
+	if err != nil {
+		t.Fatalf("公钥行解析失败: %v", err)
+	}
+	if comment != "phone" {
+		t.Fatalf("备注不对: %q", comment)
+	}
+	priv, err := gossh.ParsePrivateKey([]byte(privPEM))
+	if err != nil {
+		t.Fatalf("私钥解析失败: %v", err)
+	}
+	if gossh.FingerprintSHA256(priv.PublicKey()) != gossh.FingerprintSHA256(pk) {
+		t.Fatal("私钥和公钥行指纹不一致")
+	}
+
+	fi, err := os.Stat(privPath)
+	if err != nil || fi.Mode().Perm() != 0600 {
+		t.Fatalf("私钥权限不对: %v %v", fi, err)
+	}
+	if _, err := os.Stat(privPath + ".pub"); err != nil {
+		t.Fatalf(".pub 没写出来: %v", err)
+	}
+
+	if _, _, _, err := genKeyPair(privPath, ""); err == nil {
+		t.Fatal("同名路径再生成该被拒")
+	}
+}
+
+// TestApplyKeyComment 挂注释：没注释的补上、有注释的换掉、坏行原样回。
+func TestApplyKeyComment(t *testing.T) {
+	const bare = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFsFvzIlakmXRX6Sb7skm3O0AWhJKqEwLEzlGpuiWVNP"
+	if got := applyKeyComment(bare, "手机"); got != bare+" 手机" {
+		t.Fatalf("补注释不对: %q", got)
+	}
+	if got := applyKeyComment(bare+" 旧备注", "新备注"); got != bare+" 新备注" {
+		t.Fatalf("换注释不对: %q", got)
+	}
+	if got := applyKeyComment("不是公钥行", "x"); got != "不是公钥行" {
+		t.Fatalf("坏行该原样回: %q", got)
 	}
 }
