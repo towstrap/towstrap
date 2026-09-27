@@ -74,7 +74,11 @@ if ($NoVerify) {
     Write-Host ">> -NoVerify：跳过 SHA256 校验（不推荐）"
 } else {
     try {
-        $sums = (Invoke-WebRequest -UseBasicParsing "$relbase/SHA256SUMS").Content
+        $raw = (Invoke-WebRequest -UseBasicParsing "$relbase/SHA256SUMS").Content
+        # GitHub Releases 拿 application/octet-stream 回清单：Windows
+        # PowerShell 5.1 里 .Content 是 byte[] 不是 string，直接 -split
+        # 一行都对不上。显式按 UTF-8 解码。
+        $sums = if ($raw -is [byte[]]) { [Text.Encoding]::UTF8.GetString($raw) } else { [string]$raw }
     } catch { Remove-Item $tmpExe -Force; Die "拉不到 SHA256SUMS，校验过不了就不装；要跳过加 -NoVerify" }
     if ($MinisignPub) {
         # 签名是独立信任根：清单和二进制同出一个 Release，光核 SHA256
@@ -95,7 +99,7 @@ if ($NoVerify) {
             Write-Host ">> 警告：系统没有 minisign，跳过签名校验（winget/scoop 装一个可开启；SHA256 照验）"
         }
     }
-    $want = ($sums -split "`n" | Where-Object { $_ -match " $asset`$" } | ForEach-Object { ($_ -split "\s+")[0] })
+    $want = ($sums -split "`r?`n" | Where-Object { $_ -match " $asset\s*$" } | ForEach-Object { ($_ -split "\s+")[0] })
     if (-not $want) { Remove-Item $tmpExe -Force; Die "SHA256SUMS 里没有 $asset 这一行；要跳过加 -NoVerify" }
     $got = (Get-FileHash $tmpExe -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $want.Trim().ToLower()) { Remove-Item $tmpExe -Force; Die "SHA256 校验失败" }
