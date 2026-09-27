@@ -31,7 +31,7 @@ release: clean
 	done
 	cd dist && shasum -a 256 * > SHA256SUMS
 	@if [ -n "$$MINISIGN_KEY_FILE" ]; then \
-		cd dist && minisign -H -Sm -s "$$MINISIGN_KEY_FILE" towstrap-* SHA256SUMS; \
+		cd dist && minisign -H -S -s "$$MINISIGN_KEY_FILE" -m SHA256SUMS towstrap-*; \
 		echo "已用 minisign 签名"; \
 	else \
 		echo "提示：设 MINISIGN_KEY_FILE 可在发布时签名"; \

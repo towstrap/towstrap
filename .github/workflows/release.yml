@@ -96,7 +96,9 @@ jobs:
           printf '%s' "$MINISIGN_KEY" | base64 -d > "$RUNNER_TEMP/minisign.key"
           chmod 600 "$RUNNER_TEMP/minisign.key"
           cd dist
-          minisign -H -Sm -s "$RUNNER_TEMP/minisign.key" towstrap-* SHA256SUMS
+          # 别把 -Sm 捆一起写：-m 会把下一个 argv（-s）吞成消息文件，
+          # -s 落不到实参就去找默认 ~/.minisign/minisign.key。
+          minisign -H -S -s "$RUNNER_TEMP/minisign.key" -m SHA256SUMS towstrap-*
           rm -f "$RUNNER_TEMP/minisign.key"
 
       # 带 - 的标签（v0.3.0-rc.1 这类）自动标成预发布。
