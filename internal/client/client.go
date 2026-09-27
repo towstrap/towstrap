@@ -174,8 +174,9 @@ func ConnectOnce(cfg Config) error {
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
 	st := newConnState(cfg.ID, cfg.Server)
-	serveMirrorSock(newMirrors(cfg, p), p, st)
-	return dialOnce(cfg, p, &tokenState{cur: cfg.AgentToken}, st)
+	mirrors := newMirrors(cfg, p)
+	serveMirrorSock(mirrors, p, st)
+	return dialOnce(cfg, p, &tokenState{cur: cfg.AgentToken}, st, mirrors)
 }
 
 func Run(cfg Config) error {
@@ -190,7 +191,8 @@ func Run(cfg Config) error {
 	//镜像终端登记处和本机 socket 都建在连接循环外：服务器断线期间
 	//镜像和本机接入照常活着。
 	st := newConnState(cfg.ID, cfg.Server)
-	serveMirrorSock(newMirrors(cfg, p), p, st)
+	mirrors := newMirrors(cfg, p)
+	serveMirrorSock(mirrors, p, st)
 	slog.Info("towstrap agent 运行中（远程访问，本机可感知）",
 		"server", cfg.Server, "shell", cfg.Shell, "insecure", cfg.Insecure,
 		"audit_log", p.path, "notify", !cfg.Quiet)
@@ -207,7 +209,7 @@ func Run(cfg Config) error {
 			slog.Info("token 文件已更新，改用新 token", "path", cfg.TokenFile)
 		}
 		start := time.Now()
-		if err := dialOnce(cfg, p, tokens, st); err != nil {
+		if err := dialOnce(cfg, p, tokens, st, mirrors); err != nil {
 			st.disconnected(err)
 			if errors.Is(err, errTokenRejected) && tokens.fallback() {
 				// 换发半途失败：本地文件已是新 token、服务端还认旧的。
@@ -254,6 +256,9 @@ type agent struct {
 	// upgrading 单飞标志：升级下载是分钟级长活，服务器重复推送/重复
 	// 连接时只许一个升级协程在跑。
 	upgrading atomic.Bool
+	// mirrors 是跨重连常驻的镜像登记处——升级前查它有没有活终端，
+	// 有就推迟（mirror 进程跟着 agent 进程死，强升打断别人的活儿）。
+	mirrors *mirrorManager
 }
 
 func (a *agent) send(m proto.Msg) error {
@@ -328,7 +333,7 @@ func (a *agent) closeAll() {
 	a.sessMu.Unlock()
 }
 
-func dialOnce(cfg Config, p *presence, tokens *tokenState, st *connState) error {
+func dialOnce(cfg Config, p *presence, tokens *tokenState, st *connState, mirrors *mirrorManager) error {
 	st.dialing()
 	u, err := url.Parse(cfg.Server)
 	if err != nil {
@@ -368,7 +373,7 @@ func dialOnce(cfg Config, p *presence, tokens *tokenState, st *connState) error 
 	}
 	defer conn.Close()
 
-	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]*sessionEntry), presence: p, tokens: tokens}
+	a := &agent{cfg: cfg, conn: conn, sess: make(map[string]*sessionEntry), presence: p, tokens: tokens, mirrors: mirrors}
 	defer a.closeAll()
 
 	// Home/Dir 随 hello 上报：服务器拿它们把 MCP 文件工具收到的 ~/
@@ -483,21 +488,47 @@ func (a *agent) onUpgrade(tag string) {
 	go a.autoUpdate(tag)
 }
 
-// 升级路径的三处可替换点：真实实现分别是 selfupdate.Run、60s 随机散开、
-// 原地 exec 重启——测试换掉它们才不用真下载/真换进程映像。
+// 升级路径的可替换点：真实实现分别是 selfupdate.Run、60s 随机散开、
+// 原地 exec 重启——测试换掉它们才不用真下载/真换进程映像。deferPoll/
+// deferRemind 是 mirror 有活时的轮询和提醒节奏。
 var (
 	selfUpdateRun = selfupdate.Run
 	updateSpread  = 60 * time.Second
 	doRestart     = restartSelf
+	deferPoll     = 30 * time.Second
+	deferRemind   = 2 * time.Hour
 )
 
-// autoUpdate 跑升级：随机散开后走 selfupdate 全流程（下载+验签+原子
-// 替换+受管服务重启）。替换成功而进程还活着，说明没被服务管理——原地
-// exec 换新映像，nohup/前台跑的 agent 也能吃到新版。
+// autoUpdate 跑升级：随机散开 → mirror 有活终端就推迟（每 deferPoll
+// 查一轮，进来和每 deferRemind 各提醒一次）→ selfupdate 全流程（下载+
+// 验签+原子替换+受管服务重启）。替换成功而进程还活着，说明没被服务
+// 管理——原地 exec 换新映像，nohup/前台跑的 agent 也能吃到新版。
 func (a *agent) autoUpdate(tag string) {
 	defer a.upgrading.Store(false)
 	if updateSpread > 0 {
 		time.Sleep(time.Duration(mrand.Int63n(int64(updateSpread))))
+	}
+	// mirror 里的进程跟着 agent 进程一起死——有活终端时先等等，别打断
+	// 人家正跑的编译/传输；期间周期性弹通知让本机的人知道升级在排队。
+	var remindAt time.Time
+	for {
+		busy := a.busyMirrors()
+		if len(busy) == 0 {
+			break
+		}
+		if time.Since(remindAt) >= deferRemind {
+			remindAt = time.Now()
+			slog.Info("mirror 终端在跑，升级推迟到它们结束", "to", tag, "busy", busy)
+			if a.presence != nil {
+				a.presence.audit.Log("UPDATE-DEFER", "to", tag,
+					"busy", strings.Join(busy, ","))
+				if !a.cfg.Quiet && a.presence.notify != nil {
+					a.presence.notify("towstrap 升级推迟",
+						fmt.Sprintf("有镜像终端在跑（%s），它们结束后自动升到 %s；想立刻升跑 towstrap update", strings.Join(busy, "、"), tag))
+				}
+			}
+		}
+		time.Sleep(deferPoll)
 	}
 	slog.Info("开始自动升级", "from", version.String(), "to", tag)
 	if a.presence != nil {
@@ -510,6 +541,13 @@ func (a *agent) autoUpdate(tag string) {
 	}
 	slog.Info("升级完成，重启进程生效", "to", tag)
 	doRestart()
+}
+
+func (a *agent) busyMirrors() []string {
+	if a.mirrors == nil {
+		return nil
+	}
+	return a.mirrors.busyNames()
 }
 
 // logWriter 把 selfupdate 的进度输出接进 slog：agent 常跑在

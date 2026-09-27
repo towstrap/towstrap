@@ -67,6 +67,8 @@ func main() {
 		os.Exit(runUpdate(args[2:]))
 	case "status":
 		os.Exit(runStatus(args[2:]))
+	case "service":
+		os.Exit(runService(args[2:]))
 	case "version", "-v", "--version":
 		fmt.Println(version.String())
 	default:
@@ -99,6 +101,7 @@ func usage() {
   towstrap update [--version vX.Y.Z] [--check]   自升级：从官方 Release 拉新版，
                                        核 SHA256 后替换自身；服务托管的自动重启
   towstrap status [-q]               看这台机器上的 agent 跑没跑、连没连上
+  towstrap service <install|status|uninstall>  把 agent 注册成开机自启的常驻服务
   towstrap version
 
 选项:

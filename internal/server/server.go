@@ -64,7 +64,7 @@ type Config struct {
 	// 器定时拉一次最新 tag 存下，推给版本落后的已连接 agent（agent 拿
 	// tag 自己走 selfupdate 验签下载，服务器只报版本号不传二进制）。
 	// <=0 = 关闭。
-	UpdateCheck     time.Duration
+	UpdateCheck time.Duration
 	// MinAgentVersion 非空时，hello 自报版本低于它的 agent 拒绝接入
 	//（机群版本淘汰用；版本是自报的，不是安全控制）。空 = 不限。
 	MinAgentVersion string

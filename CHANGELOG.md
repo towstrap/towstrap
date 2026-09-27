@@ -6,6 +6,8 @@
 
 - **升级自发现**：服务器新增 `update_check`（默认 6h，`off`/`0` 关闭）定时扫官方最新 release tag 缓存下来；扫到新版本时推给版本落后的已连接 agent，agent 接入时若已落后也会立即收到提示（`--update-check` 旗标同义）。服务器只报版本号，从不传二进制或下载地址——agent 收到后仍走 `selfupdate` 的固定官方源 + SHA256 + minisign 验签，服务器被攻破也塞不进伪造更新
 - **agent 自动升级**：`auto_update`（默认开，yaml 写 `false` 或 `--auto-update=false` 关）开启时，收到新版本提示自动下载升级：随机散开最多 60 秒防全群齐打、tag 先过白名单、不新不降级不动、单飞防重入、失败只记日志现有版本不受影响。装成 systemd/launchd/计划任务的升级后由服务管理器重启；手动/nohup 跑的原地 exec 换映像重启（Unix）；Windows 提示手动重启。关掉只记「发现新版本」日志，升级照旧手工 `towstrap update`
+- **mirror 有活终端时升级自动推迟**：镜像里的进程跟着 agent 进程死，有终端在跑时升级先等（每 30 秒查一轮），进来和每 2 小时各弹一次通知+写审计（`UPDATE-DEFER`）；人干完活镜像空了自动继续升。想立刻升 `towstrap update` 手工来
+- **`towstrap service` / `towstrap-server service` 注册常驻服务**：`service install` 把已就位的二进制+配置注册成开机自启、掉线自拉的服务（macOS launchd、Linux systemd——root 装法跑专用账号、Windows 登录自起计划任务），等价 install.sh 的服务注册段，不用重跑安装脚本；`status`/`uninstall` 查和拆。agent 侧没发现 token 时拒绝安装（防止服务刷崩溃循环），先 `register` 再装
 
 ## v0.5.1（2026-09-27）
 

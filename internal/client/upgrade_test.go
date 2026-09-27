@@ -107,3 +107,29 @@ func TestOnUpgradeFailureKeepsRunning(t *testing.T) {
 		t.Fatalf("失败后应能重试，实际累计 %d", calls.Load())
 	}
 }
+
+func TestOnUpgradeDefersWhileMirrorsBusy(t *testing.T) {
+	calls, restarted := stubUpdate(t, nil)
+	origPoll, origRemind := deferPoll, deferRemind
+	deferPoll, deferRemind = 10*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { deferPoll, deferRemind = origPoll, origRemind })
+
+	m := newMirrorManager("/bin/sh")
+	m.mirrors["work"] = &mirror{name: "work"} // 活着（dead=false）
+	a := &agent{cfg: Config{AutoUpdate: true}, mirrors: m}
+
+	a.onUpgrade("v99.0.0")
+	time.Sleep(150 * time.Millisecond)
+	if calls.Load() != 0 {
+		t.Fatal("mirror 有活时不该开始升级")
+	}
+	// mirror 结束 → 下一轮轮询发现空了，升级自动继续。
+	m.mirrors["work"].dead.Store(true)
+	waitUpgrading(t, a)
+	if calls.Load() != 1 {
+		t.Fatalf("mirror 清空后应继续升级，实际调 %d 次", calls.Load())
+	}
+	if !restarted.Load() {
+		t.Fatal("升级成功后应重启生效")
+	}
+}

@@ -36,6 +36,8 @@ func main() {
 		os.Exit(runMachine(os.Args[2:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[2:]))
+	case "service":
+		os.Exit(runServiceCmd(os.Args[2:]))
 	case "update":
 		os.Exit(runUpdate(os.Args[2:]))
 	case "version", "-v", "--version":
@@ -55,6 +57,7 @@ func usage() {
   towstrap-server user    add|list|set|remove|token|totp [选项] 用户名
   towstrap-server machine add|list|set|remove|token [选项] 账号 机器名
   towstrap-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
+  towstrap-server service install|status|uninstall [--config server.yaml]  注册成常驻服务
   towstrap-server update [--version vX.Y.Z] [--check]     自升级：拉新版替换自身，服务在跑则重启生效
   towstrap-server version
 

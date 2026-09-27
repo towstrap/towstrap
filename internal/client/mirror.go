@@ -171,6 +171,20 @@ func (m *mirrorManager) sweepIdle() {
 	}
 }
 
+// busyNames 报告活着（进程未退出）的镜像名——升级推迟判断和提示文案
+// 共用：mirror 里的进程跟着 agent 进程走，有活时强升会打断里面的任务。
+func (m *mirrorManager) busyNames() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := make([]string, 0, len(m.mirrors))
+	for name, t := range m.mirrors {
+		if !t.dead.Load() {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // idleFor 距最后一次输入/输出过了多久（write 和 broadcast 都刷新 lastIO）。
 func (t *mirror) idleFor() time.Duration {
 	t.mu.Lock()
