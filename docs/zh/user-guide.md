@@ -284,7 +284,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 ### launchd（macOS）
 
-安装脚本默认注册 launchd 服务（`--no-service` 退出）：普通用户写 `~/Library/LaunchAgents/com.towstrap.agent.plist` 并 `launchctl bootstrap gui/$UID` 加载（`RunAtLoad`+`KeepAlive`，日志在 `~/.towstrap/towstrap.log`）；root 写 `/Library/LaunchDaemons/` 系统守护项（日志 `/var/log/towstrap-agent.log`——注意这等于把远程会话开成 root shell）。升级重装时已加载的服务会 `kickstart -k` 重启生效；没 token 时只写 plist 不加载，`towstrap register` 建号后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` 拉起。
+安装脚本默认注册 launchd 服务（`--no-service` 退出）：普通用户写 `~/Library/LaunchAgents/com.towstrap.agent.plist` 并 `launchctl bootstrap gui/$UID` 加载（`RunAtLoad`+`KeepAlive`，日志在 `~/.towstrap/towstrap.log`）；root 写 `/Library/LaunchDaemons/` 系统守护项（日志 `/var/log/towstrap-agent.log`）——和 Linux 的 `towstrap` 专用用户对齐，守护项以自动创建的 `_towstrap` 系统账号跑（远程会话拿 `_towstrap` 的 shell 而不是 root；plist 里还带了 4096 文件句柄 / 1024 进程的资源上限）。升级重装时已加载的服务会 `kickstart -k` 重启生效；没 token 时只写 plist 不加载，`towstrap register` 建号后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` 拉起。
 
 卸载：`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist`（或 `system` 域 + sudo）后删 plist。
 
@@ -325,7 +325,7 @@ mirror kill work                     # 终结 work（杀掉里面的进程）
 - 多个接入方可以同时看同一个镜像（画面同步），谁敲键都进同一个终端；尺寸以最后接入/调整的一方为准
 - 套在 SSH 里接力：`ssh -t 机器 mirror work`（`ssh -t` 经 towstrap 服务器也行）——接力是给人用的功能：本机终端、普通 sshd、towstrap SSH 三种门进来，最后都是跑本机 `mirror` 命令
 - MCP 不参与：`terminal_open` 开的是会话级临时终端，接入不了镜像终端——AI 没有「接管人正在用的终端」的入口
-- 实现位置：`~/.towstrap/mirror.sock`（root 装法 `/var/lib/towstrap/mirror.sock`），0600，只有 agent 的系统用户能连——和「能在本机给这个用户开 shell」等价
+- 实现位置：`~/.towstrap/mirror.sock`（进程以 root 直接跑时 `/var/lib/towstrap/mirror.sock`；root 装的 launchd 守护项跑在 `_towstrap` 下，落在 `/var/lib/towstrap/.towstrap/mirror.sock`），0600，只有 agent 的系统用户能连——和「能在本机给这个用户开 shell」等价
 - 闲置终结：镜像超过 **72 小时**没有任何输入/输出会被自动杀掉（接着但没动静也算；审计写 `MIRROR-KILL via=idle`）。阈值用 `mirror_idle` 配置或 `--mirror-idle` 旗标改，写 `0`/`off` 关掉
 - 边界：镜像只活在 agent 进程里——agent 重启镜像就没了（tmux 也一样）；Windows 上暂没有 `mirror` 命令，Windows 机器上没有镜像终端
 

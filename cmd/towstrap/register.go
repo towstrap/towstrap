@@ -208,6 +208,7 @@ func runRegister(args []string) int {
 		fmt.Fprintln(os.Stderr, "写 token 失败:", err)
 		return 1
 	}
+	chownLikeDir(tokenfile) // 装服务的机器上配置目录属主是服务账号
 	agentyaml := filepath.Join(dir, "agent.yaml")
 	if _, err := os.Stat(agentyaml); os.IsNotExist(err) {
 		yaml := fmt.Sprintf("server: %s\nagent_token_file: %s\n", *server, tokenfile)
@@ -215,6 +216,7 @@ func runRegister(args []string) int {
 			fmt.Fprintln(os.Stderr, "写 agent.yaml 失败:", err)
 			return 1
 		}
+		chownLikeDir(agentyaml)
 	} else {
 		fmt.Fprintf(os.Stderr, "注意：%s 已存在没有动它——token 写在了 %s，如果已有配置指的是别的 token 文件，自己合并一下\n", agentyaml, tokenfile)
 	}

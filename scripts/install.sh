@@ -362,11 +362,61 @@ if [ "$want_launchd" = 1 ]; then
 		plist="/Library/LaunchDaemons/$label.plist"
 		domain="system"
 		logpath="/var/log/towstrap-agent.log"
+		# 对齐 Linux 的 User=towstrap：launchd 没有 systemd 的
+		# Protect*/NoNewPrivileges 那类隔离指令，root 直跑的风险用
+		# 专用系统账号 _towstrap 收掉——远程会话拿到的是 _towstrap，
+		# 不再白送 root。
+		if ! id _towstrap >/dev/null 2>&1; then
+			# 400-499 是 macOS 系统账号段（登录窗不显示），找个空的
+			usedids=$( { dscl . -list /Users UniqueID; dscl . -list /Groups PrimaryGroupID; } | awk '{print $2}')
+			newid=""
+			for c in $(seq 400 499); do
+				printf '%s\n' "$usedids" | grep -qx "$c" || { newid=$c; break; }
+			done
+			[ -n "$newid" ] || die "400-499 段没有空 UID/GID 建 _towstrap"
+			ushell=/bin/bash; [ -x /bin/zsh ] && ushell=/bin/zsh
+			dscl . -create /Groups/_towstrap PrimaryGroupID "$newid" || die "dscl 建 _towstrap 组失败"
+			dscl . -create /Groups/_towstrap Password '*' || die "dscl 建 _towstrap 组失败"
+			dscl . -create /Users/_towstrap || die "dscl 建 _towstrap 账号失败"
+			dscl . -create /Users/_towstrap UniqueID "$newid" || die "dscl 建 _towstrap 账号失败"
+			dscl . -create /Users/_towstrap PrimaryGroupID "$newid" || die "dscl 建 _towstrap 账号失败"
+			dscl . -create /Users/_towstrap UserShell "$ushell" || die "dscl 建 _towstrap 账号失败"
+			dscl . -create /Users/_towstrap RealName 'towstrap agent' || die "dscl 建 _towstrap 账号失败"
+			dscl . -create /Users/_towstrap NFSHomeDirectory /var/lib/towstrap || die "dscl 建 _towstrap 账号失败"
+			dscl . -create /Users/_towstrap Password '*' || die "dscl 建 _towstrap 账号失败"
+			mkdir -p /var/lib/towstrap
+			chown _towstrap:_towstrap /var/lib/towstrap
+			chmod 750 /var/lib/towstrap
+			echo ">> 已建系统账号 _towstrap（UID/GID $newid，home /var/lib/towstrap）"
+		fi
+		chown -R _towstrap:_towstrap "$confdir"
+		idkeys="	<key>UserName</key><string>_towstrap</string>
+	<key>GroupName</key><string>_towstrap</string>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key><integer>4096</integer>
+		<key>NumberOfProcesses</key><integer>1024</integer>
+	</dict>
+	<key>HardResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key><integer>4096</integer>
+		<key>NumberOfProcesses</key><integer>1024</integer>
+	</dict>"
 	else
 		plist="$HOME/Library/LaunchAgents/$label.plist"
 		domain="gui/$(id -u)"
 		logpath="$HOME/.towstrap/towstrap.log"
 		mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.towstrap"
+		# 用户级只限 FD：进程数上限按 uid 全体统计，桌面用户进程
+		# 基数大，给 agent 设硬顶会误伤本机其它程序。
+		idkeys="	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key><integer>4096</integer>
+	</dict>
+	<key>HardResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key><integer>4096</integer>
+	</dict>"
 	fi
 	cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -383,6 +433,7 @@ if [ "$want_launchd" = 1 ]; then
 	<key>RunAtLoad</key><true/>
 	<key>KeepAlive</key><true/>
 	<key>ThrottleInterval</key><integer>5</integer>
+$idkeys
 	<key>StandardOutPath</key><string>$logpath</string>
 	<key>StandardErrorPath</key><string>$logpath</string>
 </dict>
@@ -391,7 +442,8 @@ EOF
 	chmod 644 "$plist"
 	if [ "$(id -u)" = 0 ]; then
 		chown root:wheel "$plist"
-		echo ">> 注意：LaunchDaemon 以 root 跑 agent——远程会话拿到的是 root shell"
+		touch "$logpath" && chown _towstrap:_towstrap "$logpath"
+		echo ">> 注意：LaunchDaemon 现在以 _towstrap 跑（不是 root）——远程会话拿 _towstrap 的 shell；要 root 权限的操作在会话里走 sudo"
 	fi
 	if launchctl print "$domain/$label" >/dev/null 2>&1; then
 		# 已加载 = 升级重装：kickstart -k 重启，新二进制才生效

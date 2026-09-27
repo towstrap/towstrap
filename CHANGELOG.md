@@ -26,6 +26,7 @@
 - **发布闸收紧**：tag 不仅要落在主干祖先上，还必须正好打在主干最新提交——revert 过的内容发不出去；MINISIGN_KEY 缺失直接失败不发无签名版本
 - **二因素喂码有 stdin 通道**：`passwd`/`register`/`ssh-key` 加 `--totp-stdin`（不上命令行），`--totp` 用法注明 argv 可见性
 - **install 文案对齐默认行为**：落地页和 AgentInstallHint 现在明说脚本默认注册并启动常驻服务，给出 `--no-service`/`-NoService` 出口
+- **macOS root 守护项不再白送 root shell**：对齐 Linux 的 `User=towstrap`，root 安装自动建 `_towstrap` 系统账号跑 daemon（远程会话拿 `_towstrap` shell，root 操作走 sudo）；plist 带 4096 句柄 / 1024 进程上限（用户级只限句柄——进程数按 uid 全量统计，硬顶会误伤桌面）。launchd 没有 `Protect*` 等价物，专用账号是平台允许的最大收敛
 
 ### 修复
 

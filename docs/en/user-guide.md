@@ -285,7 +285,7 @@ Note the unit uses `ProtectSystem=true`, not `full`: `full` mounts `/etc` read-o
 
 ### launchd (macOS)
 
-`install.sh` registers a launchd service by default (`--no-service` opts out): for a regular user it writes `~/Library/LaunchAgents/com.towstrap.agent.plist` and loads it via `launchctl bootstrap gui/$UID` (`RunAtLoad`+`KeepAlive`, log at `~/.towstrap/towstrap.log`); as root it writes a `/Library/LaunchDaemons/` daemon instead (log `/var/log/towstrap-agent.log` — note this exposes remote sessions as a root shell). On reinstall, an already-loaded service is restarted via `kickstart -k` so the new binary takes effect; without a token only the plist is written — load it after `towstrap register` with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist`.
+`install.sh` registers a launchd service by default (`--no-service` opts out): for a regular user it writes `~/Library/LaunchAgents/com.towstrap.agent.plist` and loads it via `launchctl bootstrap gui/$UID` (`RunAtLoad`+`KeepAlive`, log at `~/.towstrap/towstrap.log`); as root it writes a `/Library/LaunchDaemons/` daemon instead (log `/var/log/towstrap-agent.log`) — mirroring Linux's dedicated `towstrap` user, the daemon runs under an auto-created `_towstrap` system account (remote sessions get a `_towstrap` shell, not root; the plist also carries resource limits of 4096 file descriptors / 1024 processes). On reinstall, an already-loaded service is restarted via `kickstart -k` so the new binary takes effect; without a token only the plist is written — load it after `towstrap register` with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist`.
 
 Unload: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agent.plist` (or the `system` domain with sudo), then delete the plist.
 
@@ -326,7 +326,7 @@ A freshly created mirror starts its shell in the directory you ran the command f
 - Multiple clients can attach to the same mirror at once (shared view); keystrokes from any of them feed the same terminal; the size follows whoever attached/resized last
 - Relay over SSH: `ssh -t host mirror work` (an `ssh -t` through the towstrap server works too) — relaying is a human feature: local console, direct sshd, or towstrap SSH all end up running the local `mirror` command
 - MCP doesn't participate: `terminal_open` opens session-scoped temporary terminals and cannot attach to a named mirror — an AI has no way to take over a terminal a human is using
-- Where it lives: `~/.towstrap/mirror.sock` (`/var/lib/towstrap/mirror.sock` for root installs), mode 0600 — only the agent's system user can connect, equivalent to "can open a shell as that user"
+- Where it lives: `~/.towstrap/mirror.sock` (`/var/lib/towstrap/mirror.sock` when the process runs directly as root; a root-installed launchd daemon runs as `_towstrap` and lands at `/var/lib/towstrap/.towstrap/mirror.sock`), mode 0600 — only the agent's system user can connect, equivalent to "can open a shell as that user"
 - Idle kill: a mirror with no input/output for **72 hours** is killed automatically (attached-but-silent counts too; the audit log records `MIRROR-KILL via=idle`). Change the threshold with the `mirror_idle` config key or the `--mirror-idle` flag; `0`/`off` disables it
 - Boundary: TUIs live inside the agent process — restart the agent and they're gone (same as tmux); no `mirror` command on Windows, so no named mirrors on Windows machines
 
