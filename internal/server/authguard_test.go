@@ -162,3 +162,28 @@ func TestAuthGuardPerIPLock(t *testing.T) {
 		t.Fatal("pass 不该清 IP 计数——一次成功抹不掉攒下的失败")
 	}
 }
+
+// /status 这类未认证端点的失败记进独立预算：刷匿名端点不能把
+// SSH/登录的 IP 预算烧掉（反之亦然）。
+func TestAnonBudgetSeparate(t *testing.T) {
+	g := newAuthGuard()
+	for i := 0; i < 200; i++ {
+		g.failIPAnon("1.2.3.4")
+	}
+	if g.ipAllowedAnon("1.2.3.4") {
+		t.Fatal("匿名预算应已锁")
+	}
+	if !g.ipAllowed("1.2.3.4") {
+		t.Fatal("匿名端点的失败不应烧掉登录预算")
+	}
+	// 反向同样分账：登录侧刷爆不影响匿名端点
+	for i := 0; i < 200; i++ {
+		g.failIP("9.9.9.9")
+	}
+	if g.ipAllowed("9.9.9.9") {
+		t.Fatal("登录预算应已锁")
+	}
+	if !g.ipAllowedAnon("9.9.9.9") {
+		t.Fatal("登录预算的失败不应烧掉匿名端点预算")
+	}
+}

@@ -162,9 +162,11 @@ func Open(dbPath, keyPath string) (*Store, error) {
 		}
 	}
 	// 库文件已在而 key 读不出来 = 密封凭据不可救——拒绝启动让管理员
-	// 来处理，绝不静默重建（见 loadOrCreateKey 注释）。
+	// 来处理，绝不静默重建（见 loadOrCreateKey 注释）。stat 失败（权限
+	// 不足、IO 错）也算「库可能在」——不能当不存在去生成新 key，那
+	// 会让已有凭据变成解不开的乱码、看起来像数据丢了。
 	_, statErr := os.Stat(dbPath)
-	key, err := loadOrCreateKey(keyPath, statErr == nil)
+	key, err := loadOrCreateKey(keyPath, statErr == nil || !os.IsNotExist(statErr))
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +195,9 @@ func Open(dbPath, keyPath string) (*Store, error) {
 	for _, col := range []struct{ table, name, ddl string }{
 		{"users", "oauth_only", `ALTER TABLE users ADD COLUMN oauth_only INTEGER NOT NULL DEFAULT 0`},
 		{"machines", "oauth_only", `ALTER TABLE machines ADD COLUMN oauth_only INTEGER NOT NULL DEFAULT 0`},
+		// pending_token_enc：轮换中的暂存新 token。ack 丢了但 agent 已写
+		// 盘时，它拿新 token 连上即自动转正（服务端当协调者，裂脑自愈）。
+		{"machines", "pending_token_enc", `ALTER TABLE machines ADD COLUMN pending_token_enc TEXT`},
 	} {
 		if err := ensureColumn(db, col.table, col.name, col.ddl); err != nil {
 			db.Close()

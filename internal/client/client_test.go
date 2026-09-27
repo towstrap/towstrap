@@ -210,3 +210,19 @@ func TestTokenStateFallback(t *testing.T) {
 		t.Fatal("cur 没变不该产生 prev")
 	}
 }
+
+// 明文 ws:// 出本机必须显式 AllowPlain——agent token 每次握手都会
+// 发出去，裸奔出公网等于送 token。回环/加密不受限。
+func TestPrepareRejectsPlainRemote(t *testing.T) {
+	if _, err := prepare(Config{ID: "m", Server: "ws://203.0.113.9:8765"}); err == nil {
+		t.Fatal("明文出公网应被拒")
+	}
+	if _, err := prepare(Config{ID: "m", Server: "ws://203.0.113.9:8765", AllowPlain: true}); err != nil {
+		t.Fatalf("显式 allow_plain 应放行: %v", err)
+	}
+	for _, srv := range []string{"ws://127.0.0.1:8765", "wss://203.0.113.9:8765", "ws://localhost:8765"} {
+		if _, err := prepare(Config{ID: "m", Server: srv}); err != nil {
+			t.Fatalf("%s 不应被拦: %v", srv, err)
+		}
+	}
+}

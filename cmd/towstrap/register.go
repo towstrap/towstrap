@@ -49,7 +49,8 @@ func usageRegister() {
                         登录分支里同名=重装换 token；脚本里不给就静默用主机名）
   --invite 码           服务器设了 register_invite 时必填（只建号分支用）
   --password-stdin      密码从 stdin 读一行（脚本用；交互模式自动问）
-  --totp 6位码          账号已绑 TOTP 时登录加机要带的当前动态码
+  --totp 6位码          账号已绑 TOTP 时登录加机要带的当前动态码（argv 会出现在本机进程列表里，介意就用 --totp-stdin）
+  --totp-stdin          动态码从 stdin 读一行（不上命令行；配 --password-stdin 时排在密码行后）
   --skip-totp           跳过最后的 TOTP 绑定提问（SSH 登录后 @totp 也能绑）
   --insecure            跳过 TLS 证书校验（自签证书用）
   --allow-plain         服务器是明文 ws:// 且不在回环时必须加（密码不裸奔）
@@ -66,6 +67,7 @@ func runRegister(args []string) int {
 	invite := fs.String("invite", "", "")
 	pwStdin := fs.Bool("password-stdin", false, "")
 	totpCode := fs.String("totp", "", "")
+	totpStdin := fs.Bool("totp-stdin", false, "")
 	skipTOTP := fs.Bool("skip-totp", false, "")
 	insecure := fs.Bool("insecure", false, "")
 	allowPlain := fs.Bool("allow-plain", false, "")
@@ -126,6 +128,7 @@ func runRegister(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	resolveTOTPStdin(sharedStdin(), totpCode, *totpStdin) // 密码行之后读 totp 行
 
 	fp := machineid.Fingerprint()
 	if fp == "" {

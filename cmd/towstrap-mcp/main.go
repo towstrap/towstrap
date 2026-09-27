@@ -174,6 +174,13 @@ func pending(cfgPath, approvalsDir string) {
 		fmt.Printf("%s  %s  %-8s  %s  （等了 %s）\n",
 			p.ID, auditlog.Clean(p.Machine), auditlog.Clean(p.Kind), auditlog.Clean(p.Detail),
 			time.Since(p.Created).Round(time.Second))
+		// cwd/常驻会话是批准判断的一部分，审批人得看得到再决定。
+		if p.Cwd != "" {
+			fmt.Printf("    cwd: %s\n", auditlog.Clean(p.Cwd))
+		}
+		if p.Session != "" {
+			fmt.Printf("    session: %s\n", auditlog.Clean(p.Session))
+		}
 		if p.Preview != "" {
 			fmt.Printf("    ↳ %s\n", auditlog.Clean(p.Preview))
 		}

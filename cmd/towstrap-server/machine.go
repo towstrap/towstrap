@@ -35,6 +35,10 @@ func usageMachine() {
                                离线/丢失时用），必须加 --admin，记
                                MACHINE-TOKEN-REGEN-ADMIN。正常换法是在 agent
                                机器上跑 towstrap token refresh
+  towstrap-server machine fingerprint list|release [指纹] [--admin]
+                               查/解「机器指纹→账号」绑定：自助注册占位或
+                               重装换账号时用。list 要 --admin；release 不加
+                               --admin 时会向绑定账号本人要密码确认。
 
 账号本人确认：add 和 token 会先问这个账号的 SSH 密码（绑了 TOTP 再问验证码），
 防「能碰服务器 DB 就能给任何账号发 token」。--admin 跳过确认：打一条警告，
@@ -62,6 +66,83 @@ func runMachine(args []string) int {
 		return machineRemove(rest)
 	case "token":
 		return machineToken(rest)
+	case "fingerprint":
+		return machineFingerprint(rest)
+	default:
+		usageMachine()
+		return 2
+	}
+}
+
+// machineFingerprint 查/释放「机器指纹→账号」绑定：自助注册一台机器
+// 只许绑一个账号，遇到占位（squat）或重装换账号时管理员用这个解。
+//
+//	machine fingerprint list                      列出全部绑定
+//	machine fingerprint release <指纹> --admin    解绑（只删 register_fps 行，
+//	                                              不动账号/机器本身）
+func machineFingerprint(args []string) int {
+	if len(args) == 0 {
+		usageMachine()
+		return 2
+	}
+	verb, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("machine fingerprint "+verb, flag.ExitOnError)
+	configPath, usersDB, usersKey, serverURL := mcpCommonFlags(fs)
+	auditLog := fs.String("audit-log", "", "")
+	admin := fs.Bool("admin", false, "")
+	rest = parseMix(fs, rest)
+	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
+	if !ok {
+		return 2
+	}
+	env.auditPath = cliAuditPath(*auditLog, *configPath)
+	switch verb {
+	case "list":
+		// 绑定表是跨账号的归属信息，只能管理员整列（不借「账号本人」口子）。
+		if !*admin {
+			fmt.Fprintln(os.Stderr, "列指纹绑定要加 --admin（确认你是服务器管理员，会记审计）")
+			return 2
+		}
+		auditAdminAction(env.auditPath, "FP-LIST-ADMIN", "count", "all")
+		rows, err := env.store.FingerprintBindings()
+		if err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		for _, r := range rows {
+			fmt.Printf("%s  %s\n", r.Fingerprint, r.Username)
+		}
+		if len(rows) == 0 {
+			fmt.Println("（没有指纹绑定）")
+		}
+		return 0
+	case "release":
+		fp := firstArg(rest)
+		if fp == "" {
+			usageMachine()
+			return 2
+		}
+		owner, _ := env.store.FingerprintAccount(fp)
+		if owner == "" {
+			fmt.Println("这个指纹没有绑定记录")
+			return 1
+		}
+		// 绑定账号本人（密码确认）或管理员都能解——别人替它解不行。
+		if !ownerOrAdmin(env, owner, "", "FP-RELEASE-ADMIN", *admin) {
+			return 2
+		}
+		released, err := env.store.ForceReleaseFingerprint(fp)
+		if err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		if !released {
+			fmt.Println("这个指纹没有绑定记录")
+			return 1
+		}
+		auditAdminAction(env.auditPath, "FP-RELEASE", "fingerprint", fp, "owner", owner)
+		fmt.Printf("已解绑 %s（原账号 %s）——那台机器可以重新注册\n", fp, owner)
+		return 0
 	default:
 		usageMachine()
 		return 2

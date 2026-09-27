@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"testing"
 )
 
@@ -93,5 +95,39 @@ func TestPersistedIDRoundTrip(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("machine-id 权限应为 0600, got %o", fi.Mode().Perm())
+	}
+}
+
+// 审计项 H1：环境派生的配置目录必须是绝对路径。XDG_CONFIG_HOME 是相对值
+// （含引号里没展开的 "~/.config"）时退回 ~/.config/towstrap；HOME 也没有时
+// 报错——绝不能退回 cwd 相对路径（cwd 里预置的 agent.yaml 会被信任）。
+func TestConfDirAbsoluteOnly(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("覆盖的是普通用户的 XDG/HOME 推导分支")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := filepath.Join(home, ".config", "towstrap")
+	for _, xdg := range []string{"relative/dir", ".", "./cfg", "cfg/../cfg2", "~/.config"} {
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		d, err := ConfDir()
+		if err != nil {
+			t.Fatalf("XDG=%q: %v", xdg, err)
+		}
+		if !filepath.IsAbs(d) || d != want {
+			t.Fatalf("XDG=%q 应忽略并退回 %q，got %q", xdg, want, d)
+		}
+	}
+	// 绝对路径的 XDG 生效
+	abs := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", abs)
+	if d, err := ConfDir(); err != nil || d != filepath.Join(abs, "towstrap") {
+		t.Fatalf("绝对 XDG 应生效，got %q err=%v", d, err)
+	}
+	// HOME 也没了 → 报错，不给相对路径
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	if d, err := ConfDir(); err == nil || (d != "" && filepath.IsAbs(d)) {
+		t.Fatalf("HOME 未设置应报错，got dir=%q err=%v", d, err)
 	}
 }

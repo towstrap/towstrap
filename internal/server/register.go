@@ -134,7 +134,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if owner, err := s.cfg.Users.FingerprintAccount(req.Fingerprint); err == nil && owner != "" {
 		s.audit.Log("REGISTER-DENY", "ip", ip, "reason", "fp-taken", "owner", owner)
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(proto.RegisterResp{Err: "这台机器已注册过——用注册时的账号走 --login；忘了账号找管理员"})
+		_ = json.NewEncoder(w).Encode(proto.RegisterResp{Err: "这台机器已注册过——用注册时的账号走 --login；忘了账号或确信被误占，让管理员跑 towstrap-server machine fingerprint release <指纹>"})
 		return
 	}
 
@@ -150,7 +150,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		owner, _ := s.cfg.Users.FingerprintAccount(req.Fingerprint)
 		s.audit.Log("REGISTER-DENY", "ip", ip, "reason", "fp-taken", "owner", owner)
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(proto.RegisterResp{Err: "这台机器已注册过——用注册时的账号走 --login；忘了账号找管理员"})
+		_ = json.NewEncoder(w).Encode(proto.RegisterResp{Err: "这台机器已注册过——用注册时的账号走 --login；忘了账号或确信被误占，让管理员跑 towstrap-server machine fingerprint release <指纹>"})
 		return
 	}
 	acct, err := s.cfg.Users.Add(req.Account, req.Password, nil, "self-register:"+ip, nil)

@@ -13,9 +13,13 @@ func serveMirrorSock(_ *mirrorManager, _ *presence, _ *connState) {
 	slog.Info("Windows 暂不支持本机 mirror socket，镜像终端不可用")
 }
 
-// DefaultMirrorSockPath Windows 上只用于 status 的探测路径展示。
+// DefaultMirrorSockPath Windows 上只用于 status 的探测路径展示；
+// 审计路径推导不出时返回空串（不落 cwd 相对路径）。
 func DefaultMirrorSockPath() string {
-	return filepath.Join(filepath.Dir(DefaultAuditPath()), "mirror.sock")
+	if d := DefaultAuditPath(); d != "" {
+		return filepath.Join(filepath.Dir(d), "mirror.sock")
+	}
+	return ""
 }
 
 func QueryStatus(string) (*StatusInfo, string, error) {

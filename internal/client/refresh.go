@@ -58,6 +58,7 @@ func HTTPBase(server string) (string, error) {
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	u.RawQuery = ""
+	u.Fragment = "" // 留着的话 /token/refresh 会拼进 fragment 里
 	return u.String(), nil
 }
 

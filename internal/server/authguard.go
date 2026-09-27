@@ -16,14 +16,20 @@ import (
 // 第三张表按裸来源 IP 记（阈值 60）：堵住「固定一个 IP、不停换用户名喷
 // 密码」的空隙——前两张表按用户名分桶，这种打法永远不触发。登录成功
 // 不清 IP 表（成功只能说明这个来源里有一个真人，不能把前面的失败抹掉）。
+//
+// 第四张表是匿名端点（/status 这类零凭据可达的入口）的独立预算：
+// 刷匿名端点只锁匿名端点，烧不掉 SSH/TOTP 的登录预算——不然任何人
+// 都能用免费请求把一个出口 IP 后面所有账号的登录一起锁掉。反过来
+// 登录失败也不会挤占匿名预算。
 type authGuard struct {
 	threshold     int           // 「账号|IP」连续失败多少次开始锁
 	userThreshold int           // 按账号汇总的阈值（换 IP 打同一账号也累计）
 	ipThreshold   int           // 按裸来源 IP 的阈值（换用户名刷也累计）
+	anonThreshold int           // 匿名端点独立预算的阈值
 	base          time.Duration // 首次锁定时长，此后翻倍
 	window        time.Duration // 失败计数的有效窗口，超过则从头计
 	maxLock       time.Duration
-	// maxEntries 是失败记录表的条目上限（三张表分别算）：乱喷用户名的分布式
+	// maxEntries 是失败记录表的条目上限（四张表分别算）：乱喷用户名的分布式
 	// 爆破在窗口内也能把表撑大，到顶就先清过期的、再淘汰最旧的。
 	maxEntries int
 
@@ -31,6 +37,7 @@ type authGuard struct {
 	entries     map[string]*authEntry // 键 "user|ip"
 	userEntries map[string]*authEntry // 键 user
 	ipEntries   map[string]*authEntry // 键 ip
+	anonEntries map[string]*authEntry // 键 ip（匿名端点独立预算）
 	lastSweep   time.Time
 }
 
@@ -45,6 +52,7 @@ func newAuthGuard() *authGuard {
 		threshold:     5,
 		userThreshold: 50,
 		ipThreshold:   60,
+		anonThreshold: 60,
 		base:          time.Minute,
 		window:        15 * time.Minute,
 		maxLock:       time.Hour,
@@ -52,6 +60,7 @@ func newAuthGuard() *authGuard {
 		entries:       make(map[string]*authEntry),
 		userEntries:   make(map[string]*authEntry),
 		ipEntries:     make(map[string]*authEntry),
+		anonEntries:   make(map[string]*authEntry),
 	}
 }
 
@@ -66,6 +75,9 @@ func (g *authGuard) ensureMaps() {
 	}
 	if g.ipEntries == nil {
 		g.ipEntries = map[string]*authEntry{}
+	}
+	if g.anonEntries == nil {
+		g.anonEntries = map[string]*authEntry{}
 	}
 }
 
@@ -121,6 +133,27 @@ func (g *authGuard) failIP(ip string) {
 	g.sweepLocked(now)
 }
 
+// ipAllowedAnon / failIPAnon 是匿名端点（零凭据可达的 /status 之类）的
+// 独立预算：和登录预算分账，互不相烧。
+func (g *authGuard) ipAllowedAnon(ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if e, ok := g.anonEntries[ip]; ok && !time.Now().After(e.lockedTill) {
+		return false
+	}
+	return true
+}
+
+func (g *authGuard) failIPAnon(ip string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ensureMaps()
+	now := time.Now()
+	g.failLocked(g.anonEntries, ip, "anon-ip", g.anonThreshold, now)
+	g.budgetLocked(now)
+	g.sweepLocked(now)
+}
+
 // budgetLocked 是三张表的容量兜底（调用方持锁）。
 func (g *authGuard) budgetLocked(now time.Time) {
 	if g.maxEntries <= 0 {
@@ -134,6 +167,9 @@ func (g *authGuard) budgetLocked(now time.Time) {
 	}
 	if len(g.ipEntries) >= g.maxEntries {
 		g.evictLocked(g.ipEntries, now)
+	}
+	if len(g.anonEntries) >= g.maxEntries {
+		g.evictLocked(g.anonEntries, now)
 	}
 }
 
@@ -177,6 +213,7 @@ func (g *authGuard) sweepLocked(now time.Time) {
 	sweepMap(g.entries, now, g.window)
 	sweepMap(g.userEntries, now, g.window)
 	sweepMap(g.ipEntries, now, g.window)
+	sweepMap(g.anonEntries, now, g.window)
 }
 
 func sweepMap(m map[string]*authEntry, now time.Time, window time.Duration) {

@@ -73,14 +73,16 @@ type Config struct {
 	// AllowPlainHTTP：HTTP 口明文开在非回环地址上时的显式确认——
 	// /register、/totp/*、/token/refresh、/oauth/*、/agent 全在这条通道
 	// 收发密码和 token，明文 + 非回环监听没这个确认就拒绝启动。
-	// MCPAllowPlainHTTP 表态的是同一回事，任一个开都算数。
+	// 只有它能放整口明文；下面的 MCPAllowPlainHTTP 不算数。
 	AllowPlainHTTP bool
 
 	// MCP 非 nil 时在 HTTP 口挂 Streamable HTTP 的 MCP 服务（路径 MCPPath，
 	// 默认 /mcp）。MCP.Machines 在这里只当元数据用（说明、roots）；实际
 	// 能看到哪些机器由 MCP 客户端凭据决定。
-	MCP               *mcpsrv.Config
-	MCPPath           string
+	MCP     *mcpsrv.Config
+	MCPPath string
+	// MCPAllowPlainHTTP（mcp.allow_plain_http）只表态 /mcp 一个端点——
+	// 单独设它时 Run() 直接拒绝启动并点名波及面，不许它悄悄放整口明文。
 	MCPAllowPlainHTTP bool
 
 	// Monitor 是旁路监控推送目标（monitor: 配置节）：URL 空 = 关闭。
@@ -117,14 +119,15 @@ type Server struct {
 }
 
 // DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/towstrap，
-// 其他用户在 ~/.towstrap（和 agent 的约定一致）。
+// 其他用户在 ~/.towstrap（和 agent 的约定一致）。HOME 推不出时返回
+// 空串——不落 cwd 相对路径，工作目录可能被预置内容污染。
 func DefaultAuditPath() string {
 	if os.Geteuid() == 0 {
 		return "/var/lib/towstrap/server-audit.log"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "towstrap-server-audit.log"
+		return ""
 	}
 	return filepath.Join(home, ".towstrap", "server-audit.log")
 }
@@ -173,9 +176,12 @@ func (s *Server) Run() error {
 	// 凭据不能走明文出公网：整个 HTTP 口都收发密码/token（/register、
 	// /totp/*、/token/refresh、/oauth/*、/agent、/mcp），明文 + 非回环
 	// 监听默认拒绝启动；确认只在内网/隧道里用时显式 allow_plain_http。
-	// mcp.allow_plain_http 是旧开关，表态的是同一回事，任一个开都算数。
-	plainOK := s.cfg.AllowPlainHTTP || (s.cfg.MCP != nil && s.cfg.MCPAllowPlainHTTP)
-	if plainHTTPListenerBlocked(s.cfg.HTTPAddr, s.cfg.TLS) && !plainOK {
+	// mcp.allow_plain_http 只表态 /mcp 一个端点，不能放整口明文——
+	// 只设它时单独点名报错，别让运维以为授权面只有 /mcp。
+	if plainHTTPListenerBlocked(s.cfg.HTTPAddr, s.cfg.TLS) && !s.cfg.AllowPlainHTTP {
+		if s.cfg.MCP != nil && s.cfg.MCPAllowPlainHTTP {
+			return fmt.Errorf("mcp.allow_plain_http 只管 /mcp 一个端点，不足以授权整口明文：监听 %q 上 /register、/totp/*、/passwd、/sshkey、/token/refresh、/oauth/*、/agent 都会明文传凭据——确认要全口明文请改用顶层 allow_plain_http: true", s.cfg.HTTPAddr)
+		}
 		return fmt.Errorf("HTTP 监听开在明文非回环地址 %q 上：/register、/totp/*、/passwd、/sshkey、/token/refresh、/agent 都会明文传凭据；请开 tls，或确认只在内网/隧道里用并设置 allow_plain_http: true", s.cfg.HTTPAddr)
 	}
 	// 监控事件同理：ws:// 明文只允许回环，否则要显式确认。

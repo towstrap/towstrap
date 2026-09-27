@@ -40,8 +40,8 @@ func (s *Server) handlePasswd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	denyU := func(code int, reason, msg string) {
-		s.audit.Log("PASSWD-DENY", "user", m.Username, "ip", ip, "reason", reason)
-		slog.Warn("改密码被拒", "user", m.Username, "ip", ip, "reason", reason)
+		s.audit.Log("PASSWD-DENY", "user", m.Username, "machine", m.ID(), "ip", ip, "reason", reason)
+		slog.Warn("改密码被拒", "user", m.Username, "machine", m.ID(), "ip", ip, "reason", reason)
 		fail(code, reason, msg)
 	}
 	// 已绑账号没给码时回 need_code，客户端补问后重发。
@@ -66,8 +66,13 @@ func (s *Server) handlePasswd(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// 改密码顺手吊销这个账号还没过期的 OAuth SSH 凭据——旧密码可能
+	// 已经被人拿去换过 grant，不吊销它们能用到自然过期。
+	if err := s.cfg.Users.RevokeSSHGrants(m.Username); err != nil {
+		slog.Warn("吊销 SSH 凭据失败", "account", m.Username, "err", err)
+	}
 	s.guard.pass(m.Username, ip)
-	s.audit.Log("PASSWD", "account", m.Username, "ip", ip)
-	slog.Info("自助改密码", "account", m.Username, "ip", ip)
+	s.audit.Log("PASSWD", "account", m.Username, "machine", m.ID(), "ip", ip)
+	slog.Info("自助改密码", "account", m.Username, "machine", m.ID(), "ip", ip)
 	_ = json.NewEncoder(w).Encode(proto.PasswdResp{OK: true})
 }

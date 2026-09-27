@@ -139,13 +139,23 @@ func psCommand(script string) string {
 	return "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + psEncode(script)
 }
 
-func psReadCommand(path string, maxPlusOne int) string {
-	return psCommand(psPathPrelude(path) + fmt.Sprintf(
-		"try{$f=[System.IO.File]::OpenRead($p);$o=[System.Console]::OpenStandardOutput();$b=New-Object byte[] 65536;$r=%d;while($r -gt 0){$n=$f.Read($b,0,[Math]::Min($b.Length,$r));if($n -le 0){break};$o.Write($b,0,$n);$r-=$n};$o.Flush();$f.Dispose()}catch{[System.Console]::Error.WriteLine($_.Exception.Message);exit 1}",
-		maxPlusOne))
+// psFileCommand 生成「解析+比对+读写」一体的 PowerShell 命令：$p 是
+// 原始路径（远端自己再解析一遍），$exp 是上次批准的解析结果——两次
+// 远端调用之间符号链接被换掉就 exit 6，绝不在变过的路径上读写。
+// action 是作用在 $f 上的读写动作（变量名用 $io，别撞解析的 $f）。
+func psFileCommand(rawPath, expected, action string) string {
+	return psCommand("$p=" + psQuote(rawPath) + "\n$exp=" + psQuote(expected) + "\n" +
+		psResolveHead + fmt.Sprintf(psResolveTailIO, action))
 }
 
-func psWriteCommand(path string) string {
-	return psCommand(psPathPrelude(path) +
-		"try{$f=[System.IO.File]::Create($p);[System.Console]::OpenStandardInput().CopyTo($f);$f.Dispose()}catch{[System.Console]::Error.WriteLine($_.Exception.Message);exit 1}")
+// psReadAction 读 $f 最多 maxPlusOne 字节到 stdout（多读一字节为超限判断）。
+func psReadAction(maxPlusOne int) string {
+	return fmt.Sprintf(
+		"try{$io=[System.IO.File]::OpenRead($f);$o=[System.Console]::OpenStandardOutput();$b=New-Object byte[] 65536;$r=%d;while($r -gt 0){$n=$io.Read($b,0,[Math]::Min($b.Length,$r));if($n -le 0){break};$o.Write($b,0,$n);$r-=$n};$o.Flush();$io.Dispose()}catch{[System.Console]::Error.WriteLine($_.Exception.Message);exit 1}",
+		maxPlusOne)
+}
+
+// psWriteAction 把 stdin 整个写进 $f（覆盖写）。
+func psWriteAction() string {
+	return "try{$io=[System.IO.File]::Create($f);[System.Console]::OpenStandardInput().CopyTo($io);$io.Dispose()}catch{[System.Console]::Error.WriteLine($_.Exception.Message);exit 1}"
 }

@@ -44,7 +44,8 @@ func usageSSHKey() {
 
   --server wss://..     服务器地址（默认读 agent.yaml，没有再回落官方）
   --password-stdin      密码从 stdin 读一行（脚本用）
-  --totp 6位码          账号已绑 TOTP 时要带的当前动态码（脚本用）
+  --totp 6位码          账号已绑 TOTP 时要带的当前动态码（脚本用；argv 会出现在本机进程列表里，介意就用 --totp-stdin）
+  --totp-stdin          动态码从 stdin 读一行（不上命令行；配 --password-stdin 时排在密码行后）
   --agent-token/-file   token 来源（默认和 agent 同款优先级）
   --config 路径         agent.yaml 位置（默认各平台配置目录）
   --insecure            跳过 TLS 证书校验
@@ -127,6 +128,7 @@ func runSSHKey(args []string) int {
 	cf := addCredFlags(fs)
 	pwStdin := fs.Bool("password-stdin", false, "")
 	totpCode := fs.String("totp", "", "")
+	totpStdin := fs.Bool("totp-stdin", false, "")
 	keyFile := fs.String("file", "", "")
 	// 动词是位置参数——先摘出来再 Parse，不然 "ssh-key add --password-stdin"
 	// 这种写法里 add 后面的旗标会被 flag 包丢下不解析。只摘第一个动词，
@@ -185,6 +187,7 @@ func runSSHKey(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	resolveTOTPStdin(sharedStdin(), totpCode, *totpStdin)
 
 	post := func(code string) (int, proto.SSHKeyResp, bool) {
 		var res proto.SSHKeyResp

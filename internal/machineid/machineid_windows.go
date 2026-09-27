@@ -3,6 +3,7 @@ package machineid
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -53,9 +54,10 @@ var errNoID = errString("没有平台机器 ID")
 func (e errString) Error() string { return string(e) }
 
 func confDirOS() string {
-	// Windows 不写 /etc：统一走 %LOCALAPPDATA%\TowStrap
-	if d := os.Getenv("LOCALAPPDATA"); d != "" {
-		return d + `\TowStrap`
+	// Windows 不写 /etc：统一走 %LOCALAPPDATA%\TowStrap。同样只认绝对
+	// 路径——相对值会让配置目录落到 cwd 下面。
+	if d := os.Getenv("LOCALAPPDATA"); d != "" && filepath.IsAbs(d) {
+		return filepath.Join(d, "TowStrap")
 	}
 	return ""
 }

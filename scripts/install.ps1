@@ -12,7 +12,10 @@ param(
     [string]$Version = "__TOWSTRAP_DEFAULT_VERSION__",
     [string]$Prefix = "$env:LOCALAPPDATA\TowStrap",
     [switch]$NoVerify,
-    [switch]$NoService
+    [switch]$NoService,
+    # 发行签名公钥（minisign）：设了就强验 SHA256SUMS.minisig（需要本机
+    # 有 minisign.exe）。也可用环境变量 TOWSTRAP_MINISIGN_PUB。
+    [string]$MinisignPub = $(if ($env:TOWSTRAP_MINISIGN_PUB) { $env:TOWSTRAP_MINISIGN_PUB } else { "" })
 )
 $ErrorActionPreference = "Stop"
 
@@ -70,6 +73,24 @@ if ($NoVerify) {
     try {
         $sums = (Invoke-WebRequest -UseBasicParsing "$relbase/SHA256SUMS").Content
     } catch { Remove-Item $tmpExe -Force; Die "拉不到 SHA256SUMS，校验过不了就不装；要跳过加 -NoVerify" }
+    if ($MinisignPub) {
+        # 签名是独立信任根：清单和二进制同出一个 Release，光核 SHA256
+        # 挡不住整个 Release 被换。本机没 minisign 宁可不装。
+        if (-not (Get-Command minisign -ErrorAction SilentlyContinue)) {
+            Remove-Item $tmpExe -Force
+            Die "这个版本要求签名校验，但系统没有 minisign（winget/scoop 装一个；要跳过加 -NoVerify）"
+        }
+        # minisign -m 要指到真实文件，签名自动找同名 .minisig——把已拉的
+        # 清单落到临时文件一起验，避免再发一次请求（少一次被篡改的机会）。
+        $sumsFile = "$tmpExe.SHA256SUMS"
+        [IO.File]::WriteAllText($sumsFile, $sums)
+        try {
+            Invoke-WebRequest -UseBasicParsing "$relbase/SHA256SUMS.minisig" -OutFile "$sumsFile.minisig"
+        } catch { Remove-Item $tmpExe -Force; Die "拉不到 SHA256SUMS.minisig，签名校验过不了就不装；要跳过加 -NoVerify" }
+        & minisign -V -P $MinisignPub -m $sumsFile | Out-Null
+        if ($LASTEXITCODE -ne 0) { Remove-Item $tmpExe -Force; Die "SHA256SUMS 签名校验失败——清单可能被换过，拒绝安装" }
+        Write-Host ">> minisign 签名校验通过"
+    }
     $want = ($sums -split "`n" | Where-Object { $_ -match " $asset`$" } | ForEach-Object { ($_ -split "\s+")[0] })
     if (-not $want) { Remove-Item $tmpExe -Force; Die "SHA256SUMS 里没有 $asset 这一行；要跳过加 -NoVerify" }
     $got = (Get-FileHash $tmpExe -Algorithm SHA256).Hash.ToLower()

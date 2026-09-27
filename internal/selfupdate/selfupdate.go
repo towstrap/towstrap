@@ -120,6 +120,18 @@ func Run(o Opts) error {
 	if err != nil {
 		return fmt.Errorf("拉不到 SHA256SUMS，校验过不了就不装：%w", err)
 	}
+	// releasePubKey 配了就强验签：清单和二进制同出一个 Release，光靠
+	// 清单挡不住「整个 Release 被换」——签名才是独立信任根。
+	if releasePubKey != "" {
+		sig, err := fetchString(base + "/SHA256SUMS.minisig")
+		if err != nil {
+			return fmt.Errorf("这个版本要求签名校验，但拉不到 SHA256SUMS.minisig：%w", err)
+		}
+		if err := verifyMinisig(releasePubKey, []byte(sums), sig); err != nil {
+			return fmt.Errorf("SHA256SUMS 签名不可信，拒绝安装：%w", err)
+		}
+		fmt.Fprintln(out, ">> minisign 签名校验通过")
+	}
 	if err := verifySHA256(tmpBin, sums, asset); err != nil {
 		return err
 	}
@@ -240,12 +252,24 @@ func verifySHA256(path, sums, asset string) error {
 	return nil
 }
 
-// replace 原子换二进制：先把旧的挪成 .old（运行中的进程也能挪），再把
-// 新文件挪进原名。任何一步失败都回滚，不留没有可执行文件的窗口。
-// .old 清不掉（Windows 上运行中的映像删不了）就留着说明，不影响功能。
+// replace 换二进制并留旧版备份（<exe>.old，下次更新会被覆盖，也是
+// 手工回滚的落点：mv towstrap.old towstrap）。
+// POSIX 上走「硬链接旧版 + 新文件原子改名覆盖」：全程没有一个时刻原名
+// 上没有可执行文件——进程在两步之间死掉也安全。Windows 上改名运行中的
+// 映像会失败，退回挪走再挪入的两步法（中间窗无法避免，.old 留着兜底）。
 func replace(exe, newBin string) error {
 	old := exe + ".old"
 	_ = os.Remove(old)
+	if runtime.GOOS != "windows" {
+		if err := os.Link(exe, old); err != nil {
+			return err // 备份建不上不动旧文件，直接失败
+		}
+		if err := os.Rename(newBin, exe); err != nil {
+			_ = os.Remove(old) // exe 没动过，把备份链摘掉
+			return err
+		}
+		return nil // .old 留着当回滚副本
+	}
 	if err := os.Rename(exe, old); err != nil {
 		return err
 	}
@@ -253,8 +277,7 @@ func replace(exe, newBin string) error {
 		_ = os.Rename(old, exe) // 回滚
 		return err
 	}
-	_ = os.Remove(old)
-	return nil
+	return nil // .old 同样留着
 }
 
 // restartManaged 升级后把受管服务拉起来跑新版。只碰我们认识的托管形态
@@ -288,8 +311,41 @@ func restartManaged(product string, out io.Writer) {
 			}
 		}
 		fmt.Fprintln(out, ">> 重启运行中的 towstrap 后新版本生效")
-	default: // darwin 等：没有托管形态
+	case "darwin":
+		// install.sh 的 macOS 常驻形态是 launchd 项 com.towstrap.agent：
+		// root 装走 system 域、普通用户走 gui/<uid> 域；两者都先试。
+		if label := launchdLabel(product); label != "" {
+			doms := []string{fmt.Sprintf("gui/%d", os.Getuid())}
+			if os.Geteuid() == 0 {
+				doms = append([]string{"system"}, doms...)
+			}
+			for _, dom := range doms {
+				target := dom + "/" + label
+				if exec.Command("launchctl", "print", target).Run() != nil {
+					continue
+				}
+				if err := exec.Command("launchctl", "kickstart", "-k", target).Run(); err == nil {
+					fmt.Fprintf(out, ">> launchd 服务 %s 已重启，新版本生效\n", label)
+				} else {
+					fmt.Fprintf(out, ">> launchctl kickstart %s 失败，手工重启生效\n", target)
+				}
+				return
+			}
+		}
 		fmt.Fprintln(out, ">> 重启运行中的进程后新版本生效")
+	default:
+		fmt.Fprintln(out, ">> 重启运行中的进程后新版本生效")
+	}
+}
+
+// launchdLabel 返回产品在 launchd 里的 Label；不认识的返回空（不瞎猜
+// 名字去 kickstart 别人的服务）。
+func launchdLabel(product string) string {
+	switch product {
+	case "towstrap":
+		return "com.towstrap.agent"
+	default:
+		return ""
 	}
 }
 

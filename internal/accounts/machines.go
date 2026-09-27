@@ -153,13 +153,25 @@ func (s *Store) AddMachine(username, name string, agentAllowIPs []string) (Machi
 	}, nil
 }
 
-// RemoveMachine 删掉一台机器（token 随之作废，连着的 agent 会被巡检断开）。
+// RemoveMachine 删掉一台机器（token 随之作废，连着的 agent 会被巡检断开；
+// 给这台机器签发的短时效 SSH 凭据一并吊销）。
 func (s *Store) RemoveMachine(username, name string) error {
-	res, err := s.db.Exec(`DELETE FROM machines WHERE username = ? AND name = ?`, username, name)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	return requireAffected(res, username+"+"+name)
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM machines WHERE username = ? AND name = ?`, username, name)
+	if err != nil {
+		return err
+	}
+	if err := requireAffected(res, username+"+"+name); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM ssh_grants WHERE machine = ?`, username+"+"+name); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Machines 列出账号下全部机器，按机器名排序。
@@ -238,7 +250,20 @@ func (s *Store) MachineByToken(token string) (Machine, bool) {
 	m, err := scanMachine(s, s.db.QueryRow(
 		`SELECT `+machineCols+` FROM machines WHERE token_enc = ?`, enc))
 	if err != nil {
-		return Machine{}, false
+		// 正式 token 没中：试轮换暂存位。agent 的「写盘→ack」和服务端
+		// 「ack→落库」之间丢消息时，agent 已经只认新 token——它拿暂存
+		// token 连上来就说明手里是它，就地转正把裂脑合上。
+		m, err = scanMachine(s, s.db.QueryRow(
+			`SELECT `+machineCols+` FROM machines WHERE pending_token_enc = ?`, enc))
+		if err != nil {
+			return Machine{}, false
+		}
+		if _, err := s.db.Exec(
+			`UPDATE machines SET token_enc = pending_token_enc, pending_token_enc = NULL
+			 WHERE username = ? AND name = ? AND pending_token_enc = ?`,
+			m.Username, m.Name, enc); err == nil {
+			m.Token = token
+		}
 	}
 	var disabled int
 	err = s.db.QueryRow(`SELECT disabled FROM users WHERE username = ?`, m.Username).Scan(&disabled)
@@ -258,7 +283,7 @@ func (s *Store) RegenMachineToken(username, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	res, err := s.db.Exec(`UPDATE machines SET token_enc = ? WHERE username = ? AND name = ?`,
+	res, err := s.db.Exec(`UPDATE machines SET token_enc = ?, pending_token_enc = NULL WHERE username = ? AND name = ?`,
 		enc, username, name)
 	if err != nil {
 		return "", err
@@ -269,15 +294,46 @@ func (s *Store) RegenMachineToken(username, name string) (string, error) {
 	return tok, nil
 }
 
-// SetMachineToken 把一台机器的 token 换成指定值（换发流程里 agent 已确认
-// 写进文件后落库）。token 撞了 UNIQUE 约束照常报错——那台 agent 的文件
-// 已经改了，调用方要按「需人工处理」告警。
+// StageMachineToken 暂存轮换中的新 token（两阶段提交的「预备」）：先落
+// pending_token_enc，agent 确认写盘后再 CommitMachineToken 转正。ack
+// 中途丢了暂存也留着——agent 拿暂存 token 连上时 MachineByToken 就地
+// 转正，裂脑自愈；要立刻断掉旧 token 用 RegenMachineToken（直连落库）。
+func (s *Store) StageMachineToken(username, name, token string) error {
+	enc, err := s.encToken(token)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE machines SET pending_token_enc = ? WHERE username = ? AND name = ?`,
+		enc, username, name)
+	if err != nil {
+		return err
+	}
+	return requireAffected(res, username+"+"+name)
+}
+
+// CommitMachineToken ack 后把暂存的 token 转正并清暂存。按值匹配——
+// 并发再起一轮轮换把暂存位换了的话，这次的提交作废而不误转正。
+func (s *Store) CommitMachineToken(username, name, token string) error {
+	enc, err := s.encToken(token)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`UPDATE machines SET token_enc = pending_token_enc, pending_token_enc = NULL
+		 WHERE username = ? AND name = ? AND pending_token_enc = ?`,
+		username, name, enc)
+	return err
+}
+
+// SetMachineToken 把一台机器的 token 换成指定值并清掉暂存位。token 撞了
+// UNIQUE 约束照常报错——那台 agent 的文件已经改了，调用方要按「需人工
+// 处理」告警。
 func (s *Store) SetMachineToken(username, name, token string) error {
 	enc, err := s.encToken(token)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`UPDATE machines SET token_enc = ? WHERE username = ? AND name = ?`,
+	res, err := s.db.Exec(`UPDATE machines SET token_enc = ?, pending_token_enc = NULL WHERE username = ? AND name = ?`,
 		enc, username, name)
 	if err != nil {
 		return err

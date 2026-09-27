@@ -85,8 +85,10 @@ func randURL(n int) string {
 }
 
 // oauthBase 推导对外可达的 HTTP 基址：redirect_url 的 origin > public_url
-// （ws→http）> 请求 Host。浏览器打开的链接和 IdP 回调都用它。
-func (f *oauthFlow) oauthBase(r *http.Request) string {
+// （ws→http）。两个都没配返回空——不能把请求方的 Host 头当基址：
+// redirect_uri 会原样带去 IdP，Host 是调用方自选的，等于让发起者自己
+// 挑回调源（审计 needs-validation 条目点过这个口）。
+func (f *oauthFlow) oauthBase() string {
 	if f.s.cfg.OAuth.RedirectURL != "" {
 		if u, err := url.Parse(f.s.cfg.OAuth.RedirectURL); err == nil && u.Host != "" {
 			return u.Scheme + "://" + u.Host
@@ -95,23 +97,18 @@ func (f *oauthFlow) oauthBase(r *http.Request) string {
 	}
 	if f.s.cfg.PublicURL != "" {
 		base := f.s.cfg.PublicURL
-		if strings.HasPrefix(base, "wss://") {
+		switch {
+		case strings.HasPrefix(base, "wss://"):
 			return "https://" + base[len("wss://"):]
-		}
-		return "http://" + strings.TrimPrefix(base, "ws://")
-	}
-	scheme := "http"
-	if r != nil && r.TLS != nil {
-		scheme = "https"
-	}
-	// Host 头是客户端给的，redirect_uri 会带去 IdP——只认干净主机名，
-	// 不干净的退回监听地址（让管理员配 public_url 才是正道）。
-	if r != nil {
-		if host := cleanHost(r.Host); host != "" {
-			return scheme + "://" + host
+		case strings.HasPrefix(base, "ws://"):
+			return "http://" + base[len("ws://"):]
+		case strings.HasPrefix(base, "http://"), strings.HasPrefix(base, "https://"):
+			return strings.TrimSuffix(base, "/")
+		default:
+			return "http://" + base // 裸 host:port
 		}
 	}
-	return "http://" + f.s.cfg.HTTPAddr
+	return ""
 }
 
 // provider 懒初始化 OIDC 发现；失败结果缓存一分钟，避免每个回调都去
@@ -136,7 +133,11 @@ func (f *oauthFlow) provider(r *http.Request) (*oidc.Provider, error) {
 		}
 		f.prov = p
 	}
-	return f.prov.WithRedirect(f.oauthBase(r) + "/oauth/callback"), nil
+	base := f.oauthBase()
+	if base == "" {
+		return nil, fmt.Errorf("没配 oauth.redirect_url 也没配 public_url——回调基址不能拿请求方的 Host 头凑，请先显式配置")
+	}
+	return f.prov.WithRedirect(base + "/oauth/callback"), nil
 }
 
 // sweep 清掉过期的授权条目（随请求惰性执行，不起后台协程）。
@@ -186,6 +187,12 @@ func (s *Server) handleOAuthRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many pending authorizations", http.StatusTooManyRequests)
 		return
 	}
+	base := f.oauthBase()
+	if base == "" {
+		s.audit.Log("OAUTH-DENY", "machine", m.ID(), "ip", hostOnly(r.RemoteAddr), "reason", "no-base-url")
+		http.Error(w, "服务器没配 public_url 或 oauth.redirect_url，给不出可信的回调地址", http.StatusServiceUnavailable)
+		return
+	}
 	p := &oauthPending{
 		id:       "oar-" + randURL(18),
 		machine:  m.ID(),
@@ -197,7 +204,7 @@ func (s *Server) handleOAuthRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"request_id": p.id,
-		"url":        f.oauthBase(r) + "/oauth/begin?r=" + p.id,
+		"url":        base + "/oauth/begin?r=" + p.id,
 		"expires_in": int(oauthPendingTTL / time.Second),
 	})
 }

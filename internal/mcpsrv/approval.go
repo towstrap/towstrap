@@ -172,8 +172,26 @@ func (s *Server) consumePending(sess *mcp.ServerSession, req ApprovalRequest) (p
 	p, ok := s.pending[id][key]
 	if ok {
 		delete(s.pending[id], key)
+		// llm 通道的「用户同意」是模型自称的——标记消费过就留墓碑，
+		// 窗口内同一条请求不许再挂起新标记，否则一次同意能拆成
+		// 无限次执行（AwaitingLLM 指引本身就能再走一圈确认流程）。
+		// elicit/local 消费的是真人答复，不受此限。
+		if p.via == "llm" {
+			if s.spent[id] == nil {
+				s.spent[id] = make(map[string]time.Time)
+			}
+			s.spent[id][key] = time.Now()
+		}
 	}
 	return p, ok
+}
+
+// spentAt 查墓碑：这条请求在窗口内已经消费过一枚 llm 确认标记吗。
+func (s *Server) spentAt(sess *mcp.ServerSession, req ApprovalRequest) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.spent[sessID(sess)][rememberedKey(req)]
+	return t, ok
 }
 
 // supportsElicitation 看客户端 initialize 时声明的能力：会弹确认框才走
@@ -209,6 +227,9 @@ func elicitResult(req *mcp.CallToolRequest) *mcp.ElicitResult {
 func elicitRequest(req ApprovalRequest) *mcp.CallToolResult {
 	msg := fmt.Sprintf("towstrap：在 %s 上执行\n\n%s\n\ncwd: %s",
 		req.Machine, notify.Clean(req.Detail), notify.Clean(orDash(req.Cwd)))
+	if req.Session != "" {
+		msg += "\nsession: " + notify.Clean(req.Session)
+	}
 	if req.Preview != "" {
 		msg += "\n\n" + req.Preview
 	}
@@ -315,6 +336,14 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 		s.clearPending(req.Session, ar) // 过期：当成新请求重新发起确认
 	}
 	if s.cfg.Policy.AskVia == "llm" {
+		// 墓碑在窗口内：这条请求的会话内确认标记已消费过，不重新
+		// 挂起。照旧回 AwaitingLLM 指引（模型会再问用户一轮），但
+		// confirmed 重试会一直撞墓碑——要再执行得等 llmConfirmTTL
+		// 过了从头发起，或首次确认时带 remember。
+		if t, ok := s.spentAt(req.Session, ar); ok && time.Since(t) <= llmConfirmTTL {
+			s.audit("MCP-ASK-SPENT", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail)
+			return AwaitingLLM, false, "", nil
+		}
 		o, id := s.askViaLLM(req, ar)
 		return o, false, id, nil
 	}
@@ -472,6 +501,14 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 	notice := fmt.Sprintf(
 		"等待人工批准 %s（%s: %s）——批准：%s %s；%s内未处理视为拒绝",
 		id, req.Machine, clip(req.Detail, 80), s.cfg.ApproveCmd, id, humanDur(s.cfg.Policy.AskTimeout))
+	// cwd/常驻会话是批准判断的一部分（同一条命令换个目录批不批可能
+	// 不一样），审批人得看得到。
+	if req.Cwd != "" {
+		notice += "\ncwd: " + req.Cwd
+	}
+	if req.Session != "" {
+		notice += "\nsession: " + req.Session
+	}
 	if req.Preview != "" {
 		notice += "\n" + req.Preview
 	}
@@ -501,8 +538,15 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 			if req.Preview != "" {
 				extra = req.Preview + "\n"
 			}
-			base := fmt.Sprintf("机器：%s\n命令：%s\n%s批准编号：%s\n\n%s内不处理视为拒绝",
-				req.Machine, detail, extra, id, humanDur(s.cfg.Policy.AskTimeout))
+			ctxLine := ""
+			if req.Cwd != "" {
+				ctxLine += "\ncwd：" + req.Cwd
+			}
+			if req.Session != "" {
+				ctxLine += "\nsession：" + req.Session
+			}
+			base := fmt.Sprintf("机器：%s\n命令：%s%s\n%s批准编号：%s\n\n%s内不处理视为拒绝",
+				req.Machine, detail, ctxLine, extra, id, humanDur(s.cfg.Policy.AskTimeout))
 			hint := fmt.Sprintf("\n\n也可在终端运行：\n%s %s", s.cfg.ApproveCmd, id)
 			notify.Desktop(title, base+hint)
 			notify.Wall(title + "：" + base + hint)

@@ -41,14 +41,15 @@ type presence struct {
 }
 
 // DefaultAuditPath 审计日志默认位置：root 服务装法在 /var/lib/towstrap，
-// 普通用户装法在 ~/.towstrap。
+// 普通用户装法在 ~/.towstrap。HOME 推不出时返回空串（审计变空操作）——
+// 不落 cwd 相对路径，工作目录可能被预置内容污染。
 func DefaultAuditPath() string {
 	if os.Geteuid() == 0 {
 		return "/var/lib/towstrap/audit.log"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return "towstrap-audit.log"
+		return ""
 	}
 	return filepath.Join(home, ".towstrap", "audit.log")
 }
@@ -57,6 +58,9 @@ func newPresence(cfg Config) *presence {
 	path := cfg.AuditLog
 	if path == "" {
 		path = DefaultAuditPath()
+	}
+	if path == "" {
+		slog.Warn("审计日志路径推导不出（HOME 未设置），本进程不写审计文件")
 	}
 	return &presence{
 		quiet:    cfg.Quiet,

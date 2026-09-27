@@ -101,7 +101,10 @@ func mcpApprovalsDir(flagDir, configPath string) string {
 			}
 		}
 	}
-	return filepath.Join(filepath.Dir(server.DefaultAuditPath()), "approvals")
+	if d := server.DefaultAuditPath(); d != "" {
+		return filepath.Join(filepath.Dir(d), "approvals")
+	}
+	return ""
 }
 
 // mcpEndpointURL 给客户端配置示例用：public-url 优先，没配就留个占位。
@@ -337,7 +340,12 @@ func mcpPending(args []string) int {
 	configPath := fs.String("config", "", "")
 	dir := fs.String("approvals-dir", "", "")
 	_ = parseMix(fs, args)
-	list, err := mcpsrv.Pending(mcpApprovalsDir(*dir, *configPath))
+	approvalsDir := mcpApprovalsDir(*dir, *configPath)
+	if approvalsDir == "" {
+		slog.Error("批准目录推导不出（HOME 未设置？）——用 --approvals-dir 指定")
+		return 2
+	}
+	list, err := mcpsrv.Pending(approvalsDir)
 	if err != nil {
 		slog.Error("读批准目录失败", "err", err)
 		return 1
@@ -373,6 +381,10 @@ func mcpSettle(verb string, args []string) int {
 		return 2
 	}
 	approvalsDir := mcpApprovalsDir(*dir, *configPath)
+	if approvalsDir == "" {
+		slog.Error("批准目录推导不出（HOME 未设置？）——用 --approvals-dir 指定")
+		return 2
+	}
 	var n int
 	var err error
 	if verb == "approve" {

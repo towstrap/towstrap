@@ -35,6 +35,8 @@ type Config struct {
 	Shell     string
 	// Insecure 跳过 TLS 证书校验，只用于连自签证书的服务器。
 	Insecure bool
+	// AllowPlain 允许明文 ws:// 连非回环服务器（token 会裸奔，须显式开）。
+	AllowPlain bool
 	// Quiet 关掉会话开始/结束的桌面通知和 wall 广播（审计日志不受影响）。
 	Quiet bool
 	// AuditLog 审计日志路径；空 = DefaultAuditPath()。
@@ -74,6 +76,12 @@ func prepare(cfg Config) (Config, error) {
 	case "open":
 	default:
 		return cfg, fmt.Errorf("mcp_policy 只能是 server/open，现在是 %q", cfg.MCPPolicy)
+	}
+	// agent token 会随每次握手明文发出：ws:// 出本机必须显式 allow_plain，
+	// 和 CLI 各子命令同一条 PlainCheck。放 prepare 里 fail-fast——配置错
+	// 就起不来，不会在重连循环里每秒撞一次。
+	if err := PlainCheck(cfg.Server, cfg.AllowPlain); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }

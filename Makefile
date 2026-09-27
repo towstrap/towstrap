@@ -36,7 +36,15 @@ release: clean
 	else \
 		echo "提示：设 MINISIGN_KEY_FILE 可在发布时签名"; \
 	fi
+	@if [ -f minisign.pub ]; then cp minisign.pub dist/; fi
 	@ls -la dist/
+
+# signkey 生成一对 minisign 签名钥匙：公钥写 minisign.pub（提交进仓库、
+# 填进 internal/selfupdate/minisign.go 的 releasePubKey 和安装脚本的
+# MINISIGN_PUB 默认值），私钥写 minisign.key（0600，配成 GitHub secret
+# MINISIGN_KEY 后删掉本机副本）。
+signkey:
+	@go run ./internal/selfupdate/genkey
 
 clean:
 	rm -rf bin dist

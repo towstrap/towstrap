@@ -203,3 +203,12 @@ func (s *Store) UseSSHGrant(machine, secret string) bool {
 	}
 	return true
 }
+
+// RevokeSSHGrants 吊销一个账号名下所有机器的未过期 OAuth SSH 凭据。
+// 改密码时调用：旧密码可能已被人拿去跑过 OAuth 换到了 grant，光改密码
+// 不吊销的话那些凭据还能用到自然过期。
+func (s *Store) RevokeSSHGrants(username string) error {
+	_, err := s.db.Exec(`DELETE FROM ssh_grants WHERE substr(machine, 1, ?) = ?`,
+		len(username)+1, username+"+")
+	return err
+}

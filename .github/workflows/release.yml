@@ -7,13 +7,19 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    # test 跑的是被打标签的那份代码——只给读权限且不留 token，
+    # 不然能推 v* 标签的人不经 release 环境闸就能拿到 contents:write。
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -28,6 +34,8 @@ jobs:
     # required reviewers（或把 MINISIGN_KEY 挪进这个环境的 secrets），
     # 打标签 alone 就够不着发布——光有 v* 标签不算数，得环境闸放行。
     environment: release
+    permissions:
+      contents: write
     steps:
       # fetch-depth 0：祖先校验需要完整提交历史。
       - uses: actions/checkout@v4
@@ -41,13 +49,20 @@ jobs:
 
       # 标签指的提交必须在主干上：不然任何能推 v* 标签的人都能把
       # 私有分支的代码发成签名产物（审计证实 tag+VERSION 字符串匹配
-      # 这道闸是谁都能满足的）。
-      - name: Tag must point at a default-branch commit
+      # 这道闸是谁都能满足的）。光「是祖先」还不够——主干后来 revert
+      # 掉的提交照样是祖先，所以再核「标签必须正好打在主干最新提交
+      # 上」：要发旧提交就先把它恢复成主干内容再发，别发已被撤下的树。
+      - name: Tag must point at the default-branch tip
         run: |
           def="${{ github.event.repository.default_branch }}"
           git fetch --no-tags origin "$def"
           git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || {
             echo "::error::tag $GITHUB_REF_NAME 指的提交不在 $def 主干上——发布只能从主干打标签"
+            exit 1
+          }
+          tip=$(git rev-parse FETCH_HEAD)
+          [ "$GITHUB_SHA" = "$tip" ] || {
+            echo "::error::tag $GITHUB_REF_NAME 指的不是 $def 最新提交（tip=$tip）——只能对当前主干顶端发版，防把已被 revert/回滚的内容发出去"
             exit 1
           }
 
@@ -64,15 +79,18 @@ jobs:
       - name: Cross-compile
         run: make release VERSION="${GITHUB_REF_NAME#v}"
 
-      # 可选：在仓库 Secrets 里放 MINISIGN_KEY（未加密的 minisign
-      # 私钥文件做 base64 后的内容）即自动签名；没配就跳过。
-      - name: Sign with minisign (optional)
+      # 必签：SHA256SUMS 和二进制同出一个 Release，光靠它挡不住「整个
+      # Release 被换」——签名才是独立信任根。MINISIGN_KEY 没配就宁可不发：
+      # 维护者跑 `make signkey` 生成钥匙对，私钥 base64 填进仓库 Secrets，
+      # 公钥提交进 minisign.pub。
+      - name: Sign with minisign
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
         run: |
           if [ -z "$MINISIGN_KEY" ]; then
-            echo "MINISIGN_KEY secret not set; skipping signing"
-            exit 0
+            echo "MINISIGN_KEY secret 未配置——发行必须签名，拒绝发布。" >&2
+            echo "维护者本地跑 make signkey 生成钥匙对即可。" >&2
+            exit 1
           fi
           sudo apt-get update && sudo apt-get install -y minisign
           printf '%s' "$MINISIGN_KEY" | base64 -d > "$RUNNER_TEMP/minisign.key"

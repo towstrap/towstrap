@@ -29,59 +29,81 @@ const resolveTimeout = 15 * time.Second
 // 余量够任何正常路径；再长只可能是刷流量的垃圾输入。
 const maxPathBytes = 8192
 
-// posixResolveTmpl 是 POSIX 侧解析脚本：%s 处填单引号字面量路径。
-// 循环做：~ 展开 → 相对转绝对 → 目录部分 cd -P 拿物理路径（一口气
-// 化掉 ..、多级符号链接和 /proc/self/root 之类的魔法目录）→ 末级若是
-// 符号链接就跟一跳再来。末级不存在/不是链接按字面返回（新建文件允许
-// 末级不存在）。退出码非 0 一律算解析失败（目录够不着、链接环等）。
-const posixResolveTmpl = `p=%s
-i=0
-while :; do
-  case "$p" in
-    "~") p=$HOME ;;
-    "~/"*) p=$HOME/${p#\~/} ;;
-  esac
-  case "$p" in
-    /*) ;;
-    *) p=$PWD/$p ;;
-  esac
-  case "$p" in
-    */*) d=${p%%/*} ;;
-    *) d=. ;;
-  esac
-  [ -z "$d" ] && d=/
-  b=${p##*/}
-  if [ -z "$b" ]; then
-    # 结尾带斜杠（或整串是 /）：按目录自身解析
-    rd=$(cd -P -- "$d" 2>/dev/null && pwd -P) || exit 3
-    printf '%%s' "$rd"
-    exit 0
-  fi
-  rd=$(cd -P -- "$d" 2>/dev/null && pwd -P) || exit 3
-  f=$rd/$b
-  case "$b" in
-    .|..) rd=$(cd -P -- "$f" 2>/dev/null && pwd -P) || exit 3; printf '%%s' "$rd"; exit 0 ;;
-  esac
-  if [ -L "$f" ]; then
-    i=$((i+1))
-    [ "$i" -gt 40 ] && exit 4
-    l=$(readlink "$f") || exit 5
-    case "$l" in
-      /*) p=$l ;;
-      *) p=$rd/$l ;;
+// posixResolveFn 是 POSIX 侧的路径解析函数：~ 展开 → 相对转绝对 →
+// 目录部分 cd -P 拿物理路径（一口气化掉 ..、多级符号链接和
+// /proc/self/root 之类的魔法目录）→ 末级若是符号链接就跟一跳再来。
+// 末级不存在/不是链接按字面返回（新建文件允许末级不存在）。结果
+// 打印到 stdout，退出码非 0 一律算解析失败。
+const posixResolveFn = `tsresolve() {
+  p=$1
+  i=0
+  while :; do
+    case "$p" in
+      "~") p=$HOME ;;
+      "~/"*) p=$HOME/${p#\~/} ;;
     esac
-    continue
-  fi
-  printf '%%s' "$f"
-  exit 0
-done
+    case "$p" in
+      /*) ;;
+      *) p=$PWD/$p ;;
+    esac
+    case "$p" in
+      */*) d=${p%%/*} ;;
+      *) d=. ;;
+    esac
+    [ -z "$d" ] && d=/
+    b=${p##*/}
+    if [ -z "$b" ]; then
+      # 结尾带斜杠（或整串是 /）：按目录自身解析
+      rd=$(cd -P -- "$d" 2>/dev/null && pwd -P) || return 3
+      printf '%%s' "$rd"
+      return 0
+    fi
+    rd=$(cd -P -- "$d" 2>/dev/null && pwd -P) || return 3
+    f=$rd/$b
+    case "$b" in
+      .|..) rd=$(cd -P -- "$f" 2>/dev/null && pwd -P) || return 3; printf '%%s' "$rd"; return 0 ;;
+    esac
+    if [ -L "$f" ]; then
+      i=$((i+1))
+      [ "$i" -gt 40 ] && return 4
+      l=$(readlink "$f") || return 5
+      case "$l" in
+        /*) p=$l ;;
+        *) p=$rd/$l ;;
+      esac
+      continue
+    fi
+    printf '%%s' "$f"
+    return 0
+  done
+}
 `
 
-// psResolveBody 是 Windows 侧解析脚本（PowerShell）：~ 展开 →
+// posixResolveTmpl 是「仅解析」命令：参数 %s 处填单引号字面量路径。
+const posixResolveTmpl = posixResolveFn + `tsresolve %s
+`
+
+// posixFileCmd 是「解析+读写」一体的命令：先解析出真实路径，和上次
+// 批准时解析的结果比对（变了说明路径被换过，拒），紧接着就地读写。
+// 解析和 open 挤在同一进程里做，两次远端调用之间的符号链接掉包窗口
+// 压到脚本内部的微秒级。
+// 参数：%s 原始路径（引号字面量）、%s 上次解析结果（引号字面量，可为空）、
+// %s 动作（head -c N -- 或 cat >）。
+const posixFileCmd = posixResolveFn + `f=$(tsresolve %s) || exit $?
+exp=%s
+if [ -n "$exp" ] && [ "$f" != "$exp" ]; then
+  echo "resolved path changed: $f" >&2
+  exit 6
+fi
+%s "$f"
+`
+
+// psResolveHead 是 Windows 侧解析脚本的前半段（PowerShell）：~ 展开 →
 // GetFullPath 化掉 . / .. → 目录 Resolve-Path 拿真实形态（符号链接、
 // 大小写一并归一）→ 末级 Get-Item 拿目录项真名，是 reparse point
-// （符号链接/junction）就跟目标再来一轮，最多 40 跳。
-const psResolveBody = `if($p -eq '~' -or $p.StartsWith('~/') -or $p.StartsWith('~\')){
+// （符号链接/junction）就跟目标再来一轮，最多 40 跳。结果落在 $f 上，
+// 收尾看用途接 print 还是 I/O。
+const psResolveHead = `if($p -eq '~' -or $p.StartsWith('~/') -or $p.StartsWith('~\')){
   if([string]::IsNullOrEmpty($HOME)){[System.Console]::Error.WriteLine('no HOME');exit 3}
   if($p -eq '~'){$p=$HOME}else{$p=Join-Path $HOME $p.Substring(2)}
 }
@@ -110,9 +132,21 @@ try{
       $i++
     }
   }
-  [Console]::Out.Write($f)
+`
+
+const psResolveTailPrint = `  [Console]::Out.Write($f)
 }catch{[System.Console]::Error.WriteLine($_.Exception.Message);exit 3}
 `
+
+// psResolveTailIO 是「解析+读写」的收尾：$f 落定后先和上次批准的解析
+// 结果比对（$exp，字符串不等即路径被换过），紧接着在 $f 上做 %s 动作。
+// 解析和 open 在同一 PowerShell 进程里，掉包窗口压到微秒级。
+const psResolveTailIO = `  if($exp -ne '' -and $f -ne $exp){[System.Console]::Error.WriteLine('resolved path changed: '+$f);exit 6}
+%s
+}catch{[System.Console]::Error.WriteLine($_.Exception.Message);exit 3}
+`
+
+const psResolveBody = psResolveHead + psResolveTailPrint
 
 // resolvePath 让远端把路径解成文件系统认的真实形态。失败（目录不可达、
 // 链接环、agent 掉线）一律报错——调用方对文件操作必须 fail closed：

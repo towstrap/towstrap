@@ -89,8 +89,11 @@ func confDirOS() string {
 		return "/etc/towstrap"
 	}
 	// install.sh 认 $XDG_CONFIG_HOME——register/token/status 都得跟它对齐，
-	// 不然设了 XDG 的机器上 token 和配置会落两个目录。
-	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+	// 不然设了 XDG 的机器上 token 和配置会落两个目录。只认绝对路径：
+	// 相对值（"./cfg"、引号里不展开的 "~/.config" 这类误配）会让配置
+	// 目录落到 cwd 下面，cwd 里预置的 towstrap/agent.yaml 会被当用户
+	// 配置信任（它决定连哪台服务器、用哪个 token）。
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" && filepath.IsAbs(d) {
 		return filepath.Join(d, "towstrap")
 	}
 	return ""

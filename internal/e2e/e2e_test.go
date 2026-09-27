@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -46,15 +47,21 @@ func startServer(t *testing.T) (srv *server.Server, httpPort, sshPort int, users
 
 func startServerOpt(t *testing.T, opt server.Config) (srv *server.Server, httpPort, sshPort int, users *accounts.Store) {
 	t.Helper()
-	httpPort = freePort(t)
-	sshPort = freePort(t)
+	if opt.HTTPAddr == "" {
+		opt.HTTPAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	}
+	if opt.SSHAddr == "" {
+		opt.SSHAddr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	}
+	_, hp, _ := net.SplitHostPort(opt.HTTPAddr)
+	_, sp, _ := net.SplitHostPort(opt.SSHAddr)
+	httpPort, _ = strconv.Atoi(hp)
+	sshPort, _ = strconv.Atoi(sp)
 	dir := t.TempDir()
 	users, err := accounts.Open(filepath.Join(dir, "users.db"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	opt.HTTPAddr = fmt.Sprintf("127.0.0.1:%d", httpPort)
-	opt.SSHAddr = fmt.Sprintf("127.0.0.1:%d", sshPort)
 	if opt.HostKeyPath == "" {
 		opt.HostKeyPath = filepath.Join(dir, "host_key")
 	}

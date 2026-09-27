@@ -30,6 +30,7 @@ type probeRunner struct {
 	failNext   int
 	probeExit  int
 	respectCtx bool
+	ioExit     int // 「解析+读写」一体命令的退出码（6 = 解析结果漂移被拒）
 }
 
 func (r *probeRunner) answer(cmd string) (Result, bool) {
@@ -48,19 +49,29 @@ func (r *probeRunner) answer(cmd string) (Result, bool) {
 	return Result{}, false
 }
 
-// fakeResolve 模拟远端路径解析：认出 resolvePath 生成的脚本，回
-// 「规范化后」的路径。POSIX 脚本以 p='..' 开头且含 readlink；
-// PowerShell 是 EncodedCommand 且脚本里带 Resolve-Path。~ 展开到
-// 固定假家目录，路径其余原样回。
+// fakeResolve 模拟远端路径解析：认出 resolvePath 生成的「仅解析」脚本，
+// 回「规范化后」的路径。「解析+读写」一体的命令（f=$(tsresolve / $exp=）
+// 不是解析调用，返回 false 让调用方按真实命令处理。~ 展开到固定假家目录。
 func fakeResolve(cmd string) (string, bool) {
-	if strings.HasPrefix(cmd, "p=") && strings.Contains(cmd, "readlink") {
-		first, _, _ := strings.Cut(cmd[2:], "\n")
-		return expandFakeHome(unquoteSH(first), `/home/u`), true
+	// POSIX IO 一体命令：f=$(tsresolve '...') 起手，后头跟比对和读写。
+	if strings.Contains(cmd, "f=$(tsresolve ") {
+		return "", false
+	}
+	if strings.Contains(cmd, "tsresolve()") {
+		// 仅解析：最后一行是 tsresolve 'path'
+		last := lastLine(cmd)
+		if p, ok := strings.CutPrefix(last, "tsresolve "); ok {
+			return expandFakeHome(unquoteSH(strings.TrimSpace(p)), `/home/u`), true
+		}
+		return "", false
 	}
 	if strings.HasPrefix(cmd, "powershell.exe") {
 		script, ok := decodePSQuiet(cmd)
 		if !ok || !strings.Contains(script, "Resolve-Path") {
 			return "", false
+		}
+		if strings.Contains(script, "$exp=") {
+			return "", false // 「解析+读写」一体命令
 		}
 		_, rest, ok := strings.Cut(script, "$p=")
 		if !ok {
@@ -123,7 +134,22 @@ func (r *probeRunner) run(ctx context.Context, machine, cmd string, stdin []byte
 	if p, ok := fakeResolve(cmd); ok {
 		return Result{Stdout: p}, nil
 	}
+	if isFileIOCmd(cmd) && r.ioExit != 0 {
+		return Result{ExitCode: r.ioExit, Stderr: "resolved path changed"}, nil
+	}
 	return Result{Stdout: r.fileOut}, nil
+}
+
+// isFileIOCmd 认出「解析+比对+读写」一体的文件命令。
+func isFileIOCmd(cmd string) bool {
+	if strings.Contains(cmd, "f=$(tsresolve ") {
+		return true
+	}
+	if strings.HasPrefix(cmd, "powershell.exe") {
+		script, ok := decodePSQuiet(cmd)
+		return ok && strings.Contains(script, "$exp=")
+	}
+	return false
 }
 
 func (r *probeRunner) Run(ctx context.Context, machine, cmd string, stdin []byte, timeout time.Duration, maxOut int) (Result, error) {
@@ -207,7 +233,7 @@ func TestWindowsReadFileCmd(t *testing.T) {
 	}
 	script := decodePS(t, r.last().cmd)
 	for _, want := range []string{
-		`$p='C:\work\a''b.txt'`, "OpenRead", "OpenStandardOutput", "$r=1025", "exit 1",
+		`$p='C:\work\a''b.txt'`, "$exp=", "OpenRead", "OpenStandardOutput", "$r=1025", "exit 1", "exit 6",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("脚本缺 %q:\n%s", want, script)
@@ -269,10 +295,13 @@ func TestWindowsTildePath(t *testing.T) {
 	if strings.Contains(resolveScript, "$env:HOME") {
 		t.Fatalf("不应用 $env:HOME（Windows PowerShell 默认没有）:\n%s", resolveScript)
 	}
-	// 真正读文件走解析后的真实路径（fake 解析成 C:\Users\tester\work\x.txt）。
+	// 读文件命令是「解析+比对+读」一体：$p 收原始路径、$exp 收批准时
+	// 解析出的真实路径（fake 解析成 C:\Users\tester\work\x.txt）。
 	script := decodePS(t, r.last().cmd)
-	if !strings.Contains(script, `$p='C:\Users\tester\work\x.txt'`) {
-		t.Fatalf("读文件应用解析后路径:\n%s", script)
+	for _, want := range []string{`$p='~/work/x.txt'`, `$exp='C:\Users\tester\work\x.txt'`} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("读写命令缺 %q:\n%s", want, script)
+		}
 	}
 }
 
@@ -330,9 +359,12 @@ func TestPOSIXDialectUnchanged(t *testing.T) {
 	if call.at {
 		t.Fatal("POSIX 不应走 RunAt")
 	}
-	// fake 解析器把 ~/x.txt 归一成 /home/u/x.txt，读命令用解析后的路径。
-	if call.cmd != `head -c 1025 -- '/home/u/x.txt'` {
-		t.Fatalf("POSIX 命令不对: %q", call.cmd)
+	// fake 解析器把 ~/x.txt 归一成 /home/u/x.txt。读命令是
+	// 「解析+比对+读」一体：重新解析原始路径、比对 exp、紧接 head。
+	for _, want := range []string{"tsresolve '~/x.txt'", "exp='/home/u/x.txt'", `head -c 1025 -- "$f"`} {
+		if !strings.Contains(call.cmd, want) {
+			t.Fatalf("POSIX 读写命令缺 %q:\n%s", want, call.cmd)
+		}
 	}
 }
 
@@ -371,6 +403,28 @@ func TestDialectProbeCtxCancelNotCached(t *testing.T) {
 	}
 	if r.probeCount() != 3 {
 		t.Fatalf("取消那次不算成功，探针总数应为 3（1 次失败 + 2 次成功），实际 %d", r.probeCount())
+	}
+}
+
+// 「解析+比对+读写」一体命令：远端发现本次解析结果和批准时的不一致
+// （符号链接被换、目录被挪），exit 6 回来——read/write 必须把失败如实
+// 抛出去，不能当成读写失败或悄悄放行。
+func TestFileCmdResolvedDrift(t *testing.T) {
+	r := &probeRunner{uname: "Linux", ioExit: 6}
+	s := newProbeServer(t, r)
+	res, _, err := s.readFile(context.Background(), &mcp.CallToolRequest{},
+		readIn{Machine: "w", Path: "~/x.txt"})
+	if err != nil || res == nil || !res.IsError {
+		t.Fatalf("解析漂移应报错: res=%v err=%v", res, err)
+	}
+	// 漂移拒绝时绝不能读到内容
+	if len(r.calls) == 0 || !isFileIOCmd(r.last().cmd) {
+		t.Fatal("最后一条应是解析+IO 一体命令")
+	}
+	res2, _, err := s.writeFile(context.Background(), &mcp.CallToolRequest{},
+		writeIn{Machine: "w", Path: "~/y.txt", Content: "x"})
+	if err != nil || res2 == nil || !res2.IsError {
+		t.Fatalf("writeFile 解析漂移应报错: res=%v err=%v", res2, err)
 	}
 }
 

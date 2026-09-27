@@ -7,11 +7,14 @@ package main
 // 统一收进这里。
 
 import (
+	"bufio"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/towstrap/towstrap/internal/client"
@@ -88,4 +91,28 @@ func loadAgentCLI(fs *flag.FlagSet, f credFlags) (*agentCLIEnv, error) {
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	return &agentCLIEnv{cfg: cfg, srv: srv, base: base, tok: tok, hc: hc}, nil
+}
+
+// sharedStdin 把 os.Stdin 包成一个全程共享的 bufio.Reader：
+// --password-stdin 和 --totp-stdin 一起用时，各处自己 NewReader 会把
+// 后面的行吞进各自缓冲——同一个 Reader 才能保证「第 3 行是 totp 码」。
+var (
+	stdinOnce sync.Once
+	stdinBuf  *bufio.Reader
+)
+
+func sharedStdin() *bufio.Reader {
+	stdinOnce.Do(func() { stdinBuf = bufio.NewReader(os.Stdin) })
+	return stdinBuf
+}
+
+// resolveTOTPStdin 在 --totp-stdin 打开且 --totp 没给时，从 stdin 读
+// 一行填进 *code（argv 优先——同给时 --totp 算数）。调用方传共享的
+// sharedStdin()：--password-stdin 已消费掉的行不会再被读到。脚本里
+// 这样喂码不会把动态码摆到 ps 看得见的命令行上。
+func resolveTOTPStdin(rd *bufio.Reader, code *string, stdin bool) {
+	if *code == "" && stdin {
+		line, _ := rd.ReadString('\n')
+		*code = strings.TrimSpace(line)
+	}
 }

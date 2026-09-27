@@ -147,6 +147,7 @@ func runAgent(args []string) int {
 	tokenFile := fs.String("agent-token-file", "", "")
 	fs.String("shell", "", "")
 	fs.Bool("insecure", false, "")
+	fs.Bool("allow-plain", false, "")
 	fs.Bool("quiet", false, "")
 	fs.String("audit-log", "", "")
 	fs.String("mirror-idle", "", "")
@@ -211,6 +212,7 @@ func runAgent(args []string) int {
 		ProtectPaths: protect,
 		Shell:        cfg.Shell,
 		Insecure:     cfg.Insecure,
+		AllowPlain:   cfg.AllowPlain,
 		Quiet:        cfg.Quiet,
 		AuditLog:     cfg.AuditLog,
 		MirrorIdle:   mirrorIdle,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,5 +150,32 @@ func TestReadPasswdPairStdin(t *testing.T) {
 		if _, _, err := readPasswdPair(true, strings.NewReader(input)); err == nil {
 			t.Fatalf("输入 %q 该报错", input)
 		}
+	}
+}
+
+// TestResolveTOTPStdin：--totp-stdin 从共享 Reader 读码；argv 给了就
+// 不动 stdin（两者同给 argv 优先）；和 --password-stdin 共享同一个
+// Reader 时前面的密码行不会被重复消费。
+func TestResolveTOTPStdin(t *testing.T) {
+	rd := bufio.NewReader(strings.NewReader("oldpw\nnewpw\n123456\n"))
+	// 模拟 --password-stdin 先吃掉两行
+	rd.ReadString('\n')
+	rd.ReadString('\n')
+	code := ""
+	resolveTOTPStdin(rd, &code, true)
+	if code != "123456" {
+		t.Fatalf("应从共享 stdin 读到第三行, got %q", code)
+	}
+	// argv 优先：给了 --totp 时一行都不读
+	code2 := "654321"
+	resolveTOTPStdin(rd, &code2, true)
+	if code2 != "654321" {
+		t.Fatal("argv 给了还被 stdin 覆盖")
+	}
+	// 没开 --totp-stdin 也不读
+	code3 := ""
+	resolveTOTPStdin(rd, &code3, false)
+	if code3 != "" {
+		t.Fatal("没开 --totp-stdin 不该读")
 	}
 }

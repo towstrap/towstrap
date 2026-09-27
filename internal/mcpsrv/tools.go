@@ -28,13 +28,14 @@ type Server struct {
 	runner Runner
 
 	mu         sync.Mutex
-	remembered map[string]map[string]string  // sessionID -> machine\x00detail -> 当初的授权编号
-	pending    map[string]map[string]pendAsk // sessionID -> machine\x00detail -> 已发起未答复的确认
-	watching   map[string]bool               // 已挂上会话清理的 sessionID
-	shells     map[string]*shellSession      // machine\x00名字 -> 常驻 shell
-	terms      map[string]*terminalSession   // terminal_id -> PTY 终端
-	remotes    map[string]remoteInfo         // machine -> 探测到的远端形态
-	reapStop   chan struct{}                 // 非空 = 回收器在跑
+	remembered map[string]map[string]string    // sessionID -> machine\x00detail -> 当初的授权编号
+	pending    map[string]map[string]pendAsk   // sessionID -> machine\x00detail -> 已发起未答复的确认
+	spent      map[string]map[string]time.Time // sessionID -> key -> llm 标记已消费的时刻（墓碑）
+	watching   map[string]bool                 // 已挂上会话清理的 sessionID
+	shells     map[string]*shellSession        // machine\x00名字 -> 常驻 shell
+	terms      map[string]*terminalSession     // terminal_id -> PTY 终端
+	remotes    map[string]remoteInfo           // machine -> 探测到的远端形态
+	reapStop   chan struct{}                   // 非空 = 回收器在跑
 }
 
 // New 建 Server：编译策略，runner 是命令执行后端（stdio 模式传 *Pool，
@@ -54,6 +55,7 @@ func New(cfg *Config, runner Runner) (*Server, error) {
 	}
 	return &Server{cfg: cfg, pol: pol, runner: runner,
 		remembered: make(map[string]map[string]string), pending: make(map[string]map[string]pendAsk),
+		spent:    make(map[string]map[string]time.Time),
 		watching: make(map[string]bool),
 		shells:   make(map[string]*shellSession), terms: make(map[string]*terminalSession),
 		remotes: make(map[string]remoteInfo)}, nil
@@ -150,6 +152,7 @@ func (s *Server) watchSession(ss *mcp.ServerSession) {
 		s.mu.Lock()
 		delete(s.remembered, ss.ID())
 		delete(s.pending, ss.ID())
+		delete(s.spent, ss.ID())
 		delete(s.watching, ss.ID())
 		s.mu.Unlock()
 		s.closeSessions()
@@ -621,6 +624,38 @@ func (s *Server) machineOpen(machine string) bool {
 	return m != nil && m.Policy == "open"
 }
 
+// protectedCmdPath 逐词检查命令参数里指向受保护文件的路径：deny 正则
+// 只管得到内置名单里的写法，agent 自报的禁碰清单（m.Protect，token/
+// 配置的真实路径）和 deny_paths 里运维加的自定条目要按词比一遍。
+// 返回命中的参数和它撞上的清单名。
+func (s *Server) protectedCmdPath(machine, command string) (string, string) {
+	m := s.machineFor(machine)
+	if m == nil {
+		return "", ""
+	}
+	parsed := parseCmd(command)
+	for _, sg := range parsed.segs {
+		for _, tok := range sg.toks {
+			if !strings.ContainsAny(tok, "/~\\") {
+				continue // 不带分隔符的词不是路径写法
+			}
+			// Windows 形态的词（带反斜杠或 C:\ / C:/ 盘符）走 Windows
+			// 比对，其余按 POSIX。盘符后必须跟分隔符——scp/rsync 的
+			// host:path 写法不带分隔符，按 POSIX 比不会误命中。
+			win := strings.ContainsAny(tok, "\\") ||
+				(len(tok) >= 3 && isDriveLetter(tok[0]) && tok[1] == ':' &&
+					(tok[2] == '/' || tok[2] == '\\'))
+			if m.ProtectedFor(tok, win) {
+				return tok, "这台机器 agent 自报的禁碰清单"
+			}
+			if !s.pol.PathFor(tok, win) {
+				return tok, "deny_paths（私钥、凭证、agent 配置）"
+			}
+		}
+	}
+	return "", ""
+}
+
 // authorizeCommand 走命令策略和人工批准。返回 early != nil 时调用方直接
 // 把这个结果交回（拒绝、弹窗请求、会话内确认指引或批准环节失败）；否则
 // 返回 approval 标记和授权编号（authID 非空 = 这条命令是批了才跑的，
@@ -632,6 +667,11 @@ func (s *Server) machineOpen(machine string) bool {
 // 的 PTY 终端也解锁（终端一开，后续按键就不再过策略了）。
 func (s *Server) authorizeCommand(ctx context.Context, req *mcp.CallToolRequest, kind, machine, command, cwd, sess, stdin string, confirmed, remember bool) (approval, authID string, early *mcp.CallToolResult) {
 	dec, reason := s.pol.Command(command)
+	if dec != Deny {
+		if hit, what := s.protectedCmdPath(machine, command); hit != "" {
+			dec, reason = Deny, fmt.Sprintf("命令参数 %q 指向%s——这类文件不开放，不要改写绕过", hit, what)
+		}
+	}
 	if stdin != "" && dec != Deny {
 		// stdin 是第二份「命令输入」：bash -s、python -、mysql 这类会把
 		// stdin 当脚本跑，批准界面原本只显示 command——stdin 既得过

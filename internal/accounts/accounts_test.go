@@ -221,6 +221,42 @@ func TestRandomPassword(t *testing.T) {
 	}
 }
 
+func TestRemoveClearsForeignRows(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Add("alice", "password12", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindOAuthIdentity("alice", "iss", "sub1", "a@b.c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.BindFingerprint("aa:bb", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := s.CreateSSHGrant("alice+default", time.Hour, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Remove("alice"); err != nil {
+		t.Fatal(err)
+	}
+	// 附属行必须清干净：删号后重建同名账号不能继承旧 OAuth 绑定
+	if _, ok := s.OAuthLookup("iss", "sub1"); ok {
+		t.Fatal("删账号后 OAuth 绑定应清掉")
+	}
+	if u, err := s.FingerprintAccount("aa:bb"); err != nil || u != "" {
+		t.Fatalf("删账号后指纹应释放, got %q %v", u, err)
+	}
+	if s.UseSSHGrant("alice+default", secret) {
+		t.Fatal("删账号后 grant 应作废")
+	}
+	if _, err := s.Add("alice", "password12", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.OAuthLookup("iss", "sub1"); ok {
+		t.Fatal("重建同名账号不应复活旧 OAuth 绑定")
+	}
+}
+
 func TestModify(t *testing.T) {
 	s := openTest(t)
 	a, _ := s.Add("alice", "password12", nil, "", nil)
@@ -268,8 +304,34 @@ func TestModify(t *testing.T) {
 		t.Fatal("重新启用后应通过")
 	}
 
+	// 改名前给 alice 挂上各类附属数据：OAuth 身份、注册指纹、SSH grant
+	if err := s.BindOAuthIdentity("alice", "iss", "sub1", "a@b.c"); err != nil {
+		t.Fatal(err)
+	}
+	fp := "aa:bb:cc"
+	if _, inserted, err := s.BindFingerprint(fp, "alice"); err != nil || !inserted {
+		t.Fatalf("BindFingerprint: %v", err)
+	}
+	if _, err := s.AddMachine("alice", "build", nil); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := s.CreateSSHGrant("alice+build", time.Hour, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if err := s.Rename("alice", "office"); err != nil {
 		t.Fatal(err)
+	}
+	// 改名后旧名的 OAuth 绑定/指纹/SSH grant 都要跟着走，不能成孤儿
+	if u, ok := s.OAuthLookup("iss", "sub1"); !ok || u != "office" {
+		t.Fatalf("改名后 OAuthLookup 应指到新名, got %q %v", u, ok)
+	}
+	if u, err := s.FingerprintAccount(fp); err != nil || u != "office" {
+		t.Fatalf("改名后指纹应指到新名, got %q %v", u, err)
+	}
+	if !s.UseSSHGrant("office+build", secret) {
+		t.Fatal("改名后 grant 应按新机器名可用")
 	}
 	if !s.Verify("office", "newpass1234") {
 		t.Fatal("改名后旧密码应仍有效")
@@ -278,7 +340,7 @@ func TestModify(t *testing.T) {
 		t.Fatal("改名后 token 应仍有效且跟到新账号名")
 	}
 
-	newTok, err := s.RegenToken("office")
+	newTok, err := s.RegenMachineToken("office", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -790,5 +852,105 @@ func TestOpenMigratesSSHKeys(t *testing.T) {
 	_, line := testKey(t, "")
 	if err := s.AddSSHKey("alice", line); err != nil {
 		t.Fatalf("迁移后应能登记公钥: %v", err)
+	}
+}
+
+// TestPendingTokenSelfHeal：轮换 ack 丢了但 agent 已写盘的裂脑场景——
+// 暂存的 token 应该能认证，且第一次用就自动转正；旧 token 在转正前
+// 依然有效（轮换不误伤还在跑旧 token 的连接）。
+func TestPendingTokenSelfHeal(t *testing.T) {
+	s := openTest(t)
+	a, err := s.Add("carol", "pw0123456789", nil, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := a.Machines[0].Token
+	staged := NewAgentToken()
+	if err := s.StageMachineToken("carol", "default", staged); err != nil {
+		t.Fatal(err)
+	}
+	// 旧 token 还好使（agent 没收到新 token 时不能失联）
+	if _, ok := s.MachineByToken(old); !ok {
+		t.Fatal("暂存期间旧 token 不该失效")
+	}
+	// agent 拿新 token 来认证 → 就地转正
+	m, ok := s.MachineByToken(staged)
+	if !ok || m.Token != staged {
+		t.Fatalf("暂存 token 应认证并转正, ok=%v token=%q", ok, m.Token)
+	}
+	// 转正后旧 token 才作废
+	if _, ok := s.MachineByToken(old); ok {
+		t.Fatal("转正后旧 token 应作废")
+	}
+	if _, ok := s.MachineByToken(staged); !ok {
+		t.Fatal("转正后新 token 应继续有效")
+	}
+}
+
+// TestRevokeSSHGrants：改密后吊销该账号所有机器的 OAuth SSH 凭据。
+func TestRevokeSSHGrants(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Add("dave", "pw0123456789", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddMachine("dave", "laptop", nil); err != nil {
+		t.Fatal(err)
+	}
+	g1, err := s.CreateSSHGrant("dave+default", time.Hour, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := s.CreateSSHGrant("dave+laptop", time.Hour, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSSHGrants("dave"); err != nil {
+		t.Fatal(err)
+	}
+	if s.UseSSHGrant("dave+default", g1) || s.UseSSHGrant("dave+laptop", g2) {
+		t.Fatal("吊销后 grant 不应再能用")
+	}
+	// 别家账号的 grant 不受影响
+	if _, err := s.Add("erin", "pw0123456789", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	g3, err := s.CreateSSHGrant("erin+default", time.Hour, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeSSHGrants("dave"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.UseSSHGrant("erin+default", g3) {
+		t.Fatal("吊销不该误伤别的账号")
+	}
+}
+
+// TestFingerprintLifecycle：绑定表可查可解——占位恢复的管理通道。
+func TestFingerprintLifecycle(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Add("frank", "pw0123456789", nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	fp := strings.Repeat("ab", 32)
+	if bound, _, err := s.BindFingerprint(fp, "frank"); err != nil || !bound {
+		t.Fatalf("BindFingerprint: bound=%v err=%v", bound, err)
+	}
+	rows, err := s.FingerprintBindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Fingerprint != fp || rows[0].Username != "frank" {
+		t.Fatalf("绑定表不对: %+v", rows)
+	}
+	released, err := s.ForceReleaseFingerprint(fp)
+	if err != nil || !released {
+		t.Fatalf("ForceRelease: released=%v err=%v", released, err)
+	}
+	if owner, _ := s.FingerprintAccount(fp); owner != "" {
+		t.Fatal("解绑后不该还有归属")
+	}
+	if released, _ := s.ForceReleaseFingerprint(fp); released {
+		t.Fatal("已解绑的再解应 released=false")
 	}
 }

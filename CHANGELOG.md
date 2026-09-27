@@ -6,6 +6,27 @@
 
 - **自助 SSH 公钥管理**：`towstrap ssh-key list/add/remove`（agent 端）和 `@sshkey list/add/remove`（SSH 管理命令）——用户不用找管理员就能给自己的账号挂/删登录公钥。鉴权和 `passwd` 同一条链（POST /sshkey：agent token 认机器 + 密码证本人 + 已绑 TOTP 要当前动态码；`oauth_only` 账号拦截）。`ssh-key add` 不带参数时自动登记 `~/.ssh/id_*.pub`；`@sshkey add` 不带参数提示粘贴公钥行。典型用法：手机/新设备生成密钥对，密码登一次把公钥挂上，之后 `ssh -i` 免密接力。公钥登录的会话依然不能跑管理命令（偷来的钥匙不能给自己配更多钥匙）
 
+### 修复（第三轮安全审计）
+
+- **token 换发裂脑自愈**：服务器改当协调者——新 token 先落库到机器的暂存位，agent ack 后转正；ack 丢了/超时但 agent 已写盘时，它拿新 token 一连上就自动转正，不再「重启后永久 401」。运维要立刻废弃旧 token 仍可 `machine token --regen --admin`
+- **MCP 文件读写 TOCTOU 收口**：路径解析、「和批准时解析结果比对」、实际读写合成一条远端命令在同一进程完成——两次远端调用之间换符号链接的掉包窗从秒级压到脚本内微秒级；解析结果漂移直接拒
+- **命令策略解析器重写**：管道/分号/子shell/`$()`/反引号按 shell 词法真正切分——`curl x | sh`、`echo $(rm -rf /)`、`/bin/rm` 绝对路径拼法都逃不出 deny/ask 判定；引号里的字面量（`git commit -m "fix"`）不再被误当代码硬拒；命令通道现在同样检查 agent 自报的 protect 清单（token/配置文件）和机器 deny_paths/roots
+- **SSH 会话通道单独关闭不再钉死槽位**：PTY 通道 EOF 后用通道探针分辨半关/全关——客户端只关这一条会话时正常收摊（槽位释放、通知 agent 杀进程、广播表清理）；慢消费会话输出缓冲 30 秒没人读会被断开，不再楔住整台机器的入站分发
+- **明文 HTTP 授权面收敛**：整口明文只认顶层 `allow_plain_http`；只设 `mcp.allow_plain_http` 时启动直接报错并点名 /register、/totp/*、/agent 等所有会被明文传凭据的端点
+- **OAuth 回调基址不再信请求方 Host**：`oauth.redirect_url` 和 `public_url` 都没配时直接拒绝发起 OAuth——以前任何 Host 头都能变成 IdP 回调源；顺带修了 `public_url` 带 `http://` 前缀会拼出 `http://http://` 的旧 bug
+- **账号库 stat 失败不再静默重建密钥**：`os.Stat` 出错（权限/IO）时按「库可能在」处理，避免新生成 key 把已有密封凭据变成解不开的乱码
+- **改密吊销派生凭据**：改密码成功后该账号未过期的 OAuth SSH 凭据（tso-）全部作废；PASSWD 审计补记发起机器
+- **`towstrap update` 崩溃窗收窄**：POSIX 上改成硬链接备份 + 原子改名覆盖，全程原名上有可执行文件；旧版备份 `<exe>.old` 保留可手工回滚；macOS 升级后自动 `launchctl kickstart` 重启 launchd 服务
+- **配置路径推导失败不再落当前目录**：HOME/XDG 推不出绝对路径时审计日志、mirror socket、状态探测明确报「推导不出」，不再把 `audit.log`/`mirror.sock` 静默写到进程工作目录
+- **SSH env 通道限量**：连接级环境变量通道逐条限额，不再能无限堆积
+- **批准界面补 cwd/session**：批准通知、系统对话框、待批列表现在显示命令的目录和常驻会话身份
+- **mirror.sock 查询留审计**：status/ls/被拒的受限访问都记 MIRROR-STATUS/MIRROR-LS/MIRROR-DENY；`towstrap status --show-token` 记 SHOW-TOKEN
+- **`init` 孤儿键警告**：扁平配置顶层只有共享键（`audit_log` 等）时，加 `server:` 小节前点名会失效的键
+- **指纹占位可解**：`towstrap-server machine fingerprint list/release` 管理「机器指纹→账号」绑定；409 提示指向它，release 允许绑定账号本人密码确认
+- **发布闸收紧**：tag 不仅要落在主干祖先上，还必须正好打在主干最新提交——revert 过的内容发不出去；MINISIGN_KEY 缺失直接失败不发无签名版本
+- **二因素喂码有 stdin 通道**：`passwd`/`register`/`ssh-key` 加 `--totp-stdin`（不上命令行），`--totp` 用法注明 argv 可见性
+- **install 文案对齐默认行为**：落地页和 AgentInstallHint 现在明说脚本默认注册并启动常驻服务，给出 `--no-service`/`-NoService` 出口
+
 ### 修复
 
 - **凭据类子命令的配置行为统一**：`totp`/`passwd`/`oauth`/`token refresh` 的「读配置→合并旗标→定服务器→明文检查→解析 token→建 HTTP client」收进同一个引导帮手——顺带修掉两处漂移：`oauth`/`token refresh` 以前不探测默认安装目录的 agent.yaml（装好的机器上不带 `--config` 会误报「没有 agent token」）；`totp`/`passwd`/`oauth` 的 TLS 跳过校验以前只看 `--insecure` 旗标，配置里的 `insecure: true` 不生效（自签证书环境 agent 能连、管理命令全失败）。`refresh` 的报错也从日志格式收成和其他命令一致的纯文本

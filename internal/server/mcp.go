@@ -50,17 +50,6 @@ func plainHTTPListenerBlocked(listenAddr string, tls bool) bool {
 	return true
 }
 
-// mcpPlainHTTPAllowed 决定 /mcp 能不能挂在明文 HTTP 上：Bearer token
-// 是凭据，走明文就等于把钥匙贴在网上。TLS 开着、显式
-// allow_plain_http、或只监听回环地址时放行，其余拒绝启动。
-func mcpPlainHTTPAllowed(listenAddr string, tls, allowPlain bool) error {
-	if !plainHTTPListenerBlocked(listenAddr, tls) || allowPlain {
-		return nil
-	}
-	return fmt.Errorf("mcp 开在明文 HTTP 上，Bearer token 会明文传输；" +
-		"请开 tls，或确认只在内网/隧道里用并设置 mcp.allow_plain_http: true")
-}
-
 // mcpBearer 校验 /mcp 请求的 Bearer token：先过服务器全局白名单，再查
 // mcp_clients 表，最后过客户端自己的 allow_ips。任何一步不过都记
 // MCP-AUTH-FAIL 并回 401；日志里不写 token 本身。
@@ -193,9 +182,11 @@ func (s *Server) mcpMachineMeta(id string) *mcpsrv.Machine {
 		}
 	}
 	// agent 在线时把它自报的禁碰文件（token、配置）和家目录/工作目录
-	// 挂上去——任意命名的 token 文件也进拒名单，不靠猜路径。
+	// 挂上去——任意命名的 token 文件也进拒名单，不靠猜路径。yaml 里
+	// 手写的 protect 条目保留（运维加的清单不该被 agent 自报冲掉）。
 	if protect, home, dir := s.Hub.ProtectInfo(id); len(protect) > 0 {
-		m.Protect, m.Home, m.Dir = protect, home, dir
+		m.Protect = append(m.Protect, protect...)
+		m.Home, m.Dir = home, dir
 	}
 	// 批准姿态：机器 yaml 里显式写了 machines.<id>.policy 就照它
 	//（运维对没上报能力的老 agent 也能定）；没写看 agent 自报——
@@ -313,7 +304,7 @@ func (r *mcpRunner) RunAt(ctx context.Context, machine, cmd string, stdin []byte
 		close(kill)
 	}()
 
-	r.s.Hub.pipe(a, sess, bytes.NewReader(stdin), out, errW, false, kill)
+	r.s.Hub.pipe(a, sess, bytes.NewReader(stdin), out, errW, false, kill, nil)
 	res.Duration = time.Since(start)
 	close(finished)
 

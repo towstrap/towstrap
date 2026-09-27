@@ -100,6 +100,17 @@ func (s *Store) Remove(username string) error {
 	if _, err := tx.Exec(`DELETE FROM register_fps WHERE username = ?`, username); err != nil {
 		return err
 	}
+	// OAuth 身份绑定跟着删：留着的话，重建同名账号会静默继承旧身份
+	if _, err := tx.Exec(`DELETE FROM oauth_identities WHERE username = ?`, username); err != nil {
+		return err
+	}
+	// 名下机器签发的短时效 SSH 凭据一并作废（machine 列存的是
+	// 「账号+机器」全名，用前缀精确匹配——substr 比较不走 LIKE，
+	// 用户名里的下划线不会变成通配符）。
+	if _, err := tx.Exec(`DELETE FROM ssh_grants WHERE substr(machine, 1, ?) = ?`,
+		len(username)+1, username+"+"); err != nil {
+		return err
+	}
 	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, username)
 	if err != nil {
 		return err
@@ -226,6 +237,19 @@ func (s *Store) Rename(oldName, newName string) error {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE machines SET username = ? WHERE username = ?`, newName, oldName); err != nil {
+		return err
+	}
+	// 附属行全部跟着改名：OAuth 绑定、注册指纹、按「旧名+机器」签发的
+	// 短时效 SSH 凭据。grants 的 machine 前缀同样用 substr 精确匹配。
+	if _, err := tx.Exec(`UPDATE oauth_identities SET username = ? WHERE username = ?`, newName, oldName); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE register_fps SET username = ? WHERE username = ?`, newName, oldName); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE ssh_grants SET machine = ? || substr(machine, ?) WHERE substr(machine, 1, ?) = ?`,
+		newName, len(oldName)+1, len(oldName)+1, oldName+"+"); err != nil {
 		return err
 	}
 	return tx.Commit()

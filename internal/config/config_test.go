@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -188,5 +189,28 @@ func TestAgentDefaults(t *testing.T) {
 	frag2, ignored2 := Agent{}.InstallDefaults()
 	if frag2 != nil || len(ignored2) != 0 {
 		t.Fatal("空 agent_defaults 应返回 nil")
+	}
+}
+
+// 审计项 H1：HOME 推不出时 AgentConfDir/DefaultAgentPath 返回空串，
+// 由调用方按「无默认配置」处理——绝不能退回 cwd 相对路径去信任
+// 工作目录里可能被预置的 agent.yaml。
+func TestAgentConfDirFailClosed(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("覆盖的是普通用户的 HOME 推导分支")
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if d := AgentConfDir(); d != "" {
+		t.Fatalf("HOME 未设置时 AgentConfDir 应为空串，got %q", d)
+	}
+	if p := DefaultAgentPath(); p != "" {
+		t.Fatalf("HOME 未设置时 DefaultAgentPath 应为空串，got %q", p)
+	}
+	// 相对 XDG 同样不认
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "relative/dir")
+	if p := DefaultAgentPath(); !filepath.IsAbs(p) {
+		t.Fatalf("相对 XDG 不应产生相对配置路径，got %q", p)
 	}
 }

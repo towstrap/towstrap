@@ -124,24 +124,31 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 			res.Status, res.Detail = "offline", "agent 不在线"
 		} else {
 			newTok := accounts.NewAgentToken()
-			switch err := s.Hub.RotateToken(agent, newTok, rotateTimeout); {
-			case err == nil:
-				if err := s.cfg.Users.SetMachineToken(account, name, newTok); err != nil {
-					// agent 文件已是新 token 但库里没换：两边不一致，
-					// 必须人工处理——这条告警要醒目。
-					slog.Error("TOKEN 换发不一致：agent 已写新 token 但数据库更新失败，需人工处理",
-						"machine", id, "err", err)
-					res.Status, res.Detail = "error", "agent 已写入新 token 但服务器更新数据库失败，需人工处理"
-				} else {
-					agent.setToken(newTok)
-					res.Status, res.Detail = "ok", "新 token 已写入该机器的 token 文件"
+			// 两阶段：先把新 token 落到机器行的暂存位（pending_token_enc），
+			// agent ack 后才转正。ack 丢了/超时了暂存也留着——agent 若已
+			// 写盘，它拿新 token 一连上 MachineByToken 就地转正，裂脑自愈，
+			// 不再是「重启后永久 401」。
+			if err := s.cfg.Users.StageMachineToken(account, name, newTok); err != nil {
+				res.Status, res.Detail = "error", "暂存新 token 失败: "+err.Error()
+			} else {
+				switch err := s.Hub.RotateToken(agent, newTok, rotateTimeout); {
+				case err == nil:
+					if err := s.cfg.Users.CommitMachineToken(account, name, newTok); err != nil {
+						// 转正失败不算死局：暂存还在，agent 重连会自愈。
+						slog.Error("TOKEN 换发转正失败：agent 已写新 token，暂存仍在（重连自愈）",
+							"machine", id, "err", err)
+						res.Status, res.Detail = "error", "agent 已写入新 token 但服务器转正失败（暂存仍在，agent 重连自动生效）"
+					} else {
+						agent.setToken(newTok)
+						res.Status, res.Detail = "ok", "新 token 已写入该机器的 token 文件"
+					}
+				case errors.Is(err, errTokenAckTimeout):
+					res.Status, res.Detail = "timeout", "agent 没有在时限内确认——若它已写入新 token，下次连接会自动生效；要立刻废弃旧 token 用 towstrap-server machine token <账号> <机器> --regen --admin"
+				case err.Error() == proto.ErrTokNotFromFile:
+					res.Status, res.Detail = "no-file", "该机器的 token 不是从文件读的，无法远程更换"
+				default:
+					res.Status, res.Detail = "error", err.Error()
 				}
-			case errors.Is(err, errTokenAckTimeout):
-				res.Status, res.Detail = "timeout", "agent 没有在时限内确认"
-			case err.Error() == proto.ErrTokNotFromFile:
-				res.Status, res.Detail = "no-file", "该机器的 token 不是从文件读的，无法远程更换"
-			default:
-				res.Status, res.Detail = "error", err.Error()
 			}
 		}
 		s.audit.Log("TOKEN-REFRESH", "user", account, "machine", res.Machine,

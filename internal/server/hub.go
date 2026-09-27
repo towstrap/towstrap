@@ -371,13 +371,24 @@ func (a *agentConn) readLoop() {
 			if a.hub != nil {
 				a.hub.bytesFromAgent.Add(int64(len(payload)))
 			}
+			// 会话缓冲满（客户端不读了）不能一直等：连接健康时一个慢
+			// 会话会把整台机器的入站分发楔死。给一段宽限，到时就断开
+			// 这一个会话（removeSession 会把 close 一路传到 agent 端
+			// 的子进程），别的会话照常走。
+			timer := time.NewTimer(sessStallTimeout)
 			select {
 			case s.ch <- chunk{stderr: msg.S == "e", b: payload}:
+				timer.Stop()
 			case <-s.closed:
+				timer.Stop()
 			case <-a.done:
 				// 连接在拆：客户端不读导致 s.ch 堵满时不把分发循环一起
 				// 拖死——done 一关这里就能退出，机器不会变幽灵。
+				timer.Stop()
 				return
+			case <-timer.C:
+				slog.Warn("会话输出长时间无人消费，断开该会话", "machine", a.name, "session", msg.ID)
+				a.removeSession(msg.ID)
 			}
 		case proto.TypeErr:
 			s.setErr(msg.Err)
@@ -578,10 +589,17 @@ func (h *Hub) OpenShell(a *agentConn, req OpenReq) (*session, error) {
 	return a.openShell(h.nextID(), req, h.maxSessions)
 }
 
+// sessStallTimeout 是会话输出缓冲的宽限：一条 data 帧这么久还推不进
+// 会话缓冲（客户端不读），就断开这条会话——不能让一个慢消费者把整台
+// 机器的入站分发楔死。
+const sessStallTimeout = 30 * time.Second
+
 // pipe 双向搬运：客户端输入 → agent 子进程，agent 输出 → 客户端（stderr
 // 标记的分片走 errOut）。pty 标记会话有没有伪终端；clientDone 在客户端
-// 连接/会话结束时关闭（gliderlabs 的 session context）。
-func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out, errOut io.Writer, pty bool, clientDone <-chan struct{}) {
+// 连接/会话结束时关闭（gliderlabs 的 session context 是连接级的，通道
+// 单独关闭不会触发它，所以 PTY 会话靠 probeClosed 再探一次：通道全关
+// 探针必错，只关 stdin 的半关探针还通）。
+func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out, errOut io.Writer, pty bool, clientDone <-chan struct{}, probeClosed func() bool) {
 	defer func() {
 		_ = a.send(proto.Msg{T: proto.TypeClose, ID: s.id})
 		a.removeSession(s.id)
@@ -599,13 +617,18 @@ func (h *Hub) pipe(a *agentConn, s *session, in io.Reader, out, errOut io.Writer
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					// 客户端关掉 stdin：无 PTY 时要传给子进程（cat 这类
-					// 程序靠 EOF 收尾，真实 sshd 也这么干）；PTY 会话
-					// 的 EOF 不等于会话结束，等 pty 那边的 shell 自己
-					// 退出，真正断开由 clientDone 兜底。
-					if !pty {
+					switch {
+					case !pty:
+						// 客户端关掉 stdin：传给子进程（cat 这类程序靠
+						// EOF 收尾，真实 sshd 也这么干）。
 						_ = a.send(proto.Msg{T: proto.TypeEOF, ID: s.id})
+					case probeClosed != nil && probeClosed():
+						// PTY 且通道整个关了（不是半关 stdin）：会话对
+						// 客户端已死——收摊释放槽位、通知 agent 杀进程，
+						// 不然空闲 shell 会一直钉着 max_sessions。
+						a.removeSession(s.id)
 					}
+					// pty 半关（只关 stdin 还在读输出）：等 shell 自己退。
 				} else {
 					// 其他错误是通道断了，整场结束
 					a.removeSession(s.id)

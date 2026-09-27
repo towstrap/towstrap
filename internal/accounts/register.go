@@ -54,3 +54,38 @@ func (s *Store) ReleaseFingerprint(fp, username string) error {
 	_, err := s.db.Exec(`DELETE FROM register_fps WHERE fingerprint = ? AND username = ?`, normFP(fp), username)
 	return err
 }
+
+// FingerprintBinding 是一条指纹→账号绑定的记录。
+type FingerprintBinding struct {
+	Fingerprint string
+	Username    string
+}
+
+// FingerprintBindings 列出全部指纹→账号绑定（运维查占位/解占用用）。
+func (s *Store) FingerprintBindings() ([]FingerprintBinding, error) {
+	rows, err := s.db.Query(`SELECT fingerprint, username FROM register_fps ORDER BY username, fingerprint`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FingerprintBinding
+	for rows.Next() {
+		var r FingerprintBinding
+		if err := rows.Scan(&r.Fingerprint, &r.Username); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ForceReleaseFingerprint 管理员直接按指纹解绑（不管绑在哪个账号上）。
+// 返回是否真的删掉了一行。
+func (s *Store) ForceReleaseFingerprint(fp string) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM register_fps WHERE fingerprint = ?`, normFP(fp))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}

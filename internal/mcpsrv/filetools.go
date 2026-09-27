@@ -137,12 +137,15 @@ func (s *Server) readFile(ctx context.Context, _ *mcp.CallToolRequest, in readIn
 		return early, readOut{}, err
 	}
 	win := ri.dialect.windows()
+	// 解析+比对+读取挤在一条远端命令里做（TOCTOU）：解析结果和批准时
+	// 不一致就拒，一致就紧接着打开，两次远端调用之间没有掉包窗口。
 	// 多读一个字节用来判断超限；head -c 对不存在的文件也会走 stderr 报错。
 	var cmd string
 	if win {
-		cmd = psReadCommand(resolved, s.cfg.Limits.MaxFile+1)
+		cmd = psFileCommand(in.Path, resolved, psReadAction(s.cfg.Limits.MaxFile+1))
 	} else {
-		cmd = fmt.Sprintf("head -c %d -- %s", s.cfg.Limits.MaxFile+1, shellQuote(resolved))
+		cmd = fmt.Sprintf(posixFileCmd, shellQuote(in.Path), shellQuote(resolved),
+			fmt.Sprintf("exec head -c %d --", s.cfg.Limits.MaxFile+1))
 	}
 	res, err := s.runner.Run(ctx, in.Machine, cmd, nil, s.cfg.Limits.Timeout, s.cfg.Limits.MaxFile+1024)
 	if err != nil {
@@ -217,9 +220,9 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 	}
 	var cmd string
 	if win {
-		cmd = psWriteCommand(resolved)
+		cmd = psFileCommand(in.Path, resolved, psWriteAction())
 	} else {
-		cmd = fmt.Sprintf("cat > %s", shellQuote(resolved))
+		cmd = fmt.Sprintf(posixFileCmd, shellQuote(in.Path), shellQuote(resolved), "exec cat >")
 	}
 	res, err := s.runner.Run(ctx, in.Machine,
 		cmd, []byte(in.Content),

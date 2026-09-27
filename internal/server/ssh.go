@@ -42,10 +42,8 @@ func (s *Server) startSSH() error {
 		PublicKeyHandler:           s.handlePublicKey,
 		KeyboardInteractiveHandler: s.handleKbdInteractive,
 		Handler:                    s.handleSSH,
-		// env 请求在会话建立前由底层库无条件攒着（它没有逐请求回调），
-		// 第一个会话请求到来时把已攒的总量核掉——超限的拒绝并关掉通道，
-		// 让那部分内存当场释放。残余：只发 env 永远不发会话请求的通道，
-		// 攒的部分由底层持有到通道关闭为止。
+		// env 请求由上面 ChannelHandlers 的包装在逐条写入路径上限量；
+		// 这里再结算一次是双保险（包装放行的一定在界内，回调等于免费复核）。
 		SessionRequestCallback: func(sess glssh.Session, _ string) bool {
 			env := sess.Environ()
 			total := 0
@@ -57,6 +55,12 @@ func (s *Server) startSSH() error {
 				return false
 			}
 			return true
+		},
+		// session 通道走带 env 上限的包装：底层只在会话请求到达时结算
+		// sess.Environ()，env-only 通道会绕过它——包装在每条 env 的
+		// 写入路径上直接限量，超限关通道让已攒的内存立刻释放。
+		ChannelHandlers: map[string]glssh.ChannelHandler{
+			"session": boundedSessionHandler,
 		},
 		// IdleTimeout 随读写活动刷新，能治未认证连接挂死（Slowloris），
 		// 但也会杀掉长时间空闲的交互会话——默认关，需要的自己开。
@@ -521,7 +525,14 @@ func (s *Server) handleSSH(sess glssh.Session) {
 			})
 		}
 	}
-	s.Hub.pipe(agent, sh, in, sess, sess.Stderr(), isPty, sess.Context().Done())
+	// sess.Context() 是连接级的——客户端只关这一条会话通道时 Done 不会
+	// 触发；PTY 通道 EOF 后拿探针分辨半关/全关：发一个空请求，通道整个
+	// 关了必报错，只关 stdin 的还通。
+	probeClosed := func() bool {
+		_, err := sess.SendRequest("towstrap-keepalive", false, nil)
+		return err != nil
+	}
+	s.Hub.pipe(agent, sh, in, sess, sess.Stderr(), isPty, sess.Context().Done(), probeClosed)
 	// agent 那边命令没起得来的原因（比如 shell 不存在）带给客户端
 	if m := sh.errText(); m != "" {
 		_, _ = fmt.Fprintln(sess.Stderr(), "agent: "+m)
@@ -713,4 +724,46 @@ func loadOrCreateHostKey(path string) (gossh.Signer, error) {
 		return nil, err
 	}
 	return gossh.ParsePrivateKey(pemBytes)
+}
+
+// boundedSessionHandler 是 "session" 通道的入口：先给 NewChannel 装上
+// env 上限的包装，再交给 gliderlabs 默认的会话处理。底层的 env 结算
+// 点在「会话请求到达时」——只发 env 不发 shell/exec/subsystem 的通道
+// 能无限攒内存，所以闸口必须移到每条 env 请求的写入路径上。
+func boundedSessionHandler(srv *glssh.Server, conn *gossh.ServerConn, newChan gossh.NewChannel, ctx glssh.Context) {
+	glssh.DefaultSessionHandler(srv, conn, envCapChan{newChan}, ctx)
+}
+
+// envCapChan 包装 session 通道的 Accept：把库给的请求流换成一条
+// 过滤后的——env 请求逐条计数/计字节，超限即拒答并关闭通道。
+// 通道一关，底层已攒的 env 缓冲当场释放。其他请求原样放行。
+type envCapChan struct {
+	gossh.NewChannel
+}
+
+func (w envCapChan) Accept() (gossh.Channel, <-chan *gossh.Request, error) {
+	ch, reqs, err := w.NewChannel.Accept()
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make(chan *gossh.Request)
+	go func() {
+		defer close(out)
+		var count, total int
+		for req := range reqs {
+			if req.Type == "env" {
+				count++
+				total += len(req.Payload) + 1
+				if count > maxEnvCount || total > maxEnvBytes {
+					_ = req.Reply(false, nil)
+					_ = ch.Close()
+					for range reqs { // 排空到远端收尾，goroutine 不泄漏
+					}
+					return
+				}
+			}
+			out <- req
+		}
+	}()
+	return ch, out, nil
 }

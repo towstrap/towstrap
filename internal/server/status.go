@@ -40,24 +40,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 // statusReport 决定看什么：管理口令看全量；机器 token 只看自己那一台
 // （普通用户没有枚举整个机群的道理，那是信息泄露）。
-// 第三个返回值是「来源 IP 已锁」：错试管理口令/机器 token 都计入登录
-// 锁的 IP 预算——管理口令是人选的，不能让人无限猜。
+// 第三个返回值是「来源 IP 已锁」：错试管理口令/机器 token 记进匿名端点
+// 的独立预算——/status 零凭据可达，刷它不能烧掉 SSH/登录的 IP 预算。
 func (s *Server) statusReport(r *http.Request) (StatusReport, bool, bool) {
 	ip := hostOnly(r.RemoteAddr)
-	if !s.guard.ipAllowed(ip) {
+	if !s.guard.ipAllowedAnon(ip) {
 		return StatusReport{}, false, true
 	}
 	if tok := r.Header.Get("X-Admin-Token"); tok != "" {
 		if s.cfg.AdminToken != "" && auth.Equal(tok, s.cfg.AdminToken) {
 			return s.Snapshot(), true, false
 		}
-		s.guard.failIP(ip)
+		s.guard.failIPAnon(ip)
 		s.audit.Log("STATUS-DENY", "ip", ip, "reason", "admin-token")
 		return StatusReport{}, false, false
 	}
 	m, ok := s.cfg.Users.MachineByToken(r.Header.Get("X-Agent-Token"))
 	if !ok {
-		s.guard.failIP(ip)
+		s.guard.failIPAnon(ip)
 		return StatusReport{}, false, false
 	}
 	// 机器设了 agent 来源白名单就只认名单里的来源（和 /agent、

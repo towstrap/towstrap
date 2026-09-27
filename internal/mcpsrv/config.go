@@ -48,13 +48,13 @@ type Config struct {
 type Machine struct {
 	Description string   `yaml:"description"`
 	Roots       []string `yaml:"roots"`
-	// Protect 是 agent 握手时自报的禁碰文件（token 文件、agent 配置——
-	// 绝对路径）；Home/Dir 是 agent 侧家目录和工作目录，用来把输入的
-	// ~/ 和相对路径解析成绝对形式。由服务器内嵌模式在 agent 在线时填，
-	// 不走 yaml；stdio 模式拿不到这些信息，留空即不生效。
-	Protect []string `yaml:"-"`
-	Home    string   `yaml:"-"`
-	Dir     string   `yaml:"-"`
+	// Protect 是这台机器的禁碰文件清单（token 文件、agent 配置——远端
+	// 绝对路径）；Home/Dir 是 agent 侧家目录和工作目录，用来把入参的
+	// ~/ 和相对路径解析成绝对形式。内嵌模式下由 agent hello 自报填；
+	// stdio 模式拿不到自报，可在机器 yaml 里手写 protect/home/dir。
+	Protect []string `yaml:"protect"`
+	Home    string   `yaml:"home"`
+	Dir     string   `yaml:"dir"`
 	// Policy 是这台机器的批准姿态："open" = 免批准（deny 名单保底）。
 	// 两个来源：机器 yaml 里显式写（运维对老 agent 也能定），或 agent
 	// hello 自报（内嵌模式，机器部署者说了算——stdio 模式拿不到自报）。

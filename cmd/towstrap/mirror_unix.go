@@ -81,6 +81,10 @@ func runMirror(args []string) int {
 	if path == "" {
 		path = client.DefaultMirrorSockPath()
 	}
+	if path == "" {
+		fmt.Fprintln(os.Stderr, "mirror socket 路径推导不出（HOME 未设置）——用 --sock 或 TOWSTRAP_MIRROR_SOCK 指定")
+		return 1
+	}
 
 	op := "ls"
 	var name string

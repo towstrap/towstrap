@@ -35,7 +35,7 @@ func TestPipeDrainsOutputOnClose(t *testing.T) {
 	var outBuf, errBuf bytes.Buffer
 	done := make(chan struct{})
 	go func() {
-		h.pipe(a, s, pr, &outBuf, &errBuf, false, make(chan struct{}))
+		h.pipe(a, s, pr, &outBuf, &errBuf, false, make(chan struct{}), nil)
 		close(done)
 	}()
 	select {

@@ -43,18 +43,20 @@ var (
 	DefaultDeny = []string{
 		`\bmkfs\b`,
 		`\bdd\b.*\bof=/dev/`,
-		`curl[^|]*\|\s*(ba|z)?sh\b`,
-		`wget[^|]*\|\s*(ba|z)?sh\b`,
+		// 下载管给 shell 执行：管道可以有多级（…| base64 -d | sh），
+		// 只看「管道出口是不是 shell」不看中间过了几道。
+		`\b(curl|wget)\b[^;&]*\|\s*(sudo\s+)?(/\S*/)?(ba|z|da|fi|k|c)?sh\b`,
 		`\brg\b.*--pre\b`,
 		`>\s*/dev/sd`,
 		`\bchmod\s+(-R\s+)?777\s+/`,
-		`\.ssh/(id_|authorized_keys)`,
+		`\.ssh/`,
 		`/etc/(shadow|sudoers)`,
 		// deny_paths 保护清单同步到命令通道：不然 read_file 拒掉的
 		// 凭据文件（aws credentials、gnupg、agent token）一条 cat 就拿走。
+		// 真实落盘的 token 文件名是 agent-token（install.sh / register）。
 		`\.aws/credentials`,
 		`\.gnupg/`,
-		`towstrap/(token|agent\.yaml)([^-\w]|$)`,
+		`towstrap/(token|agent-token|agent\.yaml|server\.yaml|users\.(db|key)|ssh_host_key|machine-id)\b`,
 		// 动 agent 自身。老名 towstrap-agent 整词挡；新名 towstrap 和仓库名、
 		// towstrap-server/-mcp 撞车，只挡「杀进程 / 服务启停 / 覆盖删除二进制
 		// 和单元文件」这几种写法。towstrap([^-\w]|$) = 后面不接 - 或字母数字。
@@ -80,16 +82,18 @@ var (
 		`git\s+(push|reset|clean|rebase)\b`,
 		`\b(chmod|chown)\b`,
 		`\b(dd|fdisk|diskutil)\b`,
+		`\beval\b`,
 	}
 
 	// DefaultDenyPaths 是 read_file/write_file 默认禁碰的路径：私钥、
-	// 凭证、agent 自己的 token 和配置。
+	// 凭证、agent 自己的 token 和配置。towstrap/ 条目要跟安装器/register
+	// 真实落盘的文件名对齐（agent-token），别写成产品从不创建的名字。
 	DefaultDenyPaths = []string{
 		`(^|/)\.ssh/`,
 		`(^|/)\.gnupg/`,
 		`^/etc/(shadow|sudoers)`,
 		`(^|/)\.aws/credentials$`,
-		`towstrap/(token|agent\.yaml)$`,
+		`towstrap/(token|agent-token|agent\.yaml|server\.yaml|users\.(db|key)|ssh_host_key|machine-id)$`,
 	}
 )
 
@@ -145,64 +149,81 @@ func compileAll(name string, pats, def []string) ([]*regexp.Regexp, error) {
 	return out, nil
 }
 
-// Command 裁定一条 shell 命令。流程：整串和每个段都过 deny → 整串过
-// ask（命中即去批准，$() 里藏的危险命令在段文本里也照中）→ 段里出现
-// 命令替换/重定向/后台符号就不敢自动放行 → 每段都命中 allow 才 Run →
-// 否则落到 policy.default。切段是按 && || ; | 换行的朴素切法，不是完整
-// shell 解析。
+// Command 裁定一条 shell 命令。流程：rm 删根/删家词法判 → deny（原文和
+// 归一文本双跑，命中完全落在引号字面量里的降级为 ask）→ ask 名单 → 段里
+// 出现未被引号包裹的命令替换/重定向/后台/glob 就不敢自动放行 → 每段都命中
+// allow 才 Run → 否则落到 policy.default。
 //
-// 所有判定都同时对着原文和「剥掉引号/反斜杠的归一化文本」跑一遍：
-// r”m、p"k"ill、-ex""ec 这种拼装在远端 shell 里就是原命令，只判原文
-// 会被绕过去（剥引号不产生新语义，单纯显形）。
+// parseCmd 按 shell 词法切：未被引号包裹的 && || ; | 换行分段、空白分词；
+// 引号/反斜杠/$'..' 剥掉显出内容（r"m"、-ex""ec 在远端就是原命令），同时
+// 记下每个字节是否来自引号内——「echo "rm -rf /"」的字面量不会被执行，
+// 不能当命令判；而 $(...)/反引号内部不切段，藏在替换里的命令仍按词法抓。
 func (p *Policy) Command(cmd string) (Decision, string) {
-	segs := splitCmd(cmd)
-	dq := dequote(cmd)
-	if rmFatalTargets(cmd) || (dq != cmd && rmFatalTargets(dq)) {
-		return Deny, "rm 递归删根目录/家目录没有正当场景"
-	}
-	for _, re := range p.deny {
-		if m := re.FindString(cmd); m != "" {
-			return Deny, fmt.Sprintf("命中 deny 规则 %q（%q）", re.String(), m)
+	parsed := parseCmd(cmd)
+	segs := make([]cmdSeg, 0, len(parsed.segs))
+	for _, sg := range parsed.segs {
+		if len(sg.toks) > 0 || strings.TrimSpace(parsed.text[sg.lo:sg.hi]) != "" {
+			segs = append(segs, sg)
 		}
-		if dq != cmd {
-			if m := re.FindString(dq); m != "" {
+	}
+	for _, sg := range segs {
+		if rmFatalTargets(sg.toks) {
+			return Deny, "rm 递归删根目录/家目录没有正当场景"
+		}
+		// 引号包住的整串字面量在 exec 语境里就是命令（sh -c '..'、
+		// eval '..'、ssh host '..'）：拆开按词法再审一遍，rm 删根和
+		// deny 名单在字面量里照判，判中是真 Deny 不是降级。
+		for j, tok := range sg.toks {
+			if !strings.ContainsAny(tok, " \t") || !isCodeArg(sg.toks, j) {
+				continue
+			}
+			sub := parseCmd(tok)
+			for _, ss := range sub.segs {
+				if rmFatalTargets(ss.toks) {
+					return Deny, "命令串参数里的 rm 递归删根目录/家目录没有正当场景"
+				}
+			}
+			for _, re := range p.deny {
+				if m, _ := denyMatch(re, sub.text, sub.mask); m != "" {
+					return Deny, fmt.Sprintf("命令串参数命中 deny 规则 %q（%q）", re.String(), m)
+				}
+			}
+		}
+	}
+	quotedDeny := false
+	for _, re := range p.deny {
+		if m, qh := denyMatch(re, cmd, parsed.rawMask); m != "" {
+			return Deny, fmt.Sprintf("命中 deny 规则 %q（%q）", re.String(), m)
+		} else if qh {
+			quotedDeny = true
+		}
+		if parsed.text != cmd {
+			if m, qh := denyMatch(re, parsed.text, parsed.mask); m != "" {
 				return Deny, fmt.Sprintf("命中 deny 规则 %q（%q；原文用引号/转义做了伪装）", re.String(), m)
+			} else if qh {
+				quotedDeny = true
 			}
 		}
 	}
 	for _, re := range p.ask {
-		if m := re.FindString(cmd); m != "" {
-			return Ask, ""
-		}
-		if dq != cmd && re.MatchString(dq) {
+		if re.MatchString(cmd) || (parsed.text != cmd && re.MatchString(parsed.text)) {
 			return Ask, ""
 		}
 	}
+	if quotedDeny {
+		return Ask, "命中 deny 规则的内容全在引号字面量里——字面量不会被执行，看清再放行"
+	}
 	safe := true
-	for _, seg := range segs {
-		dseg := dequote(seg)
-		for _, re := range p.deny {
-			if m := re.FindString(seg); m != "" {
-				return Deny, fmt.Sprintf("命中 deny 规则 %q（%q）", re.String(), m)
-			}
-			if dseg != seg {
-				if m := re.FindString(dseg); m != "" {
-					return Deny, fmt.Sprintf("命中 deny 规则 %q（%q；原文用引号/转义做了伪装）", re.String(), m)
-				}
-			}
-		}
-		// 命令替换、重定向、后台执行都可能藏第二动作，没法朴素判断，不自动放行。
-		if strings.ContainsAny(seg, "`<>") || strings.Contains(seg, "$(") || strings.Contains(seg, "&") ||
-			strings.ContainsAny(dseg, "`<>") || strings.Contains(dseg, "$(") || strings.Contains(dseg, "&") {
+	for _, sg := range segs {
+		if segUnsafe(parsed.text[sg.lo:sg.hi], parsed.mask[sg.lo:sg.hi]) {
 			safe = false
 		}
 	}
 	if safe && len(segs) > 0 {
-		for _, seg := range segs {
-			dseg := dequote(seg)
+		for _, sg := range segs {
 			matched := false
 			for _, re := range p.allow {
-				if re.MatchString(seg) || re.MatchString(dseg) {
+				if re.MatchString(parsed.text[sg.lo:sg.hi]) {
 					matched = true
 					break
 				}
@@ -216,19 +237,68 @@ func (p *Policy) Command(cmd string) (Decision, string) {
 	return p.def, ""
 }
 
+// denyMatch 跑一条 deny 规则：返回第一个「不是全落在引号内」的命中；
+// 所有命中都裹着引号时 quotedHit=true（留给 Command 降级成 ask）。
+func denyMatch(re *regexp.Regexp, text string, mask []bool) (string, bool) {
+	quotedHit := false
+	for _, loc := range re.FindAllStringIndex(text, -1) {
+		allQuoted := loc[1] <= len(mask)
+		for i := loc[0]; i < loc[1] && i < len(mask); i++ {
+			if !mask[i] {
+				allQuoted = false
+				break
+			}
+		}
+		if allQuoted {
+			quotedHit = true
+			continue
+		}
+		return text[loc[0]:loc[1]], quotedHit
+	}
+	return "", quotedHit
+}
+
+// segUnsafe 检查段里未被引号包裹的元字符：命令替换、重定向、后台执行
+// 都可能藏第二动作；glob（* ? [ {）由远端 shell 展开，策略层看不见展开
+// 后碰到什么文件——cat ~/.aws/cred* 形态上是条只读命令，也必须落回
+// policy.default 进批准环节。
+func segUnsafe(text string, mask []bool) bool {
+	for i := 0; i < len(text); i++ {
+		if mask[i] {
+			continue
+		}
+		switch text[i] {
+		case '`', '<', '>', '&', '*', '?', '[':
+			return true
+		case '{':
+			// ${var} 是变量展开不是花括号展开，不算 glob。
+			if i > 0 && text[i-1] == '$' {
+				continue
+			}
+			return true
+		case '$':
+			if i+1 < len(text) && text[i+1] == '(' && !mask[i+1] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // rmFatalTargets 在词流里找「rm 递归删根/删家」。词法判断比正则稳：
 // -r 可以藏在 -rf/-fr/--recursive 任何形态里，目标是 /、//、/..、~、
 // ~root、~/x、$HOME/… 这些正则枚举不全的写法；`sudo rm`、`$(rm …)`、
-// `; rm` 里的 rm 也逃不掉（每个词都当一次潜在命令名看）。
-func rmFatalTargets(s string) bool {
-	f := strings.Fields(s)
-	for i, raw := range f {
-		// 剥掉包壳字符：$(rm)、`rm`、"rm"、$(echo rm) 里的 rm) 都要显形
-		if tok := strings.Trim(raw, "$({\"'`)}]"); tok != "rm" {
+// `/bin/rm`、`x=$(rm …)` 里的 rm 也逃不掉（每个词都当一次潜在命令名看）。
+// 旗标和目标分两趟扫：GNU rm 允许旗标跟在操作数后面（rm / -rf）。
+func rmFatalTargets(toks []string) bool {
+	for i, raw := range toks {
+		if cmdName(raw) != "rm" {
 			continue
 		}
 		rec := false
-		for _, a := range f[i+1:] {
+		var targets []string
+		for _, a := range toks[i+1:] {
+			a = strings.Trim(a, ")]};&\"'`")
 			switch {
 			case a == "--" || strings.HasPrefix(a, "--interactive"):
 				continue
@@ -236,12 +306,54 @@ func rmFatalTargets(s string) bool {
 				rec = true
 			case strings.HasPrefix(a, "--"):
 				continue // --preserve-root 之类不改变方向
-			case strings.HasPrefix(a, "-"):
+			case strings.HasPrefix(a, "-") && a != "-":
 				if strings.ContainsAny(a[1:], "rR") {
 					rec = true
 				}
-			case rec && isFatalRmTarget(a):
-				return true
+			default:
+				targets = append(targets, a)
+			}
+		}
+		if rec {
+			for _, t := range targets {
+				if isFatalRmTarget(t) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// cmdName 把一个词显形成命令名：剥掉赋值前缀（x=$(rm）、命令替换/子壳
+// 外壳（$(rm、`rm`、(rm）和目录前缀（/bin/rm）。剥出来等值比对用。
+func cmdName(tok string) string {
+	t := strings.TrimLeft(tok, "$({\"'`)")
+	if i := strings.LastIndexByte(t, '='); i >= 0 {
+		t = strings.TrimLeft(t[i+1:], "$({\"'`)")
+	}
+	if i := strings.LastIndexByte(t, '/'); i >= 0 {
+		t = t[i+1:]
+	}
+	return strings.TrimRight(t, ")]};&\"'`")
+}
+
+// isCodeArg 判断 toks[j]（一个含空白的引号字面量）是不是「会被当命令
+// 执行」的实参：eval/ssh/watch/env 这类帮手把后面的参数当命令跑；
+// shell 和脚本解释器要带 -c/-e/--command 旗标才算。不是的话字面量
+// 就是数据（echo "...")，里面的 deny 命中走「降级成 ask」那条路。
+func isCodeArg(toks []string, j int) bool {
+	for i := 0; i < j; i++ {
+		switch cmdName(toks[i]) {
+		case "eval", "ssh", "watch", "xargs", "parallel", "env", "nohup", "busybox", "at", "batch":
+			return true
+		case "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "ash",
+			"perl", "python", "python3", "ruby", "node", "php", "su", "sudo", "script":
+			for k := i + 1; k < j; k++ {
+				a := toks[k]
+				if a == "-c" || a == "-e" || strings.HasPrefix(a, "--command") {
+					return true
+				}
 			}
 		}
 	}
@@ -266,63 +378,192 @@ func isFatalRmTarget(p string) bool {
 	return false
 }
 
-// dequote 剥掉命令里的 shell 引用（'..'、".."、\x 转义、$'...'），让命令
-// 显形。只归一文本不展开任何东西：$()、~、$VAR 原样保留，反斜杠换行
-// （续行）整对吃掉。结果可能不再是合法 shell——它只用来给名单做第二次比对。
-func dequote(s string) string {
-	if !strings.ContainsAny(s, "'\"\\") {
-		return s
+// parsedCmd 是 parseCmd 的产物。text 是剥掉引号/转义后的归一命令文本
+// （操作符保留在原文里），mask 标出 text 里每个字节是否来自引号/转义
+// 字面量，rawMask 是原文上同一层标记；segs 是按操作符切好的段。
+type parsedCmd struct {
+	text    string
+	mask    []bool
+	rawMask []bool
+	segs    []cmdSeg
+}
+
+// cmdSeg 一段 pipeline：lo/hi 是它在 parsedCmd.text 里的范围，toks 是
+// 剥掉引号后的词列表（「rm -rf /」作为一个引号字面量仍是单个词）。
+type cmdSeg struct {
+	lo, hi int
+	toks   []string
+}
+
+// parseCmd 按 shell 词法扫命令：未引号的 && || ; | 换行分段（$(...)/
+// `...` 内部不切——替换里藏的命令仍属于本段词流），未引号空白分词；
+// 引号/反斜杠/$'..' 剥掉显出内容。双层标记：单引号、转义、$'..' 的内容
+// 是死字面量；双引号里的 $(...)/`...` 照样展开——那部分记回未引号。
+// 不是完整 shell 解析，只为策略判定显形。
+func parseCmd(cmd string) parsedCmd {
+	out := parsedCmd{rawMask: make([]bool, len(cmd))}
+	var toks []string
+	var tok strings.Builder
+	inTok := false
+	depth := 0      // $(...)/( 嵌套深度：大于 0 时 | ; 是内容不是分隔符
+	inBack := false // `...` 内部
+	segLo := 0
+
+	emit := func(raw int, b byte, quoted bool) {
+		out.text += string(b)
+		out.mask = append(out.mask, quoted)
+		out.rawMask[raw] = quoted
+		inTok = true
+		tok.WriteByte(b)
 	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
-		case '$':
-			// ANSI-C 引用 $'...'：\xNN 转义能把关键字藏进字节里
-			// （$'\x72\x6d' 展开就是 rm）。bash/zsh 认这套；POSIX sh
-			// 不认——按展开后的字面值比对，多算不算误判。
-			if i+1 < len(s) && s[i+1] == '\'' {
-				b.WriteString(ansiCDecode(s, &i))
-				break
-			}
-			// $"..." 本地化字符串：内容按字面走
-			if i+1 < len(s) && s[i+1] == '"' {
-				i += 2
-				for i < len(s) && s[i] != '"' {
-					b.WriteByte(s[i])
-					i++
-				}
-				break
-			}
-			b.WriteByte(c)
-		case '\'':
-			i++
-			for i < len(s) && s[i] != '\'' {
-				b.WriteByte(s[i])
-				i++
-			}
-		case '"':
-			i++
-			for i < len(s) && s[i] != '"' {
-				if s[i] == '\\' && i+1 < len(s) {
-					i++
-				}
-				b.WriteByte(s[i])
-				i++
-			}
-		case '\\':
-			if i+1 < len(s) {
-				i++
-				if s[i] != '\n' {
-					b.WriteByte(s[i])
-				}
-			}
-		default:
-			b.WriteByte(c)
+	flushTok := func() {
+		if inTok {
+			toks = append(toks, tok.String())
+			tok.Reset()
+			inTok = false
 		}
 	}
-	return b.String()
+	emitSeg := func() {
+		flushTok()
+		out.segs = append(out.segs, cmdSeg{lo: segLo, hi: len(out.text), toks: toks})
+		toks = nil
+	}
+	// emitOp 把段间操作符写进归一文本（不进词），随后开新段。
+	emitOp := func(op string) {
+		emitSeg()
+		out.text += op
+		for range len(op) {
+			out.mask = append(out.mask, false)
+		}
+		segLo = len(out.text)
+	}
+	markSpan := func(lo, hi int) {
+		for k := lo; k < hi && k < len(cmd); k++ {
+			out.rawMask[k] = true
+		}
+	}
+
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case c == '\'':
+			j := i + 1
+			for j < len(cmd) && cmd[j] != '\'' {
+				j++
+			}
+			for k := i + 1; k < j; k++ {
+				emit(k, cmd[k], true)
+			}
+			markSpan(i, j+1)
+			i = j
+		case c == '"':
+			// 双引号：内容是字面量，但 $(...)/`...` 在里面照样执行——
+			// 展开的内部按未引号记（嵌套括号跟到底）。
+			j := i + 1
+			iDepth, iBack := 0, false
+			for j < len(cmd) {
+				d := cmd[j]
+				switch {
+				case iBack:
+					if d == '`' {
+						iBack = false
+					}
+					emit(j, d, false)
+					j++
+				case iDepth > 0:
+					if d == '(' {
+						iDepth++
+					} else if d == ')' {
+						iDepth--
+					}
+					emit(j, d, false)
+					j++
+				case d == '"':
+					goto dquoteDone
+				case d == '\\' && j+1 < len(cmd) && strings.IndexByte("$\"\\`", cmd[j+1]) >= 0:
+					emit(j, cmd[j+1], true)
+					markSpan(j, j+2)
+					j += 2
+				case d == '$' && j+1 < len(cmd) && cmd[j+1] == '(':
+					emit(j, '$', false)
+					emit(j+1, '(', false)
+					iDepth++
+					j += 2
+				case d == '`':
+					iBack = true
+					emit(j, '`', false)
+					j++
+				default:
+					emit(j, d, true)
+					j++
+				}
+			}
+		dquoteDone:
+			out.rawMask[i] = true
+			if j < len(cmd) {
+				out.rawMask[j] = true
+			}
+			i = j
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
+			// ANSI-C 引用 $'...'：\xNN 能把关键字藏进字节（$'\x72\x6d'=rm）。
+			j := i
+			s := ansiCDecode(cmd, &j) // j 停在收尾引号上
+			for k := 0; k < len(s); k++ {
+				emit(i, s[k], true)
+			}
+			markSpan(i, j+1)
+			i = j
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '"':
+			// $"..." 本地化字符串：内容按字面走
+			j := i + 2
+			for j < len(cmd) && cmd[j] != '"' {
+				emit(j, cmd[j], true)
+				j++
+			}
+			markSpan(i, j+1)
+			i = j
+		case c == '\\':
+			// 转义字符剥掉反斜杠记字面量；反斜杠换行（续行）整对吃掉。
+			if i+1 < len(cmd) && cmd[i+1] != '\n' {
+				emit(i, cmd[i+1], true)
+				markSpan(i, i+2)
+				i++
+			}
+		case depth == 0 && !inBack && c == '|' && i+1 < len(cmd) && cmd[i+1] == '|':
+			emitOp("||")
+			i++
+		case depth == 0 && !inBack && c == '|':
+			emitOp("|")
+		case depth == 0 && !inBack && c == '&' && i+1 < len(cmd) && cmd[i+1] == '&':
+			emitOp("&&")
+			i++
+		case depth == 0 && !inBack && (c == ';' || c == '\n' || c == '\r'):
+			emitOp(string(c))
+		case c == ' ' || c == '\t':
+			flushTok()
+			// 归一成单空格且跳过段首空白——allow 名单是 ^ 锚定的，
+			// "| head" 段文本带前导空格会匹配不上。
+			if len(out.text) > segLo && !strings.HasSuffix(out.text, " ") {
+				out.text += " "
+				out.mask = append(out.mask, false)
+			}
+		case c == '`':
+			inBack = !inBack
+			emit(i, c, false)
+		case c == '(' && !inBack:
+			depth++
+			emit(i, c, false)
+		case c == ')' && !inBack:
+			emit(i, c, false)
+			if depth > 0 {
+				depth--
+			}
+		default:
+			emit(i, c, false)
+		}
+	}
+	emitSeg()
+	return out
 }
 
 // ansiCDecode 解码一段 $'...' ANSI-C 引用。s[*i] 指向 $，函数返回解码
@@ -411,18 +652,6 @@ func hexVal(c byte) byte {
 	default:
 		return c - 'A' + 10
 	}
-}
-
-// splitCmd 按 && || ; | 换行朴素切段，去掉空段。
-func splitCmd(cmd string) []string {
-	r := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n", "\r", "\n")
-	var out []string
-	for _, seg := range strings.Split(r.Replace(cmd), "\n") {
-		if seg = strings.TrimSpace(seg); seg != "" {
-			out = append(out, seg)
-		}
-	}
-	return out
 }
 
 // Path 判断一个路径能不能碰：命中 deny_paths 就不行。

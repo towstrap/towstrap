@@ -33,7 +33,8 @@ towstrap-server user set 用户名 --password 新密码。
 
   --server wss://..     服务器地址（默认读 agent.yaml，没有再回落官方）
   --password-stdin      密码从 stdin 读两行：第一行旧密码，第二行新密码
-  --totp 6位码          账号已绑 TOTP 时要带的当前动态码（脚本用）
+  --totp 6位码          账号已绑 TOTP 时要带的当前动态码（脚本用；argv 会出现在本机进程列表里，介意就用 --totp-stdin）
+  --totp-stdin          动态码从 stdin 读一行（不上命令行；配 --password-stdin 时排在密码行后）
   --agent-token/-file   token 来源（默认和 agent 同款优先级）
   --config 路径         agent.yaml 位置（默认各平台配置目录）
   --insecure            跳过 TLS 证书校验
@@ -47,6 +48,7 @@ func runPasswd(args []string) int {
 	cf := addCredFlags(fs)
 	pwStdin := fs.Bool("password-stdin", false, "")
 	totpCode := fs.String("totp", "", "")
+	totpStdin := fs.Bool("totp-stdin", false, "")
 	_ = fs.Parse(args)
 
 	env, err := loadAgentCLI(fs, cf)
@@ -54,7 +56,11 @@ func runPasswd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	oldPW, newPW, err := readPasswdPair(*pwStdin, os.Stdin)
+	oldPW, newPW, err := readPasswdPair(*pwStdin, sharedStdin())
+	if err == nil {
+		// 密码两行读完才轮到 totp 行（--totp-stdin 在第 3 行）
+		resolveTOTPStdin(sharedStdin(), totpCode, *totpStdin)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -96,7 +102,10 @@ func runPasswd(args []string) int {
 // 让 stdin 路径可以单测，不用全局替换 os.Stdin。
 func readPasswdPair(fromStdin bool, in io.Reader) (string, string, error) {
 	if fromStdin {
-		rd := bufio.NewReader(in)
+		rd, ok := in.(*bufio.Reader)
+		if !ok {
+			rd = bufio.NewReader(in)
+		}
 		oldPW, err := rd.ReadString('\n')
 		if err != nil && len(oldPW) == 0 {
 			return "", "", fmt.Errorf("stdin 里没读到密码（要两行：旧密码、新密码）")

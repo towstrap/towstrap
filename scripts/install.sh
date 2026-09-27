@@ -24,6 +24,12 @@ AGENT_CONF="__TOWSTRAP_AGENT_CONFIG__"
 # SSH 端口占位符：服务器下发时填那台配置的 SSH 端口；GitHub 直拉的
 # 保持原样，回落默认 7822。
 SSH_PORT="__TOWSTRAP_SSH_PORT__"
+
+# 发行签名公钥（minisign）：维护者把 minisign.pub 第二行的内容填进默认
+# 值，之后安装会强验 SHA256SUMS.minisig——清单和二进制同出一个 Release，
+# 光核 SHA256 挡不住整个 Release 被换。环境变量 TOWSTRAP_MINISIGN_PUB
+# 可临时覆盖；空 = 只核 SHA256。
+MINISIGN_PUB="${TOWSTRAP_MINISIGN_PUB:-}"
 PREFIX=""
 TOKEN="${TOWSTRAP_AGENT_TOKEN:-}"
 SERVER="${TOWSTRAP_SERVER:-$DEFAULT_SERVER}"
@@ -149,6 +155,15 @@ if [ "$NOVERIFY" = 1 ]; then
 else
 	curl -fsSL "$relbase/SHA256SUMS" -o "$tmp/SHA256SUMS" 2>/dev/null ||
 		die "拉不到 SHA256SUMS，校验过不了就不装；实在要跳过加 --no-verify"
+	if [ -n "$MINISIGN_PUB" ]; then
+		command -v minisign >/dev/null 2>&1 ||
+			die "这个版本要求签名校验，但系统没有 minisign（brew/apt 装一个；实在要跳过加 --no-verify）"
+		curl -fsSL "$relbase/SHA256SUMS.minisig" -o "$tmp/SHA256SUMS.minisig" 2>/dev/null ||
+			die "拉不到 SHA256SUMS.minisig，签名校验过不了就不装；实在要跳过加 --no-verify"
+		(cd "$tmp" && minisign -V -P "$MINISIGN_PUB" -m SHA256SUMS) ||
+			die "SHA256SUMS 签名校验失败——清单可能被换过，拒绝安装"
+		echo ">> minisign 签名校验通过"
+	fi
 	grep -q " $asset\$" "$tmp/SHA256SUMS" ||
 		die "SHA256SUMS 里没有 $asset 这一行；实在要跳过加 --no-verify"
 	if command -v shasum >/dev/null 2>&1; then

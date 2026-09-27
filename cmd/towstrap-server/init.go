@@ -82,9 +82,18 @@ func runInit(args []string) int {
 		} else if os.Geteuid() == 0 {
 			path = "/etc/towstrap/server.yaml"
 		} else {
-			path = filepath.Join(os.Getenv("HOME"), ".config", "towstrap", "server.yaml")
-			if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			// 只认绝对路径：HOME 为空或 XDG 是相对值时会落成 cwd 相对
+			// 路径，写到哪就不可预期了。
+			home := os.Getenv("HOME")
+			xdg := os.Getenv("XDG_CONFIG_HOME")
+			switch {
+			case filepath.IsAbs(xdg):
 				path = filepath.Join(xdg, "towstrap", "server.yaml")
+			case filepath.IsAbs(home):
+				path = filepath.Join(home, ".config", "towstrap", "server.yaml")
+			default:
+				fmt.Fprintln(os.Stderr, "HOME/XDG_CONFIG_HOME 推导不出绝对路径，--config 指定写哪")
+				return 2
 			}
 		}
 	}
@@ -323,6 +332,16 @@ func writeServerYAML(path string, exists bool, publicURL string, setReg bool, re
 			srv = doc
 			fmt.Fprintln(os.Stderr, ">> 配置是扁平写法（键在顶层），新键写到顶层——格式保持原样")
 		} else {
+			// 顶层没有扁平服务端键但有别的键（audit_log 这类共享键，
+			// 或干脆是份 agent.yaml）：一旦挂上 server: 小节它们就全部
+			// 不再生效——点名警告，别让 audit_log 之类静默死掉。
+			var stray []string
+			for i := 0; i+1 < len(doc.Content); i += 2 {
+				stray = append(stray, doc.Content[i].Value)
+			}
+			if len(stray) > 0 {
+				fmt.Fprintf(os.Stderr, ">> 注意：顶层有键（%s）会在新加的 server: 小节后失效——确认这不是拿错的 agent.yaml，这些键请挪进 server: 段\n", strings.Join(stray, ", "))
+			}
 			srv = &yaml.Node{Kind: yaml.MappingNode}
 			doc.Content = append(doc.Content,
 				&yaml.Node{Kind: yaml.ScalarNode, Value: "server"}, srv)
@@ -334,10 +353,17 @@ func writeServerYAML(path string, exists bool, publicURL string, setReg bool, re
 	}
 	if srv != doc {
 		// server: 小节存在但顶层还躺着扁平键——那些键已经不生效了，
-		// 说一声免得运维以为 tls/allow_ips 还在起作用。
+		// 说一声免得运维以为 tls/allow_ips 还在起作用。共享键（audit_log
+		// 等）也一样会被遮住，一起点名。
 		for k := range flatServerKeys {
 			if yamlMapGet(doc, k) != nil {
 				fmt.Fprintf(os.Stderr, ">> 注意：顶层有扁平键（%s 等）被 server: 小节遮住不生效——建议挪进 server: 段\n", k)
+				break
+			}
+		}
+		for k := range sharedTopKeys {
+			if yamlMapGet(doc, k) != nil {
+				fmt.Fprintf(os.Stderr, ">> 注意：顶层有共享键（%s 等）被 server: 小节遮住不生效——建议挪进 server: 段\n", k)
 				break
 			}
 		}
@@ -418,6 +444,13 @@ var flatServerKeys = map[string]bool{
 	"ssh_max_timeout": true, "min_agent_version": true,
 	"agent_defaults": true, "register": true, "register_invite": true,
 	"allow_plain_http": true, "mcp": true, "monitor": true, "oauth": true,
+}
+
+// sharedTopKeys 是 agent/服务端共用的顶层键（审计日志、镜像闲置时长）。
+// 它们不算扁平服务端写法的判据（不然一份纯 agent.yaml 会被误判），
+// 但 server: 小节一旦存在它们照样被遮住——警告名单里要算上。
+var sharedTopKeys = map[string]bool{
+	"audit_log": true, "mirror_idle": true,
 }
 
 // hasFlatServerKeys 判断这份顶层 mapping 是否在用扁平写法写服务端配置。

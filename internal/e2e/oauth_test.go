@@ -131,7 +131,10 @@ var noRedirectClient = &http.Client{
 
 func TestOAuthFlowEndToEnd(t *testing.T) {
 	idp := newOAuthIdP(t, "sub-alice")
+	oaddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	srv, httpPort, sshPort, users := startServerOpt(t, server.Config{
+		HTTPAddr:  oaddr,
+		PublicURL: "http://" + oaddr,
 		OAuth: &server.OAuthConfig{
 			Issuer:       idp.URL,
 			ClientID:     "towstrap",
@@ -230,8 +233,11 @@ func TestOAuthFlowEndToEnd(t *testing.T) {
 
 func TestOAuthOnlyBlocksNormalAuth(t *testing.T) {
 	idp := newOAuthIdP(t, "sub-bob")
+	oaddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	srv, httpPort, sshPort, users := startServerOpt(t, server.Config{
-		OAuth: &server.OAuthConfig{Issuer: idp.URL, ClientID: "towstrap"},
+		HTTPAddr:  oaddr,
+		PublicURL: "http://" + oaddr,
+		OAuth:     &server.OAuthConfig{Issuer: idp.URL, ClientID: "towstrap"},
 	})
 	acct, err := users.Add("bob", "bobpw123456", nil, "", nil)
 	if err != nil {
@@ -292,8 +298,11 @@ func TestOAuthOnlyBlocksNormalAuth(t *testing.T) {
 
 func TestOAuthUnboundIdentityDenied(t *testing.T) {
 	idp := newOAuthIdP(t, "sub-stranger") // 没绑定的身份
+	oaddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	srv, httpPort, _, users := startServerOpt(t, server.Config{
-		OAuth: &server.OAuthConfig{Issuer: idp.URL, ClientID: "towstrap"},
+		HTTPAddr:  oaddr,
+		PublicURL: "http://" + oaddr,
+		OAuth:     &server.OAuthConfig{Issuer: idp.URL, ClientID: "towstrap"},
 	})
 	acct, _ := users.Add("carol", "carolpw123", nil, "", nil)
 	startAgent(t, httpPort, acct.Machines[0].Token, "carol-host")

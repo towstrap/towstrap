@@ -246,6 +246,9 @@ func runServer(args []string) int {
 	if _, set := config.VisitedFlags(fs)["audit-log"]; !set && cfg.AuditLog != "" {
 		auditPath = cfg.AuditLog
 	}
+	if auditPath == "" {
+		slog.Warn("审计日志路径推导不出（HOME 未设置）且未配置 audit_log——不写审计文件")
+	}
 	if *sshMaxTimeout != "" {
 		sshMax, err = time.ParseDuration(*sshMaxTimeout)
 	} else if cfg.SSHMaxTimeout != "" {

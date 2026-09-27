@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/proto"
@@ -53,7 +54,14 @@ func runStatus(args []string) int {
 		sockPath = client.DefaultMirrorSockPath()
 	}
 	running, connected := false, false
-	info, errReply, err := client.QueryStatus(sockPath)
+	var info *client.StatusInfo
+	var errReply string
+	var err error
+	if sockPath == "" {
+		out("进程：mirror.sock 探测路径推导不出（HOME 未设置；--sock 指定）")
+	} else {
+		info, errReply, err = client.QueryStatus(sockPath)
+	}
 	switch {
 	case info != nil:
 		running, connected = true, info.Connected
@@ -99,8 +107,14 @@ func runStatus(args []string) int {
 	if cfgPath == "" {
 		cfgPath = config.DefaultAgentPath()
 	}
-	cfg, cfgErr := config.LoadAgent(cfgPath)
+	var cfg config.Agent
+	var cfgErr error
+	if cfgPath != "" {
+		cfg, cfgErr = config.LoadAgent(cfgPath)
+	}
 	switch {
+	case cfgPath == "":
+		out("配置：默认位置推导不出（HOME 未设置？）——--config 指定")
 	case cfgErr == nil:
 		out("配置：%s（server %s）", cfgPath, orDefault(cfg.Server))
 	case *configPath != "":
@@ -117,6 +131,9 @@ func runStatus(args []string) int {
 	case tokErr != nil:
 		out("凭据：agent token 缺失——%v", tokErr)
 	case *showToken:
+		// 完整 token 打印到终端是能直接拿去连服务器的凭据——写一条
+		// 审计，事后能查「谁在什么时候亮过 token」。
+		auditlog.Open(client.DefaultAuditPath(), 0).Log("SHOW-TOKEN", "source", tokSource)
 		out("凭据：agent token %s（来源：%s）", tok, tokSource)
 	default:
 		out("凭据：agent token %s（来源：%s）", proto.MaskToken(tok), tokSource)

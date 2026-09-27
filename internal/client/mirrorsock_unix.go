@@ -49,8 +49,12 @@ type mirrorSockMsg struct {
 
 // DefaultMirrorSockPath socket 默认位置：审计日志同目录（root 装法
 // /var/lib/towstrap/mirror.sock，普通用户 ~/.towstrap/mirror.sock）。
+// 审计路径推导不出（HOME 未设置）时返回空串——不落 cwd 相对路径。
 func DefaultMirrorSockPath() string {
-	return filepath.Join(filepath.Dir(DefaultAuditPath()), "mirror.sock")
+	if d := DefaultAuditPath(); d != "" {
+		return filepath.Join(filepath.Dir(d), "mirror.sock")
+	}
+	return ""
 }
 
 // serveMirrorSock 起本机 socket 监听；起不来只告警不致命（远端接入不受影响）。
@@ -59,6 +63,10 @@ func serveMirrorSock(m *mirrorManager, p *presence, st *connState) {
 	path := os.Getenv("TOWSTRAP_MIRROR_SOCK")
 	if path == "" {
 		path = DefaultMirrorSockPath()
+	}
+	if path == "" {
+		slog.Warn("mirror socket 路径推导不出（HOME 未设置），本机 mirror 接入不可用")
+		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		slog.Warn("mirror socket 目录建不了，本机 mirror 接入不可用", "path", path, "err", err)
@@ -131,15 +139,26 @@ func serveMirrorConn(c net.Conn, m *mirrorManager, p *presence, st *connState, r
 		_ = enc.Encode(mirrorSockMsg{Err: fmt.Sprintf(format, args...)})
 	}
 	if restricted && first.Op != "status" {
+		if p != nil {
+			p.audit.Log("MIRROR-DENY", "op", first.Op, "reason", "restricted")
+		}
 		replyErr("受限连接只允许 status 查询")
 		return
 	}
 
 	switch first.Op {
 	case "ls":
+		// 只读查询也留痕：status/ls 会泄露「机器上有哪些镜像、谁在
+		// 连着」，跨用户受限查询尤其要有账可查。
+		if p != nil {
+			p.audit.Log("MIRROR-LS", "restricted", fmt.Sprint(restricted))
+		}
 		_ = enc.Encode(mirrorSockMsg{OK: true, Mirrors: m.list()})
 		return
 	case "status":
+		if p != nil {
+			p.audit.Log("MIRROR-STATUS", "restricted", fmt.Sprint(restricted))
+		}
 		info := st.snapshot()
 		if p != nil {
 			info.Sessions = p.sessions()

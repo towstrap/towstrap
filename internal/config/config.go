@@ -107,16 +107,26 @@ type MCP struct {
 // /etc/towstrap，Windows 装法 %LOCALAPPDATA%\TowStrap，普通用户
 // $XDG_CONFIG_HOME 或 ~/.config/towstrap）——和 machineid.ConfDir
 // 同一约定，runAgent 不带 --config 时按它自动加载，status 也按它找配置。
+// 推导不出来（HOME 未设置、环境被剥净这类）时返回空串而不是退回
+// cwd 相对路径——裸跑 towstrap 会把默认位置配置当用户配置信任，
+// 相对路径等于把「连哪台服务器、用哪个 token」交给工作目录里
+// 可能被预置的 agent.yaml。调用方拿到空串按「无默认配置」处理。
 func AgentConfDir() string {
-	if d, err := machineid.ConfDir(); err == nil {
-		return d
+	d, err := machineid.ConfDir()
+	if err != nil {
+		return ""
 	}
-	return "towstrap"
+	return d
 }
 
-// DefaultAgentPath 默认 agent 配置文件位置（安装脚本落的那个）。
+// DefaultAgentPath 默认 agent 配置文件位置（安装脚本落的那个）；
+// 推导不出返回空串。
 func DefaultAgentPath() string {
-	return filepath.Join(AgentConfDir(), "agent.yaml")
+	d := AgentConfDir()
+	if d == "" {
+		return ""
+	}
+	return filepath.Join(d, "agent.yaml")
 }
 
 type Agent struct {
@@ -125,6 +135,7 @@ type Agent struct {
 	AgentTokenFile string `yaml:"agent_token_file"` // 从 0600 文件读 token，比写进配置文件安全
 	Shell          string `yaml:"shell"`
 	Insecure       bool   `yaml:"insecure"`
+	AllowPlain     bool   `yaml:"allow_plain"` // 明文 ws:// 出本机仍要连，须显式开（token 会裸奔）
 	Quiet          bool   `yaml:"quiet"`       // 关掉会话开始/结束的通知（审计日志照写）
 	AuditLog       string `yaml:"audit_log"`   // 审计日志路径；空 = agent 自己的默认位置
 	MirrorIdle     string `yaml:"mirror_idle"` // 镜像终端闲置多久终结（如 72h；0/off 不启用）
@@ -409,6 +420,11 @@ func MergeAgent(file Agent, set map[string]string) Agent {
 			out.Insecure = b
 		}
 	}
+	if v, ok := set["allow-plain"]; ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			out.AllowPlain = b
+		}
+	}
 	if v, ok := set["quiet"]; ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			out.Quiet = b
@@ -491,6 +507,7 @@ func AgentInstallHint(publicURL, token string) string {
   curl -fsSL %s/install.sh | sh -s -- --token %s
 Windows 用 PowerShell：
   powershell -Command "& { $(irm %s/install.ps1) } -Token %s"
+脚本默认注册并启动常驻服务（systemd/launchd/计划任务）；只放二进制加 --no-service。
 已装好二进制的也可以直接跑：
   towstrap --server %s --agent-token-file <token文件路径>
 （token 要写成 0600 的文件才能远程换发；自签证书 curl 加 -k）`,

@@ -518,3 +518,39 @@ func TestAuthRecordPTY(t *testing.T) {
 		}
 	}
 }
+
+// TestLLMConfirmSpentNoRearm：一枚 llm 确认标记消费完，窗口内同一条
+// 请求不许再挂起新标记——否则「再确认一轮」的指引本身就够模型再走一圈，
+// 一次同意能拆成无限次执行。消费后窗口内必须一直回指引、永远不执行。
+func TestLLMConfirmSpentNoRearm(t *testing.T) {
+	op := &countingRunner{}
+	s := newTestServer(t, op, 4)
+	s.cfg.Policy.AskVia = "llm"
+	ctx := context.Background()
+	req := &mcp.CallToolRequest{}
+	in := runIn{Machine: "m", Command: "rm /tmp/x"}
+
+	// 首轮：发起确认 → confirmed 放行执行一次
+	if res, _, _ := s.runCommand(ctx, req, in); res == nil || !res.IsError {
+		t.Fatal("首次应进确认")
+	}
+	if res, _, err := s.runCommand(ctx, req, runIn{Machine: "m", Command: "rm /tmp/x", Confirmed: true}); err != nil || res.IsError {
+		t.Fatalf("confirmed 应执行: %v", err)
+	}
+	if op.count() != 1 {
+		t.Fatalf("执行次数不对: %d", op.count())
+	}
+
+	// 第二轮：pending 没了但墓碑在——confirmed 直给也只回指引不执行
+	res, _, err := s.runCommand(ctx, req, runIn{Machine: "m", Command: "rm /tmp/x", Confirmed: true})
+	if err != nil || res == nil || !res.IsError || !strings.Contains(resultTextForTest(res), "需要用户确认") {
+		t.Fatalf("墓碑窗口内 confirmed 重试不应执行: %v %+v", err, res)
+	}
+	if op.count() != 1 {
+		t.Fatal("墓碑期内又执行了一次")
+	}
+	// 墓碑不得产生新标记（pending 表应仍为空）
+	if _, ok := s.pendingAt(req.Session, ApprovalRequest{Machine: "m", Kind: "command", Detail: "rm /tmp/x"}); ok {
+		t.Fatal("墓碑期内不应重新挂起 pending 标记")
+	}
+}
