@@ -51,8 +51,10 @@ func verifyMinisig(pubB64 string, data []byte, sigFile string) error {
 		return fmt.Errorf("minisign 签名校验失败（内容签名不对）")
 	}
 	// 全局签名盖 (内容签名 || trusted comment)：防止拿别处的合法签名
-	// 拼到本文件上混用。
-	if !ed25519.Verify(pub, append(append([]byte{}, sig[10:]...), tc...), gsig[10:]) {
+	// 拼到本文件上混用。minisign 的全局签名行就是裸 64 字节签名，
+	// 不带算法前缀也不带 keynum——和内容签名行（"ED"+keynum+sig，
+	// 74 字节）不一样。
+	if !ed25519.Verify(pub, append(append([]byte{}, sig[10:]...), tc...), gsig) {
 		return fmt.Errorf("minisign 签名校验失败（trusted comment 绑定不对）")
 	}
 	return nil
@@ -94,7 +96,7 @@ func parseMinisig(text string) (sig []byte, tc []byte, gsig []byte, err error) {
 				return nil, nil, nil, err
 			}
 		default:
-			if gsig, err = decodeSigLine(l); err != nil {
+			if gsig, err = decodeGlobalSigLine(l); err != nil {
 				return nil, nil, nil, err
 			}
 		}
@@ -109,6 +111,17 @@ func decodeSigLine(l string) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(l))
 	if err != nil || len(raw) != minisigSigLen || string(raw[:2]) != sigAlgoSig {
 		return nil, fmt.Errorf("签名行格式不对")
+	}
+	return raw, nil
+}
+
+// decodeGlobalSigLine 解 .minisig 的全局签名行：裸 64 字节 ed25519
+// 签名，没有算法前缀也没有 keynum——和内容签名行的 74 字节
+// （"ED"+keynum+sig）不一样，混用同一个校验会拒掉真 minisign 产出的文件。
+func decodeGlobalSigLine(l string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(l))
+	if err != nil || len(raw) != ed25519.SignatureSize {
+		return nil, fmt.Errorf("全局签名行格式不对")
 	}
 	return raw, nil
 }
