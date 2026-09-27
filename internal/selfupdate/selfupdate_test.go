@@ -20,7 +20,7 @@ func withFakeReleases(t *testing.T, handler http.Handler) (exe string, out *stri
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
-	oldRel, oldSelf := releases, selfPath
+	oldRel, oldSelf, oldPub := releases, selfPath, releasePubKey
 	releases = ts.URL
 	dir := t.TempDir()
 	exe = filepath.Join(dir, "towstrap")
@@ -29,7 +29,7 @@ func withFakeReleases(t *testing.T, handler http.Handler) (exe string, out *stri
 	}
 	selfPath = func() (string, error) { return exe, nil }
 	out = &strings.Builder{}
-	t.Cleanup(func() { releases, selfPath = oldRel, oldSelf })
+	t.Cleanup(func() { releases, selfPath, releasePubKey = oldRel, oldSelf, oldPub })
 	return exe, out
 }
 
@@ -84,10 +84,16 @@ func TestRun_ReplacesSelf(t *testing.T) {
 	mux.HandleFunc("/download/"+tag+"/"+asset, func(w http.ResponseWriter, r *http.Request) {
 		w.Write(newBin)
 	})
+	sums := fmt.Sprintf("%s  %s\n", sum, asset)
 	mux.HandleFunc("/download/"+tag+"/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s  %s\n", sum, asset)
+		fmt.Fprint(w, sums)
+	})
+	pub, sigFile := makeMinisigFixture(t, []byte(sums), "timestamp:99")
+	mux.HandleFunc("/download/"+tag+"/SHA256SUMS.minisig", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, sigFile)
 	})
 	exe, out := withFakeReleases(t, mux)
+	releasePubKey = pub
 
 	if err := Run(Opts{Product: "towstrap", Tag: tag, Out: out}); err != nil {
 		t.Fatalf("Run: %v\n%s", err, out)
@@ -96,7 +102,7 @@ func TestRun_ReplacesSelf(t *testing.T) {
 	if err != nil || string(got) != string(newBin) {
 		t.Fatalf("exe 没被换成新二进制: %v %q", err, got)
 	}
-	if !strings.Contains(out.String(), "SHA256 校验通过") {
+	if !strings.Contains(out.String(), "minisign 签名校验通过") || !strings.Contains(out.String(), "SHA256 校验通过") {
 		t.Fatalf("输出缺校验行:\n%s", out)
 	}
 }

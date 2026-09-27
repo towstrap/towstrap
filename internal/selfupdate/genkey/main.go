@@ -6,10 +6,14 @@
 //	              internal/selfupdate/minisign.go 的 releasePubKey、
 //	              scripts/install.sh / install.ps1 的 MINISIGN_PUB。
 //
-// 文件格式和 minisign 官方一致（未加密档）：
+// 文件格式逐字节对齐 minisign -G -W 的产物（minisign.h / minisign.c）：
 //
-//	私钥 = "Ed"(2) || keynum(8) || seed||pub(64)   的 base64
-//	公钥 = "Ed"(2) || keynum(8) || pub(32)         的 base64
+//	私钥 SeckeyStruct(158B) = "Ed"(2) || "\0\0"(kdf_alg=KDFNONE) ||
+//	    "B2"(chk_alg) || kdf_salt(32 零) || kdf_ops(8 零) || kdf_mem(8 零) ||
+//	    keynum(8) || sk(64) || chk(32 零)
+//	  无密码档官方不写 chk（seckey_load 对 KDFNONE 也不验）；kdf 段全零。
+//	  注释行官方 -W 也写 "minisign encrypted secret key"（复用同一常量）。
+//	公钥 PubkeyStruct(42B) = "Ed"(2) || keynum(8) || pub(32)
 package main
 
 import (
@@ -38,9 +42,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	secretRaw := append(append([]byte("Ed"), keynum[:]...), priv...)
+	secretRaw := make([]byte, 0, 158)
+	secretRaw = append(secretRaw, 'E', 'd', 0, 0, 'B', '2')
+	secretRaw = append(secretRaw, make([]byte, 32+8+8)...)
+	secretRaw = append(secretRaw, keynum[:]...)
+	secretRaw = append(secretRaw, priv...)
+	secretRaw = append(secretRaw, make([]byte, 32)...)
 	pubRaw := append(append([]byte("Ed"), keynum[:]...), pub...)
-	secretFile := "untrusted comment: minisign secret key\n" +
+	secretFile := "untrusted comment: minisign encrypted secret key\n" +
 		base64.StdEncoding.EncodeToString(secretRaw) + "\n"
 	pubFile := fmt.Sprintf("untrusted comment: minisign public key %s\n",
 		strings.ToUpper(hex.EncodeToString(keynum[:]))) +

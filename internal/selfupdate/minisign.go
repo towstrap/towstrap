@@ -14,7 +14,7 @@ import (
 // 信任根只有 SHA256SUMS（和清单同一个 Release 出——只能挡传输损坏，
 // 挡不住发布源被替换）。一旦填上，update 会强校验 SHA256SUMS.minisig：
 // 拉不到签名/签名不过都拒绝安装。
-const releasePubKey = ""
+var releasePubKey = "RWTbpo7F0knbUQIoW3pAhERl7E/Uh2YKlQu+3Cwjadh0Clz6A4BEA746"
 
 // minisign 文件格式的骨架（只实现验签需要的部分）：
 //
