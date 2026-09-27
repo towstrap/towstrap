@@ -815,6 +815,7 @@ agent 侧（`audit.log`）另有 `START`/`END`（mode=mirror 的本机接入）�
 ## 14. 升级说明
 
 - **自升级**：`towstrap update`（agent）/ `sudo towstrap-server update`（服务端）从官方 Release 拉本平台二进制，SHA256SUMS 校验后原子替换自身；`--check` 只查不装，`--version vX.Y.Z` 指定版本（含降级）。装成 systemd 服务或 Windows 计划任务的升级后自动重启生效；手工跑的进程要手工重启。重跑 install.sh/install-server.sh 同样能升级（配置、token 不动）
+- **自动升级（升级自发现）**：服务器 `update_check`（默认 6h，`off` 关）定时扫官方最新 release 缓存 tag；发现新版本就把 tag 推给版本落后的在线 agent（agent 接入时若已落后也会立即补推）。agent 的 `auto_update` 默认开——收到提示后随机散开最多 60 秒，走 `towstrap update` 同一套验签下载+原子替换；装成服务的由服务管理器重启，手动/nohup 跑的（Unix）原地换映像重启生效。服务器只报版本号、从不传下载地址或二进制——信任根仍是 minisign 签名，服务器被攻破也塞不进伪造更新。`agent.yaml` 写 `auto_update: false` 关掉（只记日志，手工 `towstrap update` 升级）；服务端 `server.yaml` 写 `update_check: off` 关闭整个扫描推送
 - **老账号库自动迁移**：从「一个账号一个 token」的旧版本升级时，打开库就把每个账号的 token、agent 白名单、最近来源 IP 搬到一台名为 `default` 的机器上——老 token 不变，agent 不用动；之后登录名变成 `账号+default`（单机时写账号名仍可用）
 - **`users_key` 没配过**：默认用 `users_db` 去掉 `.db` 后缀 + `.key`（`/etc/towstrap/users.db` → `/etc/towstrap/users.key`），库和 key 要一起备份
 - **SSH 主机密钥**：默认在 `users_db` 同目录的 `ssh_host_key`；换库路径时记得带上它，否则所有客户端会报 host key 变更

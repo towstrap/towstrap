@@ -15,12 +15,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/selfupdate"
 	"github.com/towstrap/towstrap/internal/version"
 )
 
@@ -50,6 +52,9 @@ type Config struct {
 	// MCPPolicy 是这台机器对 MCP 批准环节的姿态，hello 时上报：
 	// "open" = 免批准（deny 保底）；空 = 跟服务端策略走。
 	MCPPolicy string
+	// AutoUpdate：服务器报来新版本时自动升级（selfupdate 验签下载 +
+	// 原子替换 + 重启生效）。false = 只记日志，升级手工 towstrap update。
+	AutoUpdate bool
 }
 
 func DefaultID() string {
@@ -246,6 +251,9 @@ type agent struct {
 	sess     map[string]*sessionEntry
 	presence *presence
 	tokens   *tokenState
+	// upgrading 单飞标志：升级下载是分钟级长活，服务器重复推送/重复
+	// 连接时只许一个升级协程在跑。
+	upgrading atomic.Bool
 }
 
 func (a *agent) send(m proto.Msg) error {
@@ -425,6 +433,8 @@ func (a *agent) loop() error {
 			}
 		case proto.TypeToken:
 			a.onToken(msg)
+		case proto.TypeUpgrade:
+			a.onUpgrade(msg.Ver)
 		}
 	}
 }
@@ -448,6 +458,69 @@ func (a *agent) onToken(msg proto.Msg) {
 		a.presence.audit.Log("TOKEN-ROTATED", "id", a.cfg.ID)
 	}
 	_ = a.send(proto.Msg{T: proto.TypeOK, ID: msg.ID})
+}
+
+// onUpgrade 处理服务器下推的新版本提示：tag 过白名单、确实比当前新、
+// auto_update 没关，才起升级协程（单飞）。服务器只报版本号——下载源
+// 仍是 selfupdate 写死的官方仓库，SHA256/minisign 校验照旧，服务器被
+// 攻破也塞不进伪造二进制。
+func (a *agent) onUpgrade(tag string) {
+	tag = strings.TrimSpace(tag)
+	if !selfupdate.ValidTag(tag) {
+		slog.Warn("服务器推的版本号格式异常，忽略", "tag", tag)
+		return
+	}
+	if !version.LessThan(version.String(), strings.TrimPrefix(tag, "v")) {
+		return // 不新/降级都不动
+	}
+	if !a.cfg.AutoUpdate {
+		slog.Info("发现新版本（auto_update 关着，手工 towstrap update 升级）", "latest", tag, "cur", version.String())
+		return
+	}
+	if !a.upgrading.CompareAndSwap(false, true) {
+		return
+	}
+	go a.autoUpdate(tag)
+}
+
+// 升级路径的三处可替换点：真实实现分别是 selfupdate.Run、60s 随机散开、
+// 原地 exec 重启——测试换掉它们才不用真下载/真换进程映像。
+var (
+	selfUpdateRun = selfupdate.Run
+	updateSpread  = 60 * time.Second
+	doRestart     = restartSelf
+)
+
+// autoUpdate 跑升级：随机散开后走 selfupdate 全流程（下载+验签+原子
+// 替换+受管服务重启）。替换成功而进程还活着，说明没被服务管理——原地
+// exec 换新映像，nohup/前台跑的 agent 也能吃到新版。
+func (a *agent) autoUpdate(tag string) {
+	defer a.upgrading.Store(false)
+	if updateSpread > 0 {
+		time.Sleep(time.Duration(mrand.Int63n(int64(updateSpread))))
+	}
+	slog.Info("开始自动升级", "from", version.String(), "to", tag)
+	if a.presence != nil {
+		a.presence.audit.Log("AUTO-UPDATE", "to", tag)
+	}
+	err := selfUpdateRun(selfupdate.Opts{Product: "towstrap", Tag: tag, Out: logWriter{}})
+	if err != nil {
+		slog.Error("自动升级失败（现有版本不受影响）", "err", err)
+		return
+	}
+	slog.Info("升级完成，重启进程生效", "to", tag)
+	doRestart()
+}
+
+// logWriter 把 selfupdate 的进度输出接进 slog：agent 常跑在
+// nohup/systemd 下，stdout 不一定有人看。
+type logWriter struct{}
+
+func (logWriter) Write(p []byte) (int, error) {
+	if s := strings.TrimSpace(string(p)); s != "" {
+		slog.Info("selfupdate", "out", s)
+	}
+	return len(p), nil
 }
 
 // writeTokenFile 原子写 token 文件：同目录临时文件（0600）→ 写入 → Sync →

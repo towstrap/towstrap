@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 // chunk 是转发给 SSH 客户端的一片输出；stderr 为 true 时走 SSH 的扩展数据
@@ -99,6 +101,9 @@ type agentConn struct {
 	// mcpPol 是 agent 自报的 MCP 批准姿态（"open" = 免批准）。机器是
 	// 部署者自己的，宽严部署者定；服务端 deny 名单照样兜底。
 	mcpPol string
+	// ver 是 agent 自报的版本（hello 里的 Ver）——升级推送拿它比
+	// 最新 release 落后不落后。可伪造，不是安全控制。
+	ver string
 
 	tokMu sync.RWMutex
 	token string
@@ -129,6 +134,7 @@ func newAgent(name, token string, conn *websocket.Conn, hi AgentHello) *agentCon
 		home:     hi.Home,
 		dir:      hi.Dir,
 		mcpPol:   hi.MCPPol,
+		ver:      hi.Ver,
 	}
 }
 
@@ -511,6 +517,26 @@ func (h *Hub) Detach(conn *websocket.Conn) {
 			delete(h.agents, name)
 			slog.Info("agent disconnected", "id", name)
 			return
+		}
+	}
+}
+
+// NotifyUpgrade 把「有新版」推给所有版本落后的已连接 agent。tag 形如
+// v0.5.1——只报版本号，agent 自己拿它走 selfupdate 的验签下载，服务器
+// 从不传二进制/下载地址。发送失败不追（agent 断了自然有下一次连接补推）。
+func (h *Hub) NotifyUpgrade(tag string) {
+	target := strings.TrimPrefix(tag, "v")
+	h.mu.Lock()
+	agents := make([]*agentConn, 0, len(h.agents))
+	for _, a := range h.agents {
+		agents = append(agents, a)
+	}
+	h.mu.Unlock()
+	for _, a := range agents {
+		if version.LessThan(a.ver, target) {
+			if err := a.send(proto.Msg{T: proto.TypeUpgrade, Ver: tag}); err != nil {
+				slog.Debug("升级提示下发失败", "id", a.name, "err", err)
+			}
 		}
 	}
 }

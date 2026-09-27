@@ -88,6 +88,8 @@ func usage() {
                                下次敲键要先输一个新验证码；0 关闭
   --min-agent-version 0.2.0    agent 上报版本低于此值就拒绝接入（版本淘汰用；
                                版本是自报的，不是安全控制）
+  --update-check 6h            定时扫官方最新 release 推给落后 agent 自升级；
+                               0/off 关闭
   --audit-log 路径             服务器审计日志：认证成败、agent 上下线、会话开关；
                                默认 root: /var/lib/towstrap/server-audit.log，
                                普通用户 ~/.towstrap/server-audit.log；写 /dev/null 关
@@ -181,6 +183,7 @@ func runServer(args []string) int {
 	fs.String("cert", "", "")
 	fs.String("key", "", "")
 	minAgentVer := fs.String("min-agent-version", "", "")
+	fs.String("update-check", "", "")
 	idleVerify := fs.Duration("idle-verify", 30*time.Minute, "")
 	fs.Int("max-sessions", 16, "")
 	fs.Int("max-conns", 4096, "")
@@ -262,6 +265,13 @@ func runServer(args []string) int {
 	minAgent := *minAgentVer
 	if _, set := config.VisitedFlags(fs)["min-agent-version"]; !set && cfg.MinAgentVersion != "" {
 		minAgent = cfg.MinAgentVersion
+	}
+	// update_check：定时扫官方最新 release 推给落后 agent。off/0 关，
+	// 空 = MergeServer 给的默认 6h。
+	updateCheck, err := parseUpdateCheck(cfg.UpdateCheck)
+	if err != nil {
+		slog.Error("update_check 时长不对", "value", cfg.UpdateCheck, "err", err)
+		return 2
 	}
 
 	// 内嵌 MCP：yaml 的 mcp.enabled 才开。这里组装的 machines 只是元数据
@@ -361,7 +371,7 @@ func runServer(args []string) int {
 		"users_db", cfg.UsersDB, "admin_token", adminTokenState,
 		"allow_ips", strings.Join(cfg.AllowIPs, ","),
 		"idle_verify", idle.String(),
-		"min_agent_version", minAgent,
+		"min_agent_version", minAgent, "update_check", updateCheck,
 		"max_sessions", cfg.MaxSessions,
 		"max_conns", cfg.MaxConns, "max_conns_per_ip", cfg.MaxConnsPerIP,
 		"ssh_idle_timeout", sshIdle.String(), "ssh_max_timeout", sshMax.String(),
@@ -381,6 +391,7 @@ func runServer(args []string) int {
 		IdleVerify:        idle,
 		AuditLog:          auditPath,
 		MinAgentVersion:   minAgent,
+		UpdateCheck:       updateCheck,
 		PublicURL:         cfg.PublicURL,
 		AgentDefaults:     string(agentDefaults),
 		Register:          cfg.Register,
@@ -403,4 +414,20 @@ func runServer(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// parseUpdateCheck：update_check 时长写法（如 6h；off/0/never 关闭）。
+// 空串理论上来不到这里（MergeServer 默认 6h），兜底也按默认走。
+func parseUpdateCheck(s string) (time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "default":
+		return 6 * time.Hour, nil
+	case "0", "off", "false", "no", "never":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("%q 不是时长（如 6h）也不是 0/off", s)
+	}
+	return d, nil
 }

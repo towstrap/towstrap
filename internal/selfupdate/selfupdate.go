@@ -1,6 +1,7 @@
-// Package selfupdate 提供 towstrap / towstrap-server 的手工自升级：
-// update 子命令触发，从 GitHub releases 拉本平台的二进制，核 SHA256SUMS
-// 后原子替换自己的可执行文件。不做后台自动升级——什么时候换由人决定。
+// Package selfupdate 提供 towstrap / towstrap-server 的自升级：
+// update 子命令手工触发，agent 收到服务器的新版本推送时也会走这里。
+// 从官方 GitHub releases 拉本平台二进制，验签 SHA256SUMS 后原子替换
+// 自己的可执行文件。
 package selfupdate
 
 import (
@@ -29,6 +30,10 @@ var releases = "https://github.com/towstrap/towstrap/releases"
 // tagRe 允许 v0.3.3 / 0.3.3 / v0.4.0-rc.1 这类 tag。旗标传进来的串会拼进
 // URL，先过一遍防止怪字符拼出意外路径。
 var tagRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`)
+
+// ValidTag 报告 tag 是否过白名单。服务器推送的升级目标是外部输入，
+// agent 进 Run 前也用它验一道。
+func ValidTag(tag string) bool { return tagRe.MatchString(tag) }
 
 type Opts struct {
 	Product string    // "towstrap" / "towstrap-server"——决定资产名和服务名

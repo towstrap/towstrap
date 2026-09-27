@@ -159,8 +159,8 @@ func TestAccountAllowIPRejectCountsAsFail(t *testing.T) {
 }
 
 // wsAttach 起一个把 WS 交给 hub 的测试服务器：每条连接按 query 里的
-// name/token 注册，然后挂住直到被服务端关闭。返回客户端连接。
-func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token string) *websocket.Conn) {
+// name/token/ver 注册，然后挂住直到被服务端关闭。返回客户端连接。
+func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token, ver string) *websocket.Conn) {
 	t.Helper()
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,16 +168,17 @@ func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token string) 
 		if err != nil {
 			return
 		}
-		h.Attach(r.URL.Query().Get("name"), r.URL.Query().Get("token"), conn, AgentHello{})
+		h.Attach(r.URL.Query().Get("name"), r.URL.Query().Get("token"), conn,
+			AgentHello{Ver: r.URL.Query().Get("ver")})
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
 			}
 		}
 	}))
-	dial := func(name, token string) *websocket.Conn {
+	dialVer := func(name, token, ver string) *websocket.Conn {
 		t.Helper()
-		q := url2.Values{"name": {name}, "token": {token}}
+		q := url2.Values{"name": {name}, "token": {token}, "ver": {ver}}
 		u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/?" + q.Encode()
 		c, _, err := websocket.DefaultDialer.Dial(u, nil)
 		if err != nil {
@@ -185,7 +186,7 @@ func wsAttach(t *testing.T, h *Hub) (*httptest.Server, func(name, token string) 
 		}
 		return c
 	}
-	return srv, dial
+	return srv, dialVer
 }
 
 func waitAgentCount(t *testing.T, h *Hub, want int) {
@@ -205,9 +206,9 @@ func TestPruneInvalid(t *testing.T) {
 	srv, dial := wsAttach(t, h)
 	defer srv.Close()
 
-	keep := dial("keep", "t1")
+	keep := dial("keep", "t1", "")
 	defer keep.Close()
-	gone := dial("gone", "t2")
+	gone := dial("gone", "t2", "")
 	defer gone.Close()
 	waitAgentCount(t, h, 2)
 
@@ -248,7 +249,7 @@ func TestRevokeStaleAgents(t *testing.T) {
 
 	srv, dial := wsAttach(t, s.Hub)
 	defer srv.Close()
-	c := dial("alice+default", acct.Machines[0].Token)
+	c := dial("alice+default", acct.Machines[0].Token, "")
 	defer c.Close()
 	waitAgentCount(t, s.Hub, 1)
 
@@ -274,7 +275,7 @@ func TestRevokeStaleAgents(t *testing.T) {
 	if !ok {
 		t.Fatal("bob 不存在")
 	}
-	c2 := dial("bob+default", b.Machines[0].Token)
+	c2 := dial("bob+default", b.Machines[0].Token, "")
 	defer c2.Close()
 	waitAgentCount(t, s.Hub, 2) // alice 的连接还挂在 hub 里（已关闭但未 Detach），加 bob 共 2
 	if err := users.Remove("bob"); err != nil {

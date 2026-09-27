@@ -21,6 +21,7 @@ server:
   #   mirror_idle: "48h"      # 镜像终端闲置多久自动终结（0/off 不启用）
   #   quiet: false            # 关掉会话开始/结束的通知
   #   mcp_policy: "server"    # 这台机器对 MCP 审批的姿态（server/open）
+  #   auto_update: true       # 服务器报新版时 agent 自动升级（默认开）
 
   # register：开 /register 自助注册——被控机上 `towstrap register` 交互建
   # 账号+拿 token，不用管理员预先建号。同一机器指纹只许注册一个账号，
@@ -39,6 +40,10 @@ server:
   # max_conns_per_ip: 64       # SSH 每来源 IP 并发连接上限（只对 SSH；0 不限）
   # ssh_idle_timeout: 30m      # SSH 空闲超时（治未认证连接挂死；会断开空闲会话，慎开）
   # ssh_max_timeout: 24h       # SSH 连接绝对寿命（0 不限）
+  # update_check: 6h           # 定时扫官方最新 release（默认 6h；0/off 关闭）。
+                             # 扫到新版本只把 tag 推给版本落后的 agent——
+                             # agent 自己走 selfupdate 验签下载，服务器
+                             # 从不传二进制或下载地址。
 
   # ── 内嵌 MCP（Streamable HTTP）────────────────────────────
   # 打开后 LLM 客户端用 Bearer token 直连 /mcp，命令经 Hub 在 agent 上执行，

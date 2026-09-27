@@ -38,6 +38,9 @@ type Server struct {
 	AuditLog string `yaml:"audit_log"`
 	// MinAgentVersion：agent 自报版本低于此值拒绝接入（版本淘汰用；空 = 不限）
 	MinAgentVersion string `yaml:"min_agent_version"`
+	// UpdateCheck：定时扫官方最新 release 的周期（如 6h；off/0 关闭，
+	// 空 = 默认 6h）。扫到的版本推给落后 agent，agent 自己验签下载。
+	UpdateCheck string `yaml:"update_check"`
 
 	// AgentDefaults 是这台服务器下发的安装脚本要烤进 agent.yaml 的预设
 	// 工作配置（shell/mirror_idle/quiet 等 agent.yaml 字段写法）。只影响
@@ -143,6 +146,9 @@ type Agent struct {
 	//（deny 名单保底）；不写/"server" = 跟服务端策略走。机器是部署者
 	// 自己的，宽严部署者定；姿态经 hello 上报，服务端内嵌 MCP 按机器应用。
 	MCPPolicy string `yaml:"mcp_policy"`
+	// AutoUpdate：服务器报来新版本时自动升级（走 selfupdate 的签名校验
+	// 下载）。nil = 开；false 时只记日志不动手（手工 towstrap update）。
+	AutoUpdate *bool `yaml:"auto_update"`
 }
 
 type file struct {
@@ -173,6 +179,8 @@ type file struct {
 	AuditLog        string     `yaml:"audit_log"`
 	MirrorIdle      string     `yaml:"mirror_idle"`
 	MinAgentVersion string     `yaml:"min_agent_version"`
+	UpdateCheck     string     `yaml:"update_check"`
+	AutoUpdate      *bool      `yaml:"auto_update"`
 	AgentDefaults   Agent      `yaml:"agent_defaults"`
 	Register        bool       `yaml:"register"`
 	RegisterInvite  string     `yaml:"register_invite"`
@@ -227,6 +235,7 @@ func LoadServer(path string) (Server, error) {
 		SSHMaxTimeout:   f.SSHMaxTimeout,
 		AuditLog:        f.AuditLog,
 		MinAgentVersion: f.MinAgentVersion,
+		UpdateCheck:     f.UpdateCheck,
 		AgentDefaults:   f.AgentDefaults,
 		Register:        f.Register,
 		RegisterInvite:  f.RegisterInvite,
@@ -264,6 +273,7 @@ func LoadAgent(path string) (Agent, error) {
 		Quiet:          f.Quiet,
 		AuditLog:       f.AuditLog,
 		MirrorIdle:     f.MirrorIdle,
+		AutoUpdate:     f.AutoUpdate,
 	}, nil
 }
 
@@ -286,6 +296,7 @@ func MergeServer(file Server, set map[string]string) Server {
 		SSHMaxTimeout:   "24h",
 		AuditLog:        file.AuditLog,
 		MinAgentVersion: file.MinAgentVersion,
+		UpdateCheck:     "6h",
 		// allow_plain_http 是运维的显式确认（明文部署在可信内网/隧道
 		// 后面）——文件里写了就得透出去，丢了等于监听报错死活找不到开关。
 		AllowPlainHTTP: file.AllowPlainHTTP,
@@ -385,6 +396,12 @@ func MergeServer(file Server, set map[string]string) Server {
 	if v, ok := set["min-agent-version"]; ok {
 		out.MinAgentVersion = v
 	}
+	if file.UpdateCheck != "" {
+		out.UpdateCheck = file.UpdateCheck
+	}
+	if v, ok := set["update-check"]; ok {
+		out.UpdateCheck = v
+	}
 	// mcp:/monitor:/oauth:/agent_defaults:/register: 小节没有对应命令行旗标，
 	// yaml 里写了就透传。
 	out.AgentDefaults = file.AgentDefaults
@@ -439,6 +456,11 @@ func MergeAgent(file Agent, set map[string]string) Agent {
 	if v, ok := set["mcp-policy"]; ok {
 		out.MCPPolicy = v
 	}
+	if v, ok := set["auto-update"]; ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			out.AutoUpdate = &b
+		}
+	}
 	return out
 }
 
@@ -476,6 +498,9 @@ func (a Agent) InstallDefaults() ([]byte, []string) {
 	}
 	if a.MCPPolicy != "" {
 		m["mcp_policy"] = a.MCPPolicy
+	}
+	if a.AutoUpdate != nil {
+		m["auto_update"] = *a.AutoUpdate
 	}
 	if len(m) == 0 {
 		return nil, ignored

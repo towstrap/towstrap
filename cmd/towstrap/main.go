@@ -115,6 +115,8 @@ func usage() {
   --quiet                      关掉会话开始/结束的桌面通知和 wall 广播
                                （审计日志不受影响，仍照写）
   --mirror-idle 时长           镜像终端闲置多久自动终结（默认 72h；0/off 不启用）
+  --auto-update=false          关掉自动升级（默认开：服务器发现有新版时
+                               自动走验签下载+原子替换+重启生效）
 
 服务器地址、shell、审计路径这些长久配置建议写进 agent.yaml（见 examples/agent.yaml），
 命令行旗标只做临时覆盖。
@@ -152,6 +154,7 @@ func runAgent(args []string) int {
 	fs.String("audit-log", "", "")
 	fs.String("mirror-idle", "", "")
 	fs.String("mcp-policy", "", "")
+	fs.Bool("auto-update", true, "")
 	_ = fs.Parse(args)
 	// 位置参数没有意义——拼错的子命令会落到这里，不拦就当成启动
 	// agent 跑起来了，报错比误解安全。
@@ -205,6 +208,11 @@ func runAgent(args []string) int {
 		slog.Error("mirror_idle 时长不对", "value", cfg.MirrorIdle, "err", err)
 		return 2
 	}
+	// auto_update 默认开：yaml 显式写 false 或 --auto-update=false 才关。
+	autoUpdate := true
+	if cfg.AutoUpdate != nil {
+		autoUpdate = *cfg.AutoUpdate
+	}
 	if err := client.Run(client.Config{
 		Server:       cfg.Server,
 		AgentToken:   tok,
@@ -217,6 +225,7 @@ func runAgent(args []string) int {
 		AuditLog:     cfg.AuditLog,
 		MirrorIdle:   mirrorIdle,
 		MCPPolicy:    cfg.MCPPolicy,
+		AutoUpdate:   autoUpdate,
 	}); err != nil {
 		slog.Error("agent", "err", err)
 		return 1

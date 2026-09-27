@@ -28,6 +28,10 @@ const (
 	TypeOK     = "ok"
 	TypeErr    = "err"
 	TypeToken  = "token"
+	// TypeUpgrade：服务器告知有新版（Ver 是 release tag，如 v0.5.1）。
+	// 只报版本号不传下载地址——agent 自己去官方固定源走 selfupdate 的
+	// 验签下载，服务器就算被攻破也借它塞不进伪造地址。
+	TypeUpgrade = "upgrade"
 )
 
 // ErrTokNotFromFile 是 agent 拒绝换发时回的错误文本：token 不从文件来

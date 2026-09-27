@@ -19,3 +19,7 @@ agent:
                        # deny 名单保底不动（rm -rf /、格盘、动 agent 自身照样拒）。
                        # 不写 = 跟服务端策略走。机器是你自己的，宽严你定；
                        # 服务端也能在 machines.<名字>.policy 里给没上报的老 agent 设。
+  # auto_update: false # 服务器发现有新版时自动升级（默认开）：走 selfupdate
+                       # 的验签下载+原子替换，装成服务的由服务管理器重启，
+                       # 手动/nohup 跑的原地换映像重启。关掉后只记日志，
+                       # 升级手工 towstrap update。

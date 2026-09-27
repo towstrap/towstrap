@@ -13,7 +13,7 @@ func TestPipeDrainsOutputOnClose(t *testing.T) {
 	h := NewHub(0)
 	srv, dial := wsAttach(t, h)
 	defer srv.Close()
-	c := dial("alice", "t1")
+	c := dial("alice", "t1", "")
 	defer c.Close()
 	waitAgentCount(t, h, 1)
 	a, err := h.Agent("alice")

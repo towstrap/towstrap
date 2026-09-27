@@ -215,6 +215,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 		MCPPol: hello.MCPPol,
 	})
 	s.audit.Log("AGENT-CONNECT", "id", machineID, "ip", ip, "version", hello.Ver)
+	s.maybePushUpgrade(a)
 	a.readLoop()
 	s.Hub.Detach(conn)
 	s.audit.Log("AGENT-DISCONNECT", "id", machineID, "ip", ip)

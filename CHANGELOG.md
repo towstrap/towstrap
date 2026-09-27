@@ -1,5 +1,12 @@
 # Changelog
 
+## 未发布
+
+### 新增
+
+- **升级自发现**：服务器新增 `update_check`（默认 6h，`off`/`0` 关闭）定时扫官方最新 release tag 缓存下来；扫到新版本时推给版本落后的已连接 agent，agent 接入时若已落后也会立即收到提示（`--update-check` 旗标同义）。服务器只报版本号，从不传二进制或下载地址——agent 收到后仍走 `selfupdate` 的固定官方源 + SHA256 + minisign 验签，服务器被攻破也塞不进伪造更新
+- **agent 自动升级**：`auto_update`（默认开，yaml 写 `false` 或 `--auto-update=false` 关）开启时，收到新版本提示自动下载升级：随机散开最多 60 秒防全群齐打、tag 先过白名单、不新不降级不动、单飞防重入、失败只记日志现有版本不受影响。装成 systemd/launchd/计划任务的升级后由服务管理器重启；手动/nohup 跑的原地 exec 换映像重启（Unix）；Windows 提示手动重启。关掉只记「发现新版本」日志，升级照旧手工 `towstrap update`
+
 ## v0.5.1（2026-09-27）
 
 ### 新增

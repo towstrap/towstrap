@@ -3,9 +3,11 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	mrand "math/rand"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +19,9 @@ import (
 	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/mcpsrv"
 	"github.com/towstrap/towstrap/internal/monitor"
+	"github.com/towstrap/towstrap/internal/proto"
+	"github.com/towstrap/towstrap/internal/selfupdate"
+	"github.com/towstrap/towstrap/internal/version"
 )
 
 type Config struct {
@@ -55,6 +60,11 @@ type Config struct {
 	// AuditLog 是服务器侧审计日志路径（认证成败、agent 上下线、会话开关），
 	// 16MB 自动轮转。空 = 不写（测试用；正式跑由 CLI 给默认路径）。
 	AuditLog string
+	// UpdateCheck 是「扫官方最新 release」的周期（如 6h）：>0 时服务
+	// 器定时拉一次最新 tag 存下，推给版本落后的已连接 agent（agent 拿
+	// tag 自己走 selfupdate 验签下载，服务器只报版本号不传二进制）。
+	// <=0 = 关闭。
+	UpdateCheck     time.Duration
 	// MinAgentVersion 非空时，hello 自报版本低于它的 agent 拒绝接入
 	//（机群版本淘汰用；版本是自报的，不是安全控制）。空 = 不限。
 	MinAgentVersion string
@@ -116,6 +126,10 @@ type Server struct {
 	oauth *oauthFlow // nil = 未配置 OAuth
 
 	regRL registerRL // /register 每 IP 限速器
+
+	// latestTag 是最近扫到的官方 release tag（atomic.Value 存 string，
+	// 空 = 还没扫到/扫描关）。agent 接入和定时扫描都会拿它推升级提示。
+	latestTag atomic.Value
 }
 
 // DefaultAuditPath 服务器审计日志默认位置：root 在 /var/lib/towstrap，
@@ -198,6 +212,9 @@ func (s *Server) Run() error {
 	go func() { errCh <- s.startHTTP() }()
 	go func() { errCh <- s.startSSH() }()
 	go s.revokeLoop()
+	if s.cfg.UpdateCheck > 0 {
+		go s.updateLoop(s.cfg.UpdateCheck)
+	}
 	err := <-errCh
 	slog.Error("server stopped", "err", err)
 	return err
@@ -210,5 +227,50 @@ func (s *Server) revokeLoop() {
 		if revoked := s.revokeStaleAgents(); len(revoked) > 0 {
 			slog.Info("revoked stale agents", "count", len(revoked))
 		}
+	}
+}
+
+// latestTagFunc 实际指向 selfupdate.LatestTag（官方固定源），var 让
+// 测试不用真打 GitHub。
+var latestTagFunc = selfupdate.LatestTag
+
+// updateLoop 周期扫一次最新 release tag 存进 latestTag；tag 变了才
+// 推给落后的 agent（没变不重复推，agent 接入时也会单独补推）。
+// 起跑先抖开几秒~半分钟：服务器重启+全群 agent 回连时别准点齐打 GitHub。
+func (s *Server) updateLoop(interval time.Duration) {
+	time.Sleep(5*time.Second + time.Duration(mrand.Int63n(int64(30*time.Second))))
+	for {
+		s.checkLatestOnce()
+		time.Sleep(interval)
+	}
+}
+
+func (s *Server) checkLatestOnce() {
+	tag, err := latestTagFunc()
+	if err != nil {
+		// 扫不到不影响服务——存着的旧 tag 继续用（下次扫描会补上）。
+		slog.Warn("最新版本扫描失败，下次再试", "err", err)
+		return
+	}
+	prev, _ := s.latestTag.Load().(string)
+	if tag == prev {
+		return
+	}
+	s.latestTag.Store(tag)
+	slog.Info("发现新版本", "latest", tag)
+	s.audit.Log("UPDATE-SCAN", "latest", tag)
+	s.Hub.NotifyUpgrade(tag)
+}
+
+// maybePushUpgrade 在 agent 接入后补推升级提示：它落后且服务器已经知道
+// 有新版时就地发（扫描周期可能几小时，别让它干等下一轮广播）。
+func (s *Server) maybePushUpgrade(a *agentConn) {
+	tag, _ := s.latestTag.Load().(string)
+	if a == nil || tag == "" || !selfupdate.ValidTag(tag) {
+		return
+	}
+	if version.LessThan(a.ver, strings.TrimPrefix(tag, "v")) {
+		_ = a.send(proto.Msg{T: proto.TypeUpgrade, Ver: tag})
+		s.audit.Log("UPDATE-NOTIFY", "id", a.name, "latest", tag, "ver", a.ver)
 	}
 }

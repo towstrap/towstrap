@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func write(t *testing.T, content string) string {
@@ -212,5 +214,49 @@ func TestAgentConfDirFailClosed(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "relative/dir")
 	if p := DefaultAgentPath(); !filepath.IsAbs(p) {
 		t.Fatalf("相对 XDG 不应产生相对配置路径，got %q", p)
+	}
+}
+
+func TestUpdateCheckAndAutoUpdate(t *testing.T) {
+	// update_check：yaml → Server；默认 6h；旗标覆盖
+	m := MergeServer(Server{}, nil)
+	if m.UpdateCheck != "6h" {
+		t.Fatalf("update_check 默认应为 6h，实际 %q", m.UpdateCheck)
+	}
+	m = MergeServer(Server{UpdateCheck: "12h"}, nil)
+	if m.UpdateCheck != "12h" {
+		t.Fatalf("yaml 的 update_check 丢了：%q", m.UpdateCheck)
+	}
+	m = MergeServer(Server{UpdateCheck: "12h"}, map[string]string{"update-check": "off"})
+	if m.UpdateCheck != "off" {
+		t.Fatalf("旗标没盖过 yaml：%q", m.UpdateCheck)
+	}
+	// 平铺 yaml 也要读得到
+	var f file
+	if err := yaml.Unmarshal([]byte("update_check: 30m\n"), &f); err != nil {
+		t.Fatal(err)
+	}
+
+	// auto_update：nil = 开；旗标 --auto-update=false 关；yaml false 关
+	a := MergeAgent(Agent{}, nil)
+	if a.AutoUpdate != nil {
+		t.Fatal("默认 auto_update 应为 nil（开）")
+	}
+	a = MergeAgent(Agent{}, map[string]string{"auto-update": "false"})
+	if a.AutoUpdate == nil || *a.AutoUpdate {
+		t.Fatal("--auto-update=false 没生效")
+	}
+	var af file
+	if err := yaml.Unmarshal([]byte("auto_update: false\n"), &af); err != nil {
+		t.Fatal(err)
+	}
+	if af.AutoUpdate == nil || *af.AutoUpdate {
+		t.Fatal("yaml auto_update: false 没解析进 *bool")
+	}
+	// InstallDefaults 透传（服务器能给新机预设关掉）
+	off := false
+	frag, _ := Agent{AutoUpdate: &off}.InstallDefaults()
+	if !strings.Contains(string(frag), "auto_update: false") {
+		t.Fatalf("InstallDefaults 丢了 auto_update：%s", frag)
 	}
 }
