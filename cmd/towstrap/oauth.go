@@ -5,7 +5,6 @@ package main
 // 一个短时效的 SSH 登录凭据（tso-...）和登录名。
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,10 +13,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/towstrap/towstrap/internal/client"
-	"github.com/towstrap/towstrap/internal/config"
-	"github.com/towstrap/towstrap/internal/proto"
 )
 
 func usageOAuth() {
@@ -36,56 +31,23 @@ func usageOAuth() {
 
 func runOAuth(args []string) int {
 	fs := flag.NewFlagSet("agent oauth", flag.ExitOnError)
-	configPath := fs.String("config", "", "")
-	fs.String("server", "", "")
-	agentToken := fs.String("agent-token", "", "")
-	tokenFile := fs.String("agent-token-file", "", "")
-	insecure := fs.Bool("insecure", false, "")
-	allowPlain := fs.Bool("allow-plain", false, "")
+	cf := addCredFlags(fs)
 	wait := fs.Duration("wait", 5*time.Minute, "")
 	_ = fs.Parse(args)
 
-	var file config.Agent
-	if *configPath != "" {
-		var err error
-		file, err = config.LoadAgent(*configPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-	}
-	cfg := config.MergeAgent(file, visited(fs))
-	tok, _, _, err := resolveAgentToken(*agentToken, *tokenFile,
-		os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
+	env, err := loadAgentCLI(fs, cf)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
-	}
-	if cfg.Server == "" {
-		cfg.Server = proto.OfficialServer
-	}
-	base, err := oauthHTTPBase(cfg.Server)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	// token 走明文出公网不行：ws:///http:// 非回环要显式确认。
-	if err := client.PlainCheck(cfg.Server, *allowPlain); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	hc := &http.Client{Timeout: 15 * time.Second}
-	if *insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, base+"/oauth/request", nil)
+	req, err := http.NewRequest(http.MethodPost, env.base+"/oauth/request", nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	req.Header.Set("X-Agent-Token", tok)
-	resp, err := hc.Do(req)
+	req.Header.Set("X-Agent-Token", env.tok)
+	resp, err := env.hc.Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "连服务器失败:", err)
 		return 1
@@ -119,12 +81,12 @@ func runOAuth(args []string) int {
 	for time.Now().Before(deadline) {
 		time.Sleep(2 * time.Second)
 		r, err := http.NewRequest(http.MethodGet,
-			base+"/oauth/result?r="+start.RequestID, nil)
+			env.base+"/oauth/result?r="+start.RequestID, nil)
 		if err != nil {
 			break
 		}
-		r.Header.Set("X-Agent-Token", tok)
-		resp, err := hc.Do(r)
+		r.Header.Set("X-Agent-Token", env.tok)
+		resp, err := env.hc.Do(r)
 		if err != nil {
 			continue // 网络抖一下不算完，继续等到超时
 		}
@@ -167,18 +129,4 @@ func runOAuth(args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, "等待授权超时（--wait 可调）")
 	return 1
-}
-
-// oauthHTTPBase 把 agent 配置里的 ws(s):// 服务器地址换成 http(s):// 基址。
-func oauthHTTPBase(serverURL string) (string, error) {
-	base := strings.TrimSuffix(serverURL, "/")
-	switch {
-	case strings.HasPrefix(base, "wss://"):
-		return "https://" + base[len("wss://"):], nil
-	case strings.HasPrefix(base, "ws://"):
-		return "http://" + base[len("ws://"):], nil
-	case strings.HasPrefix(base, "https://"), strings.HasPrefix(base, "http://"):
-		return base, nil
-	}
-	return "", fmt.Errorf("server 地址 %q 需要 ws:// 或 wss:// 前缀", serverURL)
 }

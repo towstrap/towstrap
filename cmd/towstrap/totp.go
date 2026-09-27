@@ -7,17 +7,11 @@ package main
 // SSH 登进机器后直接敲这个就行；不在机器上的话走 ssh '@totp'。
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
-	"time"
 
-	"github.com/towstrap/towstrap/internal/client"
-	"github.com/towstrap/towstrap/internal/config"
-	"github.com/towstrap/towstrap/internal/machineid"
 	"github.com/towstrap/towstrap/internal/proto"
 )
 
@@ -47,13 +41,8 @@ func usageTOTP() {
 func runTOTP(args []string) int {
 	fs := flag.NewFlagSet("totp", flag.ExitOnError)
 	fs.Usage = usageTOTP
-	configPath := fs.String("config", "", "")
-	server := fs.String("server", "", "")
-	agentToken := fs.String("agent-token", "", "")
-	tokenFile := fs.String("agent-token-file", "", "")
+	cf := addCredFlags(fs)
 	pwStdin := fs.Bool("password-stdin", false, "")
-	insecure := fs.Bool("insecure", false, "")
-	allowPlain := fs.Bool("allow-plain", false, "")
 	// remove 是位置参数——先摘出来再 Parse，不然 "totp remove --password-stdin"
 	// 这种写法里 remove 后面的旗标会被 flag 包丢下不解析。
 	remove := false
@@ -67,47 +56,9 @@ func runTOTP(args []string) int {
 	}
 	_ = fs.Parse(rest)
 
-	var file config.Agent
-	// 没带 --config 时自动试默认配置目录的 agent.yaml——register 装好的
-	// 机器上敲 towstrap totp 应该零旗标直接能用。
-	path := *configPath
-	if path == "" {
-		if dir, err := machineid.ConfDir(); err == nil {
-			cand := filepath.Join(dir, "agent.yaml")
-			if _, err := os.Stat(cand); err == nil {
-				path = cand
-			}
-		}
-	}
-	if path != "" {
-		var err error
-		file, err = config.LoadAgent(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-	}
-	cfg := config.MergeAgent(file, visited(fs))
-	srv := cfg.Server
-	if *server != "" {
-		srv = *server
-	}
-	if srv == "" {
-		srv = proto.OfficialServer
-	}
-	// 密码会走这个地址出去——明文出公网必须显式确认。
-	if err := client.PlainCheck(srv, *allowPlain); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	base, err := oauthHTTPBase(srv)
+	env, err := loadAgentCLI(fs, cf)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	tok, _, _, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "读 agent token 失败（先在机器上 towstrap register 或用 --agent-token-file 指）：", err)
 		return 2
 	}
 	pw, err := readRegisterPassword(*pwStdin, true)
@@ -115,27 +66,23 @@ func runTOTP(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	hc := &http.Client{Timeout: 15 * time.Second}
-	if *insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
 
 	if !remove {
-		if !totpBindFlow(hc, base, tok, pw) {
+		if !totpBindFlow(env.hc, env.base, env.tok, pw) {
 			return 1
 		}
 		return 0
 	}
 	// 解绑：已绑账号服务器会回 need_code，补问动态码再发一次。
 	var rm proto.TOTPRemoveResp
-	code, ok := totpPost(hc, base, tok, "/totp/remove", proto.TOTPRemoveReq{Password: pw}, &rm)
+	code, ok := totpPost(env.hc, env.base, env.tok, "/totp/remove", proto.TOTPRemoveReq{Password: pw}, &rm)
 	if !ok {
 		return 1
 	}
 	if code == http.StatusForbidden && rm.NeedCode {
 		rm = proto.TOTPRemoveResp{}
 		codeStr := promptLine("输当前验证器上的 6 位码", "")
-		code, ok = totpPost(hc, base, tok, "/totp/remove", proto.TOTPRemoveReq{Password: pw, Code: codeStr}, &rm)
+		code, ok = totpPost(env.hc, env.base, env.tok, "/totp/remove", proto.TOTPRemoveReq{Password: pw, Code: codeStr}, &rm)
 		if !ok {
 			return 1
 		}

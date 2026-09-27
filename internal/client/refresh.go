@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"strings"
 	"time"
 
@@ -39,9 +38,11 @@ type RefreshResult struct {
 	Detail  string `json:"detail"`
 }
 
-// RefreshURL 把 agent 连服务器用的 ws(s):// 地址换成 /token/refresh 的
-// http(s):// 地址；别的 scheme 报错。
-func RefreshURL(server string) (string, error) {
+// HTTPBase 把 agent 连服务器用的 ws(s):// 地址换成 http(s):// 基址：
+// 子路径前缀保留（wss://host/ts → https://host/ts，调用方自己拼端点），
+// 别的 scheme 报错。各 HTTP 端点（/totp/*、/passwd、/oauth/*、/register）
+// 的地址换算统一走这里。
+func HTTPBase(server string) (string, error) {
 	u, err := url.Parse(server)
 	if err != nil {
 		return "", err
@@ -55,10 +56,20 @@ func RefreshURL(server string) (string, error) {
 	default:
 		return "", fmt.Errorf("server 应为 ws:// 或 wss://")
 	}
-	// 路径当前缀拼接（同 client.go 的 /agent）：子路径部署也能指对端点。
-	u.Path = path.Join(u.Path, "/token/refresh")
+	u.Path = strings.TrimSuffix(u.Path, "/")
 	u.RawQuery = ""
 	return u.String(), nil
+}
+
+// RefreshURL 把 agent 连服务器用的 ws(s):// 地址换成 /token/refresh 的
+// http(s):// 地址；别的 scheme 报错。
+func RefreshURL(server string) (string, error) {
+	base, err := HTTPBase(server)
+	if err != nil {
+		return "", err
+	}
+	// 路径当前缀拼接（同 client.go 的 /agent）：子路径部署也能指对端点。
+	return base + "/token/refresh", nil
 }
 
 // PlainCheck 明文传输（ws:// 或 http://）且目标不是本机回环时必须显式

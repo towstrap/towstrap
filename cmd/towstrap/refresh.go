@@ -5,13 +5,11 @@ package main
 
 import (
 	"flag"
-	"log/slog"
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/towstrap/towstrap/internal/client"
-	"github.com/towstrap/towstrap/internal/config"
-	"github.com/towstrap/towstrap/internal/proto"
 )
 
 type stringList []string
@@ -24,42 +22,24 @@ func (l *stringList) Set(v string) error {
 
 func runTokenRefresh(args []string) int {
 	fs := flag.NewFlagSet("token refresh", flag.ExitOnError)
-	configPath := fs.String("config", "", "")
-	fs.String("server", "", "")
-	agentToken := fs.String("agent-token", "", "")
-	tokenFile := fs.String("agent-token-file", "", "")
-	fs.Bool("insecure", false, "")
+	cf := addCredFlags(fs)
 	var machines stringList
 	fs.Var(&machines, "machine", "")
 	all := fs.Bool("all", false, "")
-	allowPlain := fs.Bool("allow-plain", false, "")
 	_ = fs.Parse(args)
 
-	var file config.Agent
-	if *configPath != "" {
-		var err error
-		file, err = config.LoadAgent(*configPath)
-		if err != nil {
-			slog.Error(err.Error())
-			return 2
-		}
-	}
-	cfg := config.MergeAgent(file, visited(fs))
-	tok, _, _, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
+	env, err := loadAgentCLI(fs, cf)
 	if err != nil {
-		slog.Error(err.Error())
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if cfg.Server == "" {
-		cfg.Server = proto.OfficialServer
-	}
 	return client.TokenRefresh(client.RefreshOpts{
-		Server:     cfg.Server,
-		Token:      tok,
-		Insecure:   cfg.Insecure,
+		Server:     env.srv,
+		Token:      env.tok,
+		Insecure:   env.cfg.Insecure,
 		Machines:   machines,
 		All:        *all,
-		AllowPlain: *allowPlain,
+		AllowPlain: *cf.allowPlain,
 	}, os.Stdin, os.Stderr)
 }
 

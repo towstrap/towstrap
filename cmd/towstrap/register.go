@@ -76,7 +76,7 @@ func runRegister(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	base, err := oauthHTTPBase(*server)
+	base, err := client.HTTPBase(*server)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

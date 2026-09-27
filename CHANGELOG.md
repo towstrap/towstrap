@@ -2,6 +2,11 @@
 
 ## 未发布
 
+### 修复
+
+- **凭据类子命令的配置行为统一**：`totp`/`passwd`/`oauth`/`token refresh` 的「读配置→合并旗标→定服务器→明文检查→解析 token→建 HTTP client」收进同一个引导帮手——顺带修掉两处漂移：`oauth`/`token refresh` 以前不探测默认安装目录的 agent.yaml（装好的机器上不带 `--config` 会误报「没有 agent token」）；`totp`/`passwd`/`oauth` 的 TLS 跳过校验以前只看 `--insecure` 旗标，配置里的 `insecure: true` 不生效（自签证书环境 agent 能连、管理命令全失败）。`refresh` 的报错也从日志格式收成和其他命令一致的纯文本
+- `ws(s)://` → `http(s)://` 的地址换算统一走 `client.HTTPBase`（`url.Parse` 版），删掉 oauth.go 里字符串前缀拼的弱化版 `oauthHTTPBase`
+
 ### 变更
 
 - **常驻服务改为默认**：`install.sh` 不再要 `--systemd`/`--launchd`——Linux 有 `systemctl` 就建 systemd 单元（root 系统级、普通用户 `~/.config/systemd/user`），macOS 建 launchd 项；`install.ps1` 默认注册「登录自起」计划任务。临时用/容器场景加 `--no-service`（ps1 用 `-NoService`）只放二进制+配置。显式 `--systemd`/`--launchd` 旗标兼容保留（用错平台仍报错）；显式 `--systemd` 在没 systemctl 的机器上照旧是硬错。`install-server.sh` 本来就是默认装服务，现在口径一致

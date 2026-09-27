@@ -7,20 +7,14 @@ package main
 
 import (
 	"bufio"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"golang.org/x/term"
 
-	"github.com/towstrap/towstrap/internal/client"
-	"github.com/towstrap/towstrap/internal/config"
-	"github.com/towstrap/towstrap/internal/machineid"
 	"github.com/towstrap/towstrap/internal/proto"
 )
 
@@ -49,70 +43,24 @@ towstrap-server user set 用户名 --password 新密码。
 func runPasswd(args []string) int {
 	fs := flag.NewFlagSet("passwd", flag.ExitOnError)
 	fs.Usage = usagePasswd
-	configPath := fs.String("config", "", "")
-	server := fs.String("server", "", "")
-	agentToken := fs.String("agent-token", "", "")
-	tokenFile := fs.String("agent-token-file", "", "")
+	cf := addCredFlags(fs)
 	pwStdin := fs.Bool("password-stdin", false, "")
 	totpCode := fs.String("totp", "", "")
-	insecure := fs.Bool("insecure", false, "")
-	allowPlain := fs.Bool("allow-plain", false, "")
 	_ = fs.Parse(args)
 
-	var file config.Agent
-	path := *configPath
-	if path == "" {
-		if dir, err := machineid.ConfDir(); err == nil {
-			cand := filepath.Join(dir, "agent.yaml")
-			if _, err := os.Stat(cand); err == nil {
-				path = cand
-			}
-		}
-	}
-	if path != "" {
-		var err error
-		file, err = config.LoadAgent(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
-		}
-	}
-	cfg := config.MergeAgent(file, visited(fs))
-	srv := cfg.Server
-	if *server != "" {
-		srv = *server
-	}
-	if srv == "" {
-		srv = proto.OfficialServer
-	}
-	// 新旧密码都会走这个地址——明文出公网必须显式确认。
-	if err := client.PlainCheck(srv, *allowPlain); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	base, err := oauthHTTPBase(srv)
+	env, err := loadAgentCLI(fs, cf)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	tok, _, _, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "读 agent token 失败（先在机器上 towstrap register 或用 --agent-token-file 指）：", err)
-		return 2
-	}
-
 	oldPW, newPW, err := readPasswdPair(*pwStdin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	hc := &http.Client{Timeout: 15 * time.Second}
-	if *insecure {
-		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
 
 	var res proto.PasswdResp
-	code, ok := totpPost(hc, base, tok, "/passwd", proto.PasswdReq{
+	code, ok := totpPost(env.hc, env.base, env.tok, "/passwd", proto.PasswdReq{
 		Password: oldPW, NewPassword: newPW, Code: *totpCode,
 	}, &res)
 	if !ok {
@@ -127,7 +75,7 @@ func runPasswd(args []string) int {
 			return 1
 		}
 		res = proto.PasswdResp{}
-		code, ok = totpPost(hc, base, tok, "/passwd", proto.PasswdReq{
+		code, ok = totpPost(env.hc, env.base, env.tok, "/passwd", proto.PasswdReq{
 			Password: oldPW, NewPassword: newPW, Code: *totpCode,
 		}, &res)
 		if !ok {
