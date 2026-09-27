@@ -115,7 +115,7 @@ func (s *Store) newUniqueToken() (string, error) {
 // 机器报 ErrExists。
 func (s *Store) AddMachine(username, name string, agentAllowIPs []string) (Machine, error) {
 	if !proto.ValidName(name) {
-		return Machine{}, fmt.Errorf("机器名 %q 不合法，只能用字母、数字、点、下划线和短横线", name)
+		return Machine{}, fmt.Errorf("%w: 机器名 %q 不合法，只能用字母、数字、点、下划线和短横线", ErrBadInput, name)
 	}
 	if err := validateAllowIPs(agentAllowIPs); err != nil {
 		return Machine{}, fmt.Errorf("agent 来源白名单: %w", err)
@@ -138,7 +138,11 @@ func (s *Store) AddMachine(username, name string, agentAllowIPs []string) (Machi
 		 VALUES (?, ?, ?, ?, '', ?)`,
 		username, name, enc, string(ips), time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
-		return Machine{}, fmt.Errorf("%w: %s+%s", ErrExists, username, name)
+		// 只有唯一约束冲突才是重名——库锁住这类存储错误如实上报。
+		if isUniqueErr(err) {
+			return Machine{}, fmt.Errorf("%w: %s+%s", ErrExists, username, name)
+		}
+		return Machine{}, err
 	}
 	return Machine{
 		Username:      username,

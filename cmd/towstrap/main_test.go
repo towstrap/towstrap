@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 func TestResolveAgentTokenPrecedence(t *testing.T) {
@@ -121,49 +123,31 @@ func TestPlainCheck(t *testing.T) {
 	}
 }
 
-// maskToken：长 token 露头尾遮中段，太短的整段打码。
+// MaskToken：长 token 露头尾遮中段，太短的整段打码。
 func TestMaskToken(t *testing.T) {
-	got := maskToken("tsa-abcdef1234567890wxyz")
+	got := proto.MaskToken("tsa-abcdef1234567890wxyz")
 	if got != "tsa-abcd…wxyz" {
-		t.Fatalf("maskToken = %q", got)
+		t.Fatalf("MaskToken = %q", got)
 	}
-	if maskToken("short") != "***" {
+	if proto.MaskToken("short") != "***" {
 		t.Fatal("短 token 该整段打码")
 	}
 }
 
 // readPasswdPair stdin 模式：两行（旧、新），缺行/太短都不行。
+// 注入 strings.Reader 测，不动全局 os.Stdin——并行测试也互不干扰。
 func TestReadPasswdPairStdin(t *testing.T) {
-	feed := func(input string) {
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		old := os.Stdin
-		os.Stdin = r
-		t.Cleanup(func() { os.Stdin = old })
-		if _, err := w.WriteString(input); err != nil {
-			t.Fatal(err)
-		}
-		w.Close()
-	}
-
-	feed("oldpassword1\nnewpassword1\n")
-	oldPW, newPW, err := readPasswdPair(true)
+	oldPW, newPW, err := readPasswdPair(true, strings.NewReader("oldpassword1\nnewpassword1\n"))
 	if err != nil || oldPW != "oldpassword1" || newPW != "newpassword1" {
 		t.Fatalf("两行该读出旧/新: %q %q err=%v", oldPW, newPW, err)
 	}
-
-	feed("oldpassword1\n") // 只有一行
-	if _, _, err := readPasswdPair(true); err == nil {
-		t.Fatal("缺新密码行该报错")
-	}
-	feed("oldpassword1\nshort\n")
-	if _, _, err := readPasswdPair(true); err == nil {
-		t.Fatal("新密码太短该报错")
-	}
-	feed("\nnewpassword1\n")
-	if _, _, err := readPasswdPair(true); err == nil {
-		t.Fatal("空旧密码该报错")
+	for _, input := range []string{
+		"oldpassword1\n",        // 只有一行
+		"oldpassword1\nshort\n", // 新密码太短
+		"\nnewpassword1\n",      // 空旧密码
+	} {
+		if _, _, err := readPasswdPair(true, strings.NewReader(input)); err == nil {
+			t.Fatalf("输入 %q 该报错", input)
+		}
 	}
 }

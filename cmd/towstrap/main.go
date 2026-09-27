@@ -136,12 +136,6 @@ agent 不用重启、连接不断。目标是 token 从文件读的机器（--ag
 `)
 }
 
-func visited(fs *flag.FlagSet) map[string]string {
-	out := map[string]string{}
-	fs.Visit(func(f *flag.Flag) { out[f.Name] = f.Value.String() })
-	return out
-}
-
 func runAgent(args []string) int {
 	fs := flag.NewFlagSet("towstrap", flag.ExitOnError)
 	configPath := fs.String("config", "", "")
@@ -180,7 +174,7 @@ func runAgent(args []string) int {
 			return 2
 		}
 	}
-	cfg := config.MergeAgent(file, visited(fs))
+	cfg := config.MergeAgent(file, config.VisitedFlags(fs))
 	// token 优先级：--agent-token > --agent-token-file > 环境变量 > 配置文件。
 	// 命令行直写 token 会进 ps，尽量用后几种。
 	tok, tokenSource, tokFile, err := resolveAgentToken(*agentToken, *tokenFile, os.Getenv("TOWSTRAP_AGENT_TOKEN"), cfg.AgentToken, cfg.AgentTokenFile)

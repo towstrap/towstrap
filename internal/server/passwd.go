@@ -8,10 +8,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/proto"
 )
 
@@ -56,7 +58,12 @@ func (s *Server) handlePasswd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.cfg.Users.SetPassword(m.Username, req.NewPassword); err != nil {
-		denyU(http.StatusBadRequest, "new-password", "新密码不合格："+err.Error())
+		if errors.Is(err, accounts.ErrBadInput) {
+			denyU(http.StatusBadRequest, "new-password", err.Error())
+		} else {
+			// 存储层失败不是用户输入的问题，别报成 400 误导调用方改密码重试。
+			denyU(http.StatusInternalServerError, "store", "密码更新失败")
+		}
 		return
 	}
 	s.guard.pass(m.Username, ip)

@@ -30,6 +30,21 @@ const (
 	TypeToken  = "token"
 )
 
+// ErrTokNotFromFile 是 agent 拒绝换发时回的错误文本：token 不从文件来
+// 就没法远程换。它走 err 消息的字符串过协议，两边共用同一常量——改文案
+// 不会变成「服务器静默对不上号」。
+const ErrTokNotFromFile = "token 不是从文件读的，无法远程更换"
+
+// MaskToken 把 token 脱敏成「头 8 位…尾 4 位」：头正好盖住 tsa-/tsm-
+// 前缀加 4 位实体字符，够认出是哪个 token 又不够冒用。CLI status 和
+// 服务端列表共用——两边打码规则必须一致，不然泄漏面不一样宽。
+func MaskToken(t string) string {
+	if len(t) <= 12 {
+		return "***"
+	}
+	return t[:8] + "…" + t[len(t)-4:]
+}
+
 // OfficialServer 是官方服务器的对外地址：agent 的 --server、install 脚本
 // 的默认地址、文档示例都以它为准——改域名只改这一处（安装脚本里的字面
 // 值由 scripts 包测试对齐）。对外只暴露 443，HTTP/WS 服务靠路径区分

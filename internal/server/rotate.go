@@ -7,12 +7,14 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/proto"
 )
 
 type refreshReq struct {
@@ -134,9 +136,9 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 					agent.setToken(newTok)
 					res.Status, res.Detail = "ok", "新 token 已写入该机器的 token 文件"
 				}
-			case err.Error() == "timeout":
+			case errors.Is(err, errTokenAckTimeout):
 				res.Status, res.Detail = "timeout", "agent 没有在时限内确认"
-			case strings.Contains(err.Error(), "不是从文件读"):
+			case err.Error() == proto.ErrTokNotFromFile:
 				res.Status, res.Detail = "no-file", "该机器的 token 不是从文件读的，无法远程更换"
 			default:
 				res.Status, res.Detail = "error", err.Error()

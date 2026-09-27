@@ -65,7 +65,7 @@ func loadAgentCLI(fs *flag.FlagSet, f credFlags) (*agentCLIEnv, error) {
 			return nil, err
 		}
 	}
-	cfg := config.MergeAgent(file, visited(fs))
+	cfg := config.MergeAgent(file, config.VisitedFlags(fs))
 	srv := cfg.Server
 	if srv == "" {
 		srv = proto.OfficialServer

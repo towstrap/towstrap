@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -53,7 +54,7 @@ func runPasswd(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	oldPW, newPW, err := readPasswdPair(*pwStdin)
+	oldPW, newPW, err := readPasswdPair(*pwStdin, os.Stdin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
@@ -90,11 +91,12 @@ func runPasswd(args []string) int {
 	return 0
 }
 
-// readPasswdPair 取（旧密码, 新密码）：stdin 模式读两行（旧、新），
-// 终端模式旧密码问一遍、新密码两遍确认。
-func readPasswdPair(fromStdin bool) (string, string, error) {
+// readPasswdPair 取（旧密码, 新密码）：stdin 模式从 in 读两行（旧、新），
+// 终端模式在 os.Stdin 的 tty 上问（旧密码一遍、新密码两遍确认）——in 参数
+// 让 stdin 路径可以单测，不用全局替换 os.Stdin。
+func readPasswdPair(fromStdin bool, in io.Reader) (string, string, error) {
 	if fromStdin {
-		rd := bufio.NewReader(os.Stdin)
+		rd := bufio.NewReader(in)
 		oldPW, err := rd.ReadString('\n')
 		if err != nil && len(oldPW) == 0 {
 			return "", "", fmt.Errorf("stdin 里没读到密码（要两行：旧密码、新密码）")

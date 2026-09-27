@@ -7,23 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/towstrap/towstrap/internal/client"
+	"github.com/towstrap/towstrap/internal/config"
 )
-
-type stringList []string
-
-func (l *stringList) String() string { return strings.Join(*l, ",") }
-func (l *stringList) Set(v string) error {
-	*l = append(*l, v)
-	return nil
-}
 
 func runTokenRefresh(args []string) int {
 	fs := flag.NewFlagSet("token refresh", flag.ExitOnError)
 	cf := addCredFlags(fs)
-	var machines stringList
+	var machines config.StringList
 	fs.Var(&machines, "machine", "")
 	all := fs.Bool("all", false, "")
 	_ = fs.Parse(args)

@@ -5,12 +5,14 @@ package main
 // 一个短时效的 SSH 登录凭据（tso-...）和登录名。
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 )
@@ -77,13 +79,31 @@ func runOAuth(args []string) int {
 	fmt.Println()
 	fmt.Println("正在等待授权结果…")
 
+	// 轮询授权结果：首次立即探，之后每 2 秒一轮；Ctrl+C 随时退出（请求
+	// 本身也挂同一个 ctx，不会卡在 15s 超时里），到 deadline 就停，
+	// 不会越过界再多睡一轮。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	deadline := time.Now().Add(*wait)
-	for time.Now().Before(deadline) {
-		time.Sleep(2 * time.Second)
-		r, err := http.NewRequest(http.MethodGet,
+	poll := time.NewTimer(0)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(os.Stderr, "已取消")
+			return 1
+		case <-poll.C:
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintln(os.Stderr, "等待授权超时（--wait 可调）")
+			return 1
+		}
+		poll.Reset(2 * time.Second)
+
+		r, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			env.base+"/oauth/result?r="+start.RequestID, nil)
 		if err != nil {
-			break
+			continue
 		}
 		r.Header.Set("X-Agent-Token", env.tok)
 		resp, err := env.hc.Do(r)
@@ -127,6 +147,4 @@ func runOAuth(args []string) int {
 			return 1
 		}
 	}
-	fmt.Fprintln(os.Stderr, "等待授权超时（--wait 可调）")
-	return 1
 }

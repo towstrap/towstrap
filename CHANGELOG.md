@@ -6,6 +6,8 @@
 
 - **凭据类子命令的配置行为统一**：`totp`/`passwd`/`oauth`/`token refresh` 的「读配置→合并旗标→定服务器→明文检查→解析 token→建 HTTP client」收进同一个引导帮手——顺带修掉两处漂移：`oauth`/`token refresh` 以前不探测默认安装目录的 agent.yaml（装好的机器上不带 `--config` 会误报「没有 agent token」）；`totp`/`passwd`/`oauth` 的 TLS 跳过校验以前只看 `--insecure` 旗标，配置里的 `insecure: true` 不生效（自签证书环境 agent 能连、管理命令全失败）。`refresh` 的报错也从日志格式收成和其他命令一致的纯文本
 - `ws(s)://` → `http(s)://` 的地址换算统一走 `client.HTTPBase`（`url.Parse` 版），删掉 oauth.go 里字符串前缀拼的弱化版 `oauthHTTPBase`
+- `towstrap totp remove` 后多余的位置参数现在报错，不再被静默吃掉
+- `towstrap oauth` 等待授权期间 Ctrl+C 可立即中断；轮询改成首次立即查、总时长不越过 `--wait`
 
 ### 变更
 

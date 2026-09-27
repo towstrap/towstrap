@@ -1,6 +1,7 @@
 package config
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -494,4 +495,25 @@ Windows 用 PowerShell：
   towstrap --server %s --agent-token-file <token文件路径>
 （token 要写成 0600 的文件才能远程换发；自签证书 curl 加 -k）`,
 		b, token, b, token, publicURL)
+}
+
+// ---- flag ↔ config 桥 ----
+
+// VisitedFlags 收集旗标集里被显式给过的旗标（名字→字面值），配合
+// MergeAgent/MergeServer 实现「命令行盖配置文件」：没给的键不在返回
+// map 里，不会把配置文件里的值冲掉。
+func VisitedFlags(fs *flag.FlagSet) map[string]string {
+	out := map[string]string{}
+	fs.Visit(func(f *flag.Flag) { out[f.Name] = f.Value.String() })
+	return out
+}
+
+// StringList 是可重复给出的字符串旗标（--machine a --machine b）；
+// 各 CLI 共用这个实现，别在每个命令里各抄一份。
+type StringList []string
+
+func (l *StringList) String() string { return strings.Join(*l, ",") }
+func (l *StringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
 }

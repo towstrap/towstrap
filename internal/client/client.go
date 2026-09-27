@@ -426,7 +426,7 @@ func (a *agent) loop() error {
 // 写失败回 err，服务器那边就不换库。
 func (a *agent) onToken(msg proto.Msg) {
 	if a.cfg.TokenFile == "" {
-		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: "token 不是从文件读的，无法远程更换"})
+		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: proto.ErrTokNotFromFile})
 		return
 	}
 	if err := writeTokenFile(a.cfg.TokenFile, msg.D); err != nil {

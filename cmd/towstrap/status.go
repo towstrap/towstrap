@@ -14,6 +14,7 @@ import (
 
 	"github.com/towstrap/towstrap/internal/client"
 	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/proto"
 	"github.com/towstrap/towstrap/internal/version"
 )
 
@@ -118,7 +119,7 @@ func runStatus(args []string) int {
 	case *showToken:
 		out("凭据：agent token %s（来源：%s）", tok, tokSource)
 	default:
-		out("凭据：agent token %s（来源：%s）", maskToken(tok), tokSource)
+		out("凭据：agent token %s（来源：%s）", proto.MaskToken(tok), tokSource)
 	}
 	out("说明：这是 agent 连服务器用的 token（tsa-）。AI 客户端走 MCP 用的是另一套 tsm- token，")
 	out("      在服务器上 towstrap-server mcp add 签发——两套凭据互不相干，agent 不需要 tsm-。")
@@ -145,15 +146,6 @@ func orDefault(s string) string {
 		return "默认官方"
 	}
 	return s
-}
-
-// maskToken 遮中段：留 tsa- 前缀后的头 4 位和尾 4 位（够认是哪个 token，
-// 不够用）。太短的（测试桩之类）整体打码。
-func maskToken(tok string) string {
-	if len(tok) <= 12 {
-		return "***"
-	}
-	return tok[:8] + "…" + tok[len(tok)-4:]
 }
 
 // shortDur 把时长收成「3 小时」「2 分钟」这种一眼懂的粒度。

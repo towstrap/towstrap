@@ -1,14 +1,12 @@
 package accounts
 
 import (
-	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,18 +14,28 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
-	gossh "golang.org/x/crypto/ssh"
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 
 	"github.com/towstrap/towstrap/internal/allow"
-	"github.com/towstrap/towstrap/internal/proto"
-	"github.com/towstrap/towstrap/internal/totp"
 )
 
 var (
 	ErrNotFound = errors.New("账号不存在")
 	ErrExists   = errors.New("账号已存在")
+	// ErrBadInput 包住所有用户输入校验错（名字不合法、密码太短、白名单
+	// 写错、公钥格式不对）——HTTP 层据此回 400 而不是 500。
+	ErrBadInput = errors.New("输入不合法")
 )
+
+// isUniqueErr 判 SQLite 唯一约束冲突：看错误码不拼文案（驱动哪天改了
+// "UNIQUE" 字样也不会静默失效）。1555=PRIMARYKEY、2067=UNIQUE，都算重名。
+func isUniqueErr(err error) bool {
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		return se.Code() == 1555 || se.Code() == 2067
+	}
+	return false
+}
 
 // Account 是一个账号（人/凭据）：外人用 Username/Password 走 SSH 登录。
 // 账号下挂若干 Machine（被控机），每台机器有独立 token（见 machines.go）；
@@ -321,7 +329,7 @@ func (s *Store) decTOTP(blob []byte) ([]byte, error) {
 
 func validPassword(pw string) error {
 	if len(pw) < 10 {
-		return errors.New("密码至少 10 位")
+		return fmt.Errorf("%w: 密码至少 10 位", ErrBadInput)
 	}
 	return nil
 }
@@ -336,7 +344,10 @@ func RandomPassword() string {
 
 func validateAllowIPs(ips []string) error {
 	_, err := allow.Parse(ips)
-	return err
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrBadInput, err)
+	}
+	return nil
 }
 
 func hashPassword(pw string) (string, error) {
@@ -354,314 +365,6 @@ func randomToken() string {
 	return "tsa-" + base64.RawURLEncoding.EncodeToString(b)
 }
 
-// ---- 账号操作 ----
-
-// Add 新建账号，并自动建一台名为 default 的机器（agentAllowIPs 落到它
-// 身上），返回的 Account.Machines[0] 带明文 token。contact 是可选的
-// 追溯备注。多机器用 AddMachine。
-func (s *Store) Add(username, password string, allowIPs []string, contact string, agentAllowIPs []string) (Account, error) {
-	if !proto.ValidName(username) {
-		return Account{}, fmt.Errorf("用户名 %q 不合法，只能用字母、数字、点、下划线和短横线", username)
-	}
-	if err := validPassword(password); err != nil {
-		return Account{}, err
-	}
-	if err := validateAllowIPs(allowIPs); err != nil {
-		return Account{}, err
-	}
-	if err := validateAllowIPs(agentAllowIPs); err != nil {
-		return Account{}, fmt.Errorf("agent 来源白名单: %w", err)
-	}
-	hash, err := hashPassword(password)
-	if err != nil {
-		return Account{}, err
-	}
-	tok, err := s.newUniqueToken()
-	if err != nil {
-		return Account{}, err
-	}
-	ips, _ := json.Marshal(allowIPs)
-	agentIPs, _ := json.Marshal(agentAllowIPs)
-	tEnc, err := s.encToken(tok)
-	if err != nil {
-		return Account{}, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Account{}, err
-	}
-	defer tx.Rollback()
-	_, err = tx.Exec(
-		`INSERT INTO users (username, password_hash, contact, allow_ips, disabled, created_at)
-		 VALUES (?, ?, ?, ?, 0, ?)`,
-		username, hash, cleanText(contact), string(ips), now,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return Account{}, fmt.Errorf("%w: %s", ErrExists, username)
-		}
-		return Account{}, err
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO machines (username, name, token_enc, agent_allow_ips, agent_last_ip, created_at)
-		 VALUES (?, ?, ?, ?, '', ?)`,
-		username, DefaultMachine, tEnc, string(agentIPs), now); err != nil {
-		return Account{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Account{}, err
-	}
-	return Account{
-		Username: username,
-		Contact:  contact,
-		AllowIPs: append([]string{}, allowIPs...),
-		Machines: []Machine{{
-			Username:      username,
-			Name:          DefaultMachine,
-			Token:         tok,
-			AgentAllowIPs: append([]string{}, agentAllowIPs...),
-			CreatedAt:     time.Now(),
-		}},
-		CreatedAt: time.Now(),
-	}, nil
-}
-
-// Remove 删除账号，连带删掉它名下全部机器；那些机器的 agent 会因 token
-// 失效被巡检断开。
-func (s *Store) Remove(username string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM machines WHERE username = ?`, username); err != nil {
-		return err
-	}
-	// 账号没了，它占的机器指纹一并释放，那台机器以后还能再注册
-	if _, err := tx.Exec(`DELETE FROM register_fps WHERE username = ?`, username); err != nil {
-		return err
-	}
-	res, err := tx.Exec(`DELETE FROM users WHERE username = ?`, username)
-	if err != nil {
-		return err
-	}
-	if err := requireAffected(res, username); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// SetPassword 改 SSH 密码（重新 bcrypt，带新的随机盐）。
-func (s *Store) SetPassword(username, password string) error {
-	if err := validPassword(password); err != nil {
-		return err
-	}
-	hash, err := hashPassword(password)
-	if err != nil {
-		return err
-	}
-	res, err := s.db.Exec(`UPDATE users SET password_hash = ? WHERE username = ?`, hash, username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// SetAllow 设置这个账号的 IP 白名单；传空表示不限。
-func (s *Store) SetAllow(username string, ips []string) error {
-	if err := validateAllowIPs(ips); err != nil {
-		return err
-	}
-	blob, _ := json.Marshal(ips)
-	res, err := s.db.Exec(`UPDATE users SET allow_ips = ? WHERE username = ?`, string(blob), username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// SetDisabled 启用/停用账号；停用后 SSH 和 agent 都进不来。
-func (s *Store) SetDisabled(username string, disabled bool) error {
-	res, err := s.db.Exec(`UPDATE users SET disabled = ? WHERE username = ?`, boolToInt(disabled), username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// SetContact 设置追溯备注（负责人/联系方式），不参与任何认证。控制字符在
-// 写入时清掉：这串字会原样打印到终端（user list），不能让它带终端转义序列。
-func (s *Store) SetContact(username, contact string) error {
-	res, err := s.db.Exec(`UPDATE users SET contact = ? WHERE username = ?`, cleanText(contact), username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// SetAgentAllow 兼容包装：只作用于账号恰有一台机器的情况（CLI 老用法）；
-// 多台机器请用 SetMachineAgentAllow 指定哪台。
-func (s *Store) SetAgentAllow(username string, ips []string) error {
-	m, err := s.soleMachine(username)
-	if err != nil {
-		return err
-	}
-	return s.SetMachineAgentAllow(username, m.Name, ips)
-}
-
-// soleMachine 取账号唯一的机器；0 台或不止一台都报错（调用方文案自行翻译）。
-func (s *Store) soleMachine(username string) (Machine, error) {
-	ms := s.Machines(username)
-	switch len(ms) {
-	case 0:
-		return Machine{}, fmt.Errorf("%w: %s 没有机器", ErrNotFound, username)
-	case 1:
-		return ms[0], nil
-	default:
-		return Machine{}, fmt.Errorf("账号 %s 有多台机器，请用 machine 子命令指定（如 %s+%s）", username, username, ms[0].Name)
-	}
-}
-
-// addrHost 取地址里的主机部分（去端口）；取不出就原样返回。
-func addrHost(addr net.Addr) string {
-	if host, _, err := net.SplitHostPort(addr.String()); err == nil {
-		return host
-	}
-	return addr.String()
-}
-
-// cleanText 去掉控制字符（换行、终端转义等），保留正常文本。
-func cleanText(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, s)
-}
-
-// ---- TOTP（SSH 登录第二因素）----
-
-// EnrollTOTP 绑定验证器。secret 应是调用方已让用户验证过一个码的秘钥
-// （CLI 绑定流程先要用户输一次码），lastStep 传验证用掉的时间片，防止
-// 绑定时的那个码再被用来登录。
-func (s *Store) EnrollTOTP(username string, secret []byte, lastStep int64) error {
-	enc, err := s.encTOTP(secret)
-	if err != nil {
-		return err
-	}
-	res, err := s.db.Exec(
-		`UPDATE users SET totp_secret_enc = ?, totp_last_step = ? WHERE username = ?`,
-		enc, lastStep, username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// RemoveTOTP 解绑验证器，账号退回纯密码登录。
-func (s *Store) RemoveTOTP(username string) error {
-	res, err := s.db.Exec(
-		`UPDATE users SET totp_secret_enc = NULL, totp_last_step = 0 WHERE username = ?`, username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// VerifyTOTP 校验 6 位码并原子推进「已消费时间片」：同一个码在有效期内
-// 只能被消费一次（条件 UPDATE 保证并发下也不重放）。未绑定返回 false。
-func (s *Store) VerifyTOTP(username, code string) bool {
-	var enc []byte
-	var lastStep int64
-	err := s.db.QueryRow(
-		`SELECT totp_secret_enc, totp_last_step FROM users WHERE username = ?`, username).
-		Scan(&enc, &lastStep)
-	if err != nil || len(enc) == 0 {
-		return false
-	}
-	secret, err := s.decTOTP(enc)
-	if err != nil {
-		return false
-	}
-	step, ok := totp.Verify(secret, code, lastStep, time.Now())
-	if !ok {
-		return false
-	}
-	res, err := s.db.Exec(
-		`UPDATE users SET totp_last_step = ? WHERE username = ? AND totp_last_step < ?`,
-		step, username, step)
-	if err != nil {
-		return false
-	}
-	n, _ := res.RowsAffected()
-	return n == 1
-}
-
-// CheckTOTP 校验 6 位码但不消费时间片：给「同一流程里要先验一次、后面
-// 还要真正消费一次」的场景用（TOTP 换绑的 begin 验身份，confirm 才落库
-// 消费）。已被消费过的码照样拒——重放一个旧登录码过不了这里。
-func (s *Store) CheckTOTP(username, code string) bool {
-	var enc []byte
-	var lastStep int64
-	err := s.db.QueryRow(
-		`SELECT totp_secret_enc, totp_last_step FROM users WHERE username = ?`, username).
-		Scan(&enc, &lastStep)
-	if err != nil || len(enc) == 0 {
-		return false
-	}
-	secret, err := s.decTOTP(enc)
-	if err != nil {
-		return false
-	}
-	_, ok := totp.Verify(secret, code, lastStep, time.Now())
-	return ok
-}
-
-// Rename 改用户名；agent 不用动（它靠 token 认，不靠名字）。账号下的
-// machines.username 同事务联动。
-func (s *Store) Rename(oldName, newName string) error {
-	if !proto.ValidName(newName) {
-		return fmt.Errorf("用户名 %q 不合法，只能用字母、数字、点、下划线和短横线", newName)
-	}
-	var one int
-	if err := s.db.QueryRow(`SELECT 1 FROM users WHERE username = ?`, newName).Scan(&one); err == nil {
-		return fmt.Errorf("%w: %s", ErrExists, newName)
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(`UPDATE users SET username = ? WHERE username = ?`, newName, oldName)
-	if err != nil {
-		// 并发下可能恰好有人抢注了新名，UNIQUE 报错也归为重名。
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return fmt.Errorf("%w: %s", ErrExists, newName)
-		}
-		return err
-	}
-	if err := requireAffected(res, oldName); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE machines SET username = ? WHERE username = ?`, newName, oldName); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// RegenToken 兼容包装：换账号唯一那台机器的 token；多台机器请用
-// RegenMachineToken 指定哪台。
-func (s *Store) RegenToken(username string) (string, error) {
-	m, err := s.soleMachine(username)
-	if err != nil {
-		return "", err
-	}
-	return s.RegenMachineToken(username, m.Name)
-}
-
-// Get 返回账号副本（含机器列表）。
 func (s *Store) Get(username string) (Account, bool) {
 	row := s.db.QueryRow(
 		`SELECT username, password_hash, contact, totp_secret_enc, totp_last_step, allow_ips, ssh_pubkeys, disabled, oauth_only, created_at
@@ -784,108 +487,6 @@ func (s *Store) Verify(username, password string) bool {
 // 让它们的响应时间和密码错一样，不然快慢一比就能筛出特定账号。
 func (s *Store) BurnPassword(password string) {
 	_ = bcrypt.CompareHashAndPassword([]byte(dummyBcrypt), []byte(password))
-}
-
-// AddSSHKey 给账号登记一把 SSH 登录公钥：line 是 authorized_keys 格式的一行
-// （可带行尾注释）。重复登记同一把不报错也不重复存。
-func (s *Store) AddSSHKey(username, line string) error {
-	pk, comment, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
-	if err != nil {
-		return fmt.Errorf("不是有效的 SSH 公钥: %w", err)
-	}
-	stored := strings.TrimSpace(string(gossh.MarshalAuthorizedKey(pk)))
-	if comment != "" {
-		stored += " " + comment
-	}
-	acct, ok := s.Get(username)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, username)
-	}
-	for _, existing := range acct.SSHKeys {
-		epk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(existing))
-		if err != nil {
-			continue
-		}
-		if bytes.Equal(epk.Marshal(), pk.Marshal()) {
-			return nil
-		}
-	}
-	blob, err := json.Marshal(append(acct.SSHKeys, stored))
-	if err != nil {
-		return err
-	}
-	res, err := s.db.Exec(`UPDATE users SET ssh_pubkeys = ? WHERE username = ?`, string(blob), username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// RemoveSSHKey 删掉账号的一把公钥：keyOrFingerprint 可以是 authorized_keys
-// 一行，也可以是「SHA256:...」指纹。匹配不到报错。
-func (s *Store) RemoveSSHKey(username, keyOrFingerprint string) error {
-	acct, ok := s.Get(username)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, username)
-	}
-	var wantBytes []byte
-	if pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyOrFingerprint)); err == nil {
-		wantBytes = pk.Marshal()
-	}
-	var keep []string
-	removed := false
-	for _, line := range acct.SSHKeys {
-		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
-		if err != nil {
-			keep = append(keep, line)
-			continue
-		}
-		if bytes.Equal(pk.Marshal(), wantBytes) || gossh.FingerprintSHA256(pk) == keyOrFingerprint {
-			removed = true
-			continue
-		}
-		keep = append(keep, line)
-	}
-	if !removed {
-		return fmt.Errorf("账号 %s 没有这把公钥", username)
-	}
-	blob, err := json.Marshal(keep)
-	if err != nil {
-		return err
-	}
-	res, err := s.db.Exec(`UPDATE users SET ssh_pubkeys = ? WHERE username = ?`, string(blob), username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// ClearSSHKeys 清空账号的全部登录公钥。
-func (s *Store) ClearSSHKeys(username string) error {
-	res, err := s.db.Exec(`UPDATE users SET ssh_pubkeys = '' WHERE username = ?`, username)
-	if err != nil {
-		return err
-	}
-	return requireAffected(res, username)
-}
-
-// VerifySSHKey 校验 SSH 公钥登录：账号存在、未停用、这把钥匙登记过。
-// 不看密码也不看 TOTP——公钥是给自动化用的第二种凭据。
-func (s *Store) VerifySSHKey(username string, key gossh.PublicKey) bool {
-	acct, ok := s.Get(username)
-	if !ok || acct.Disabled {
-		return false
-	}
-	for _, line := range acct.SSHKeys {
-		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
-		if err != nil {
-			continue
-		}
-		if bytes.Equal(pk.Marshal(), key.Marshal()) {
-			return true
-		}
-	}
-	return false
 }
 
 func requireAffected(res sql.Result, username string) error {

@@ -29,28 +29,10 @@ import (
 )
 
 func main() {
-	cfgPath := mcpsrv.DefaultPath()
-	approvalsDir := ""
-	args := os.Args[1:]
-	// 先摘出 --config / --approvals-dir，剩下的第一个词是子命令。
-	// --approvals-dir 是批准命令的指路牌（通知里提示的批准命令就带着
-	// 它），approve/deny/pending 三个子命令都认。
-	rest := args[:0]
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--config" && i+1 < len(args):
-			cfgPath = args[i+1]
-			i++
-		case args[i] == "--approvals-dir" && i+1 < len(args):
-			approvalsDir = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "--approvals-dir="):
-			approvalsDir = strings.TrimPrefix(args[i], "--approvals-dir=")
-		default:
-			rest = append(rest, args[i])
-		}
+	cfgPath, approvalsDir, args := splitGlobalFlags(os.Args[1:])
+	if cfgPath == "" {
+		cfgPath = mcpsrv.DefaultPath()
 	}
-	args = rest
 
 	sub := "serve"
 	if len(args) > 0 {
@@ -94,6 +76,28 @@ func main() {
 `)
 		os.Exit(2)
 	}
+}
+
+// splitGlobalFlags 先摘出全局旗标 --config / --approvals-dir（两种
+// 写法都认：分开写值或 --approvals-dir=值），剩下的第一个词是子命令。
+// --approvals-dir 是批准命令的指路牌（通知里提示的批准命令就带着
+// 它），approve/deny/pending 三个子命令都认。
+func splitGlobalFlags(args []string) (cfgPath, approvalsDir string, rest []string) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--config" && i+1 < len(args):
+			cfgPath = args[i+1]
+			i++
+		case args[i] == "--approvals-dir" && i+1 < len(args):
+			approvalsDir = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--approvals-dir="):
+			approvalsDir = strings.TrimPrefix(args[i], "--approvals-dir=")
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	return cfgPath, approvalsDir, rest
 }
 
 // loadForCLI 给 pending/approve/deny 找 approvals_dir：--approvals-dir

@@ -162,7 +162,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, accounts.ErrExists):
 			code = http.StatusConflict
-		case strings.Contains(err.Error(), "密码"):
+		case errors.Is(err, accounts.ErrBadInput):
 			code = http.StatusBadRequest
 		}
 		deny(code, "add", err.Error())

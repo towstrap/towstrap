@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/towstrap/towstrap/internal/proto"
 )
@@ -44,17 +45,22 @@ func runTOTP(args []string) int {
 	cf := addCredFlags(fs)
 	pwStdin := fs.Bool("password-stdin", false, "")
 	// remove 是位置参数——先摘出来再 Parse，不然 "totp remove --password-stdin"
-	// 这种写法里 remove 后面的旗标会被 flag 包丢下不解析。
+	// 这种写法里 remove 后面的旗标会被 flag 包丢下不解析。只摘第一个，
+	// 多写的 remove/其他词留在 rest 里，Parse 后当成多余参数报错。
 	remove := false
 	var rest []string
 	for _, a := range args {
-		if a == "remove" {
+		if a == "remove" && !remove {
 			remove = true
 			continue
 		}
 		rest = append(rest, a)
 	}
 	_ = fs.Parse(rest)
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "多余的参数：", strings.Join(fs.Args(), " "))
+		return 2
+	}
 
 	env, err := loadAgentCLI(fs, cf)
 	if err != nil {

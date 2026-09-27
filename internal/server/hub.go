@@ -275,9 +275,14 @@ func (a *agentConn) closeAll() {
 	}
 }
 
+// errTokenAckTimeout 是等 agent 确认换发 token 超时的哨兵：rotate.go 用
+// errors.Is 认它，不靠文案比对。
+var errTokenAckTimeout = errors.New("等 agent 确认超时")
+
 // rotateToken 向 agent 下推一个新 token：agent 原子写进自己的 token 文件
-// 回 ok（返回 nil），写不了回 err（返回它的原因文本），超时返回 "timeout"。
-// 调用方收到 nil 才能把库里的 token 换掉——没 ack 就不换。
+// 回 ok（返回 nil），写不了回 err（返回它的原因文本），超时返回
+// errTokenAckTimeout。调用方收到 nil 才能把库里的 token 换掉——没 ack
+// 就不换。
 func (a *agentConn) rotateToken(id, newTok string, timeout time.Duration) error {
 	ch := make(chan error, 1)
 	a.sessMu.Lock()
@@ -295,7 +300,7 @@ func (a *agentConn) rotateToken(id, newTok string, timeout time.Duration) error 
 	case err := <-ch:
 		return err
 	case <-time.After(timeout):
-		return errors.New("timeout")
+		return errTokenAckTimeout
 	}
 }
 
