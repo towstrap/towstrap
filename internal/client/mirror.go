@@ -152,13 +152,18 @@ func (m *mirrorManager) sweepIdle() {
 		all = append(all, t)
 	}
 	m.mu.Unlock()
+	// 判定先拍快照：杀一个镜像要经 PTY Close 的收尾窗口（killSession 里
+	// HUP→KILL 之间的 killGrace），边查边杀会让排在后面的镜像在这段
+	// 阻塞里「长」过 TTL 被误扫。
+	var doomed []*mirror
 	for _, t := range all {
-		idle := t.idleFor()
-		if idle <= m.idleTTL {
-			continue
+		if t.idleFor() > m.idleTTL {
+			doomed = append(doomed, t)
 		}
+	}
+	for _, t := range doomed {
 		slog.Info("镜像闲置超时被终结", "name", t.name,
-			"idle", idle.Round(time.Second), "ttl", m.idleTTL)
+			"idle", t.idleFor().Round(time.Second), "ttl", m.idleTTL)
 		if m.audit != nil {
 			m.audit.Log("MIRROR-KILL", "name", t.name, "via", "idle")
 		}

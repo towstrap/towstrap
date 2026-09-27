@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -136,11 +137,27 @@ func (p *ptyFile) Close() error {
 	return nil
 }
 
-// killSession 杀 sid=pid 的整个会话：先按首领自己的进程组杀，再扫同
-// 会话其他进程组的成员补杀。枚举在杀之前做——首领死后其组员的 sid
-// 不变（孤儿进程组仍记这个 sid）。
+// killGrace SIGHUP 到 SIGKILL 之间的收尾窗口：shell 收到挂断要先把命令
+// 历史写盘、给手下的 job 转发 HUP——几百毫秒足够，也不把关闭路径拖出
+// 可感延迟。
+const killGrace = 300 * time.Millisecond
+
+// killSession 杀 sid=pid 的整个会话：先当一回真终端挂断——SIGHUP 打首领
+// 进程组和会话里枚举到的每个成员。shell 收到 HUP 会先把 ~/.zsh_history
+// 写盘、给它的 job 转发 HUP 再退出，vim 这类程序也借它收尾；直接 SIGKILL
+// 的话 shell 连历史都没机会写，断线一次丢一屏命令。收尾窗口后对还活着的
+// 补 SIGKILL 兜底（nohup/SIG_IGN/卡死的进程不能被一句 HUP 钉住整个关闭
+// 路径）。枚举在杀之前做——首领死后其组员的 sid 不变（孤儿进程组仍记
+// 这个 sid）。
 func killSession(pid int) {
 	targets := sessionPids(pid)
+	_ = syscall.Kill(-pid, syscall.SIGHUP)
+	for _, t := range targets {
+		if t != pid {
+			_ = syscall.Kill(t, syscall.SIGHUP)
+		}
+	}
+	time.Sleep(killGrace)
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 	for _, t := range targets {
 		if t != pid {

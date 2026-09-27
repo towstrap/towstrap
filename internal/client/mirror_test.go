@@ -420,7 +420,13 @@ func TestMirrorIdleSweep(t *testing.T) {
 	if m.get("fresh") == nil {
 		t.Fatal("有活动的镜像不该被扫掉")
 	}
-	// 再扫一轮：不 panic、不误伤
+	// 再扫一轮：不 panic、不误伤。先把 fresh 的活跃时间拨到刚才——
+	// kill 路径带收尾窗口（killGrace），等到这里时 fresh 可能已自然
+	// 「老」过 TTL，那不是误伤；手动拨活跃才是这个断言要验证的状态。
+	fresh := m.get("fresh")
+	fresh.mu.Lock()
+	fresh.lastIO = time.Now()
+	fresh.mu.Unlock()
 	m.sweepIdle()
 	if m.get("fresh") == nil {
 		t.Fatal("重复清扫误伤了新镜像")
