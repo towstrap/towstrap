@@ -98,6 +98,8 @@ powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.co
 
 脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。**常驻是默认行为**：Linux 有 `systemctl` 就建 systemd 单元，macOS 建 launchd 项，Windows 注册「登录自起」计划任务；临时用/容器场景加 `--no-service`（`install.ps1` 用 `-NoService`）只放二进制和配置。**事后补票**：当时 `--no-service` 或手动/nohup 跑的机器，跑 `towstrap service install` 就能注册成常驻服务（macOS launchd / Linux systemd / Windows 计划任务，语义和安装脚本一致；`service status`、`service uninstall` 查和拆）。没发现 token 时拒绝安装——先 `towstrap register` 再装。服务端对应 `towstrap-server service`（`install` 要 `--config server.yaml`）。
 
+**装完自动接问「现在注册吗」**：有终端时（管道安装也算——提示走 /dev/tty）装完会问要不要就地跑 `register` 向导；没 token 时服务单元/plist 只写不启，`register` 拿到凭据后自己把它拉起上线——一条命令从装到在线。服务已装好但意外没起的，收尾会再问一次「拉起吗」；`--no-service` 装的会问要不要补装常驻服务。无人值守/CI 环境检测不到 tty 自动跳过，`--no-prompt`（ps1 是 `-NoPrompt`）可显式关掉。
+
 也可以从 GitHub 直接拉脚本（默认指向官方服务器；自建才加 `--server wss://…` / `-Server wss://…`）：
 
 ```bash

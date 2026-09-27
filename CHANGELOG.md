@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 新增
+
+- **安装脚本交互收尾，一条命令直通在线**：`install.sh`/`install.ps1` 装完若有终端会问「现在跑注册向导吗」，答是就进 `register`（管道安装下提示和输入走 /dev/tty，寄存器流程照常交互）；`register` 拿到 token 后自己拉起已写未起的服务（systemd/launchd/计划任务）；服务装了没起或 `--no-service` 装的还会再问要不要拉起/补装。无 tty 环境自动跳过，`--no-prompt`/`-NoPrompt` 显式关闭
+
 ### 修复
 
 - **Windows 一键安装命令不再被 powershell 剥引号弄坏**：原来文档和 `machine add` 指引里的 `powershell -Command "& { $(irm …) } -Token …"` 在 PowerShell 里跑会先被外层展开 `$(irm)`、再由 `powershell -Command` 把脚本里所有双引号剥掉，直接语法报错。换成全程不含双引号的 `& ([scriptblock]::Create((irm …))) -Token …` 写法——cmd 和 PowerShell 粘贴都安全，装在哪边都一样跑。README、中英文用户手册、`install.ps1` 头注释、`machine add`/`user add`/`@machine add` 打印的接入指引全部更新；安装命令也按平台分开写（Linux/macOS 用 install.sh，Windows 用 install.ps1）

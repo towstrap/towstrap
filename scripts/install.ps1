@@ -16,6 +16,9 @@ param(
     [string]$Prefix = "$env:LOCALAPPDATA\TowStrap",
     [switch]$NoVerify,
     [switch]$NoService,
+    # 装完不问「现在注册吗」（默认有控制台就问，一条命令直通在线；
+    # -NonInteractive / 无人值守自动跳过）
+    [switch]$NoPrompt,
     # 发行签名公钥（minisign）：设了就强验 SHA256SUMS.minisig（需要本机
     # 有 minisign.exe）。也可用环境变量 TOWSTRAP_MINISIGN_PUB。
     [string]$MinisignPub = $(if ($env:TOWSTRAP_MINISIGN_PUB) { $env:TOWSTRAP_MINISIGN_PUB } else { "RWTbpo7F0knbUQIoW3pAhERl7E/Uh2YKlQu+3Cwjadh0Clz6A4BEA746" })
@@ -153,8 +156,10 @@ if (-not (Test-Path $agentyaml)) {
 # SSH 登录提示：主机从 -Server 推导，端口是下发服务器配置的 SSH 口。
 $sshhost = ([uri]$Server).Host
 
+$svcStarted = $false
 if ($wasTask) {
     schtasks /run /tn towstrap 2>$null | Out-Null
+    $svcStarted = ($LASTEXITCODE -eq 0)
     Write-Host ">> 计划任务 towstrap 已重新拉起，新版本生效"
 }
 if ($wasManual) {
@@ -178,10 +183,46 @@ if (-not $NoService) {
     }
     if ($taskExists -and -not $wasTask -and ($haveToken -or (Test-Path $tokenfile))) {
         schtasks /run /tn towstrap 2>$null | Out-Null
+        $svcStarted = ($LASTEXITCODE -eq 0)
         Write-Host ">> 计划任务 towstrap 已拉起（查状态：& `"$exe`" status）"
     }
 } else {
     Write-Host ">> -NoService：没注册计划任务，手动跑：& `"$exe`" --config `"$agentyaml`""
+}
+
+# ---- 交互收尾：就地注册→拉起服务，一条命令直通在线 ----
+# Read-Host 走控制台不走 stdin，irm 管道进来也能问；-NonInteractive /
+# 无人值守下 Read-Host 直接抛，catch 掉等于选默认跳过。
+$canPrompt = -not $NoPrompt -and [Environment]::UserInteractive
+function _AskYN([string]$q) {
+    try { return ((Read-Host "$q [Y/n]") -notmatch '^[nN]') } catch { return $false }
+}
+if ($canPrompt) {
+    $noTok = (-not (Test-Path $tokenfile)) -or ((Get-Item $tokenfile).Length -eq 0)
+    if ($noTok) {
+        Write-Host ""
+        if (_AskYN "现在跑注册向导，把这台机器挂上账号（建号/登录都行）") {
+            # --server 必带：register 不读 agent.yaml，不给会打去官方服务器。
+            # 注册成功后它自己会把已建未起的计划任务拉起。
+            & $exe register --server $Server
+        }
+    }
+    $haveTok = (Test-Path $tokenfile) -and ((Get-Item $tokenfile).Length -gt 0)
+    if ($haveTok) {
+        # register 已经把任务拉起来的话别重复问——看进程在不在。
+        if (-not $svcStarted -and (Get-Process towstrap -ErrorAction SilentlyContinue)) { $svcStarted = $true }
+        if ($NoService) {
+            if (_AskYN "把 towstrap 注册成「登录自起」常驻任务") {
+                & $exe service install --config $agentyaml
+            }
+        } elseif ($taskExists -and -not $svcStarted) {
+            # 任务建了但注册前没凭据没拉；register 的拉起兜底失败时这里接住
+            if (_AskYN "凭据就位——现在拉起 towstrap 上线") {
+                schtasks /run /tn towstrap | Out-Null
+                Write-Host ">> towstrap 已拉起（查状态：& `"$exe`" status）"
+            }
+        }
+    }
 }
 Write-Host ""
 if (-not $haveToken -and -not (Test-Path $tokenfile)) {

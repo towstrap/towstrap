@@ -38,6 +38,7 @@ LAUNCHD=0
 SERVICE=1
 CHECK=0
 NOVERIFY=0
+NOPROMPT=0
 
 usage() {
 	cat <<'EOF'
@@ -48,6 +49,7 @@ usage() {
   --version vX.Y.Z   版本，默认与下发服务器同版本（GitHub 直拉时 latest）
   --prefix 目录      安装目录，默认 /usr/local/bin（可写）或 ~/.local/bin
   --no-service       不装常驻服务，只放二进制+配置（临时用/容器场景；之后手动 towstrap 跑）
+  --no-prompt        装完不问「现在注册吗」（默认有终端时会问，一条命令直通在线）
   --systemd/--launchd 装服务常驻——默认即开（Linux 有 systemctl 建 systemd 单元，
                      macOS 建 launchd 项；root 走系统级、普通用户走用户级），
                      这两个旗标只是兼容保留，不用再显式给
@@ -68,6 +70,7 @@ while [ $# -gt 0 ]; do
 	--systemd) SYSTEMD=1; shift ;;
 	--launchd) LAUNCHD=1; shift ;;
 	--no-service) SERVICE=0; shift ;;
+	--no-prompt) NOPROMPT=1; shift ;;
 	--check) CHECK=1; shift ;;
 	--no-verify) NOVERIFY=1; shift ;;
 	-h|--help) usage; exit 0 ;;
@@ -277,6 +280,11 @@ else
 	echo ">> $agentyaml 已存在，没动它"
 fi
 
+# svc_installed/svc_started 给结尾的交互收尾用：服务写了没起（没 token）
+# 时好决定问什么。
+svc_installed=0
+svc_started=0
+
 if [ "$want_systemd" = 1 ]; then
 	# 旧版本的单元叫 towstrap-agent：不停掉它，新旧两个 agent 拿同一个
 	# token 连服务器会互相顶替（AGENT-REPLACE 刷屏）。只处理本脚本写的那份。
@@ -315,13 +323,15 @@ ProtectSystem=true
 WantedBy=multi-user.target
 EOF
 		systemctl daemon-reload
+		svc_installed=1
 		if systemctl is-enabled --quiet towstrap 2>/dev/null; then
 			# 已启用 = 这是升级重装：enable --now 对运行中的服务是空操作，
 			# 必须 restart 才能让刚装的新二进制真正跑起来。
 			systemctl restart towstrap
+			svc_started=1
 			echo ">> towstrap 服务已重启，新二进制生效（journalctl -u towstrap 看日志）"
 		elif [ "$have_token" = 1 ] || [ -f "$tokenfile" ]; then
-			systemctl enable --now towstrap
+			systemctl enable --now towstrap && svc_started=1
 			echo ">> systemd 服务 towstrap 已启动（journalctl -u towstrap 看日志）"
 		else
 			# 没 token 启动必崩退（Restart=always 会刷失败循环）——
@@ -344,12 +354,13 @@ RestartSec=5
 WantedBy=default.target
 EOF
 		systemctl --user daemon-reload 2>/dev/null || true
+		svc_installed=1
 		if systemctl --user is-enabled --quiet towstrap 2>/dev/null; then
-			systemctl --user restart towstrap &&
+			systemctl --user restart towstrap && svc_started=1 &&
 				echo ">> 用户级服务 towstrap 已重启，新二进制生效" ||
 				echo ">> restart 失败，手工跑: systemctl --user restart towstrap"
 		elif [ "$have_token" = 1 ] || [ -f "$tokenfile" ]; then
-			systemctl --user enable --now towstrap 2>/dev/null &&
+			systemctl --user enable --now towstrap 2>/dev/null && svc_started=1 &&
 				echo ">> 用户级服务 towstrap 已启动" ||
 				echo ">> 单元已写好（~/.config/systemd/user/towstrap.service），enable 失败的话手工: systemctl --user enable --now towstrap"
 		else
@@ -447,17 +458,83 @@ EOF
 		touch "$logpath" && chown _towstrap:_towstrap "$logpath"
 		echo ">> 注意：LaunchDaemon 现在以 _towstrap 跑（不是 root）——远程会话拿 _towstrap 的 shell；要 root 权限的操作在会话里走 sudo"
 	fi
+	svc_installed=1
 	if launchctl print "$domain/$label" >/dev/null 2>&1; then
 		# 已加载 = 升级重装：kickstart -k 重启，新二进制才生效
 		launchctl kickstart -k "$domain/$label"
+		svc_started=1
 		echo ">> launchd 服务已重启，新二进制生效（日志 ${logpath}）"
 	elif [ "$have_token" = 1 ] || [ -f "$tokenfile" ]; then
-		launchctl bootstrap "$domain" "$plist"
+		launchctl bootstrap "$domain" "$plist" && svc_started=1
 		echo ">> launchd 服务已加载启动（日志 ${logpath}；查状态 launchctl print $domain/$label）"
 	else
 		# 没 token 加载必崩退（KeepAlive 会刷重启循环）——plist 照写，
 		# 等 register 拿到 token 再加载。
 		echo ">> plist 已写好；没 token 先别加载：跑 towstrap register 建号后 launchctl bootstrap $domain $plist"
+	fi
+fi
+
+# ---- 交互收尾：一条命令直通在线 ----
+# curl|sh 时 stdin 是脚本流——提示读 /dev/tty；register 也喂 /dev/tty
+#（它靠 stdin 是不是 tty 决定走不走交互问答）。没 tty（CI、ssh 'cmd'
+# 批命令）或 --no-prompt 时整段跳过，照旧只打印后续步骤。
+havetty=0
+if [ "$NOPROMPT" != 1 ] && ( : </dev/tty ) 2>/dev/null; then havetty=1; fi
+askyn() {
+	printf '%s [Y/n] ' "$1" >/dev/tty
+	IFS= read -r a </dev/tty 2>/dev/null || a=""
+	case "$a" in n | N | no | NO) return 1 ;; *) return 0 ;; esac
+}
+if [ "$havetty" = 1 ]; then
+	# 没 token → 问要不要就地注册。--server 必带：register 不读
+	# agent.yaml，不给会打去官方服务器。register 拿到 token 后会自己
+	# 把「写了没起」的服务拉起（tryStartPendingService）。
+	if [ ! -s "$tokenfile" ]; then
+		if askyn "现在跑注册向导，把这台机器挂上账号（建号/登录都行）"; then
+			"$PREFIX/towstrap" register --server "$SERVER" </dev/tty >/dev/tty 2>&1 ||
+				echo ">> 注册没走完——之后手动：$PREFIX/towstrap register --server $SERVER" >/dev/tty
+		fi
+	fi
+	if [ -s "$tokenfile" ]; then
+		# register 已经会把「写了没起」的服务拉起来——复查一次，免得
+		# 服务明明在跑了还问人要不要拉起。
+		if [ "$svc_started" != 1 ] && [ "$svc_installed" = 1 ]; then
+			if [ "$want_systemd" = 1 ]; then
+				if [ "$(id -u)" = 0 ]; then
+					systemctl is-active --quiet towstrap && svc_started=1 || true
+				else
+					systemctl --user is-active --quiet towstrap && svc_started=1 || true
+				fi
+			elif [ "$want_launchd" = 1 ]; then
+				launchctl print "$domain/$label" >/dev/null 2>&1 && svc_started=1 || true
+			fi
+		fi
+		if [ "$svc_installed" != 1 ]; then
+			# --no-service 或没 systemctl 的 Linux：补装常驻服务
+			if askyn "把 towstrap 注册成常驻服务（开机自启、掉线自拉）"; then
+				"$PREFIX/towstrap" service install --config "$agentyaml" >/dev/tty 2>&1 &&
+					svc_started=1 ||
+					echo ">> 服务安装失败——手动：$PREFIX/towstrap service install" >/dev/tty
+			fi
+		elif [ "$svc_started" != 1 ]; then
+			# 单元/plist 写了但因为没 token 没启（register 拉起失败的兜底）
+			if askyn "凭据就位——把常驻服务拉起来上线"; then
+				if [ "$want_systemd" = 1 ]; then
+					if [ "$(id -u)" = 0 ]; then
+						systemctl enable --now towstrap && svc_started=1 || true
+					else
+						systemctl --user enable --now towstrap && svc_started=1 || true
+					fi
+				elif [ "$want_launchd" = 1 ]; then
+					launchctl bootstrap "$domain" "$plist" && svc_started=1 || true
+				fi
+				if [ "$svc_started" = 1 ]; then
+					echo ">> 服务已拉起上线" >/dev/tty
+				else
+					echo ">> 拉起失败——手动查：$PREFIX/towstrap status" >/dev/tty
+				fi
+			fi
+		fi
 	fi
 fi
 
