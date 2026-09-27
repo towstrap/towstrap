@@ -28,14 +28,14 @@ type Server struct {
 	runner Runner
 
 	mu         sync.Mutex
-	remembered map[string]map[string]string    // sessionID -> machine\x00detail -> 当初的授权编号
-	pending    map[string]map[string]pendAsk   // sessionID -> machine\x00detail -> 已发起未答复的确认
-	spent      map[string]map[string]time.Time // sessionID -> key -> llm 标记已消费的时刻（墓碑）
-	watching   map[string]bool                 // 已挂上会话清理的 sessionID
-	shells     map[string]*shellSession        // machine\x00名字 -> 常驻 shell
-	terms      map[string]*terminalSession     // terminal_id -> PTY 终端
-	remotes    map[string]remoteInfo           // machine -> 探测到的远端形态
-	reapStop   chan struct{}                   // 非空 = 回收器在跑
+	remembered map[string]map[string]string  // sessionID -> machine\x00detail -> 当初的授权编号
+	pending    map[string]map[string]pendAsk // sessionID -> machine\x00detail -> 已发起未答复的确认
+	spent      map[string]map[string]pendAsk // sessionID -> key -> 已消费的 llm 标记（墓碑，留原授权编号）
+	watching   map[string]bool               // 已挂上会话清理的 sessionID
+	shells     map[string]*shellSession      // machine\x00名字 -> 常驻 shell
+	terms      map[string]*terminalSession   // terminal_id -> PTY 终端
+	remotes    map[string]remoteInfo         // machine -> 探测到的远端形态
+	reapStop   chan struct{}                 // 非空 = 回收器在跑
 }
 
 // New 建 Server：编译策略，runner 是命令执行后端（stdio 模式传 *Pool，
@@ -55,7 +55,7 @@ func New(cfg *Config, runner Runner) (*Server, error) {
 	}
 	return &Server{cfg: cfg, pol: pol, runner: runner,
 		remembered: make(map[string]map[string]string), pending: make(map[string]map[string]pendAsk),
-		spent:    make(map[string]map[string]time.Time),
+		spent:    make(map[string]map[string]pendAsk),
 		watching: make(map[string]bool),
 		shells:   make(map[string]*shellSession), terms: make(map[string]*terminalSession),
 		remotes: make(map[string]remoteInfo)}, nil
@@ -309,7 +309,7 @@ const instructions = `你通过 towstrap 在真实的远程机器上执行命令
 
 规则：
 1. 不带 session 的 run_command 每次都是新起的 shell：cd、环境变量不会保留到下一次，用 cwd 参数指定工作目录。带 session 参数（如 session: "work"）则进一个常驻 shell：cd、export、source 激活的环境、后台任务都会保留到同名会话的下一条命令——像本地终端一样用即可。
-2. 命令先过策略再执行：deny 名单里的直接拒绝；ask 名单里的（删文件、提权、杀进程、git push 等危险操作）要经批准后才执行——批准方式见文末「ask 命中的批准方式」：客户端弹确认框，或由管理员在终端/本机对话框批准；仅当写明走会话内确认时，才把命令和风险转告用户、得到明确同意后带 confirmed=true 重试（没问过用户不要设 confirmed）。等待批准时调用会挂起——把正在等批准的情况告诉用户即可，不要反复重试。allow 名单里的只读/低风险命令自动放行；其余按默认策略（run 直接执行 / ask 需批准 / deny 拒绝）。被拒绝或超时时，向用户说明你想执行什么、为什么，由用户决定；不要改写命令绕过策略。
+2. 命令先过策略再执行：deny 名单里的直接拒绝；ask 名单里的（删文件、提权、杀进程、git push 等危险操作）要经批准后才执行——批准方式见文末「ask 命中的批准方式」：客户端弹确认框，或走会话内确认（把命令、机器、cwd 和风险转告用户、得到明确同意后带 confirmed=true 重试，没问过用户不要设 confirmed），或由管理员在终端/本机对话框批准。等待批准时调用会挂起——把正在等批准的情况告诉用户即可，不要反复重试。allow 名单里的只读/低风险命令自动放行；其余按默认策略（run 直接执行 / ask 需批准 / deny 拒绝）。被拒绝或超时时，向用户说明你想执行什么、为什么，由用户决定；不要改写命令绕过策略。
 3. 改文件优先用 write_file（在允许目录内自动放行，用绝对路径或 ~/ 开头），读文件用 read_file；大输出会被截断（标记里有省略字节数），必要时用 head/tail/grep 缩小范围。
 4. 破坏性操作（删除、覆盖、git push --force、reset --hard、改系统配置）即便策略放行，也先向用户确认。
 5. run_command 的 exit_code 才是成败依据，不要只看 stdout。
@@ -331,11 +331,13 @@ func (s *Server) MCP() *mcp.Server {
 		fmt.Fprintf(&mb, "\n- %s：%s", n, m.Description)
 	}
 	var approveHow string
-	switch s.cfg.Policy.AskVia {
-	case "local":
+	switch {
+	case s.cfg.Policy.AskVia == "local":
 		approveHow = "调用会挂起等人工批准——管理员在终端运行 " + s.cfg.ApproveCmd + " 或点本机弹出的对话框；告诉用户正在等批准即可"
-	case "llm":
+	case s.cfg.Policy.AskVia == "llm":
 		approveHow = "在会话里由你向用户确认后带 confirmed=true 重试"
+	case s.cfg.Remote:
+		approveHow = "客户端支持弹窗就弹窗；不支持时把命令和风险转告用户、得到明确同意后带 confirmed=true 重试（没问过用户不要设 confirmed）"
 	default:
 		approveHow = "客户端支持弹窗就弹窗；不支持时调用会挂起等人工批准（管理员运行 " + s.cfg.ApproveCmd + " 或点本机对话框）——告诉用户正在等批准即可，confirmed=true 在这条路径下无效"
 	}
@@ -538,7 +540,9 @@ func (s *Server) resolveMachine(name string) string {
 
 // llmConfirmResult 是「会话内确认」的指引报错——这条消息本身就是给 LLM
 // 的操作说明：把操作转告用户、要到明确同意后带 confirmed=true 重试。
-func llmConfirmResult(ar ApprovalRequest) *mcp.CallToolResult {
+// cwd/session/授权编号都摆出来——远程场景里用户只能通过这段文字判断
+// 该不该批，信息缺了就是盲批。
+func llmConfirmResult(ar ApprovalRequest, authID string) *mcp.CallToolResult {
 	what := "命令"
 	if ar.Kind != "command" {
 		what = "操作"
@@ -547,9 +551,18 @@ func llmConfirmResult(ar ApprovalRequest) *mcp.CallToolResult {
 	if ar.Preview != "" {
 		preview = "\n" + ar.Preview
 	}
-	r, _ := errResult("这个%s命中了需要用户确认的策略，刚才没有执行。请把内容转告用户、说明风险、询问是否允许：\n\n机器：%s\n%s：%s%s\n\n用户明确同意后，用相同参数重新调用本工具并加 confirmed=true；用户说此类操作以后都允许时再加 remember=true。没问到同意就不要设 confirmed=true。确认请求 %d 分钟内有效。",
-		what, ar.Machine, what, notify.Clean(ar.Detail), preview, int(llmConfirmTTL/time.Minute))
+	r, _ := errResult("这个%s命中了需要用户确认的策略，刚才没有执行。请把内容转告用户、说明风险、询问是否允许：\n\n请求：%s\n机器：%s\n%s：%s\ncwd：%s%s%s\n\n用户明确同意后，用相同参数重新调用本工具并加 confirmed=true；用户说此类操作以后都允许时再加 remember=true。没问到同意就不要设 confirmed=true。确认请求 %d 分钟内有效。",
+		what, authID, ar.Machine, what, notify.Clean(ar.Detail), orDash(notify.Clean(ar.Cwd)), preview, sessionLine(ar.Session), int(llmConfirmTTL/time.Minute))
 	return r
+}
+
+// sessionLine 给 llm 确认文本补常驻会话名：同一条命令打进已有会话和
+// 新开 shell 是两回事（会话里可能有 cd 过的目录、export 过的变量）。
+func sessionLine(sess string) string {
+	if sess == "" {
+		return ""
+	}
+	return "\nsession：" + notify.Clean(sess)
 }
 
 // authRecordDir 是授权会话记录的存放目录：批准目录旁的 auth-records/
@@ -709,7 +722,11 @@ func (s *Server) authorizeCommand(ctx context.Context, req *mcp.CallToolRequest,
 		return "", "", elicitRequest(ar)
 	}
 	if out == AwaitingLLM {
-		return "", "", llmConfirmResult(ar)
+		return "", "", llmConfirmResult(ar, authID)
+	}
+	if out == AskSpent {
+		r, _ := errResult("这条请求上一次会话内确认（%s）已经用过一次：同一确认窗口（%d 分钟）内同一条命令不会放行第二次，也不要再带 confirmed=true 重试。确需再执行，请等窗口过后重新向用户确认；需要反复执行时请用户把这条命令加进 policy.allow 名单。", authID, int(llmConfirmTTL/time.Minute))
+		return "", "", r
 	}
 	if err != nil && out != Timeout {
 		r, _ := errResult("批准环节出错：%v", err)

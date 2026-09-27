@@ -128,6 +128,10 @@ func (s *Server) mcpHandler() http.Handler {
 
 		cfg := *s.cfg.MCP // 浅拷贝：Machines 整个换掉，Policy/Limits 照用
 		cfg.Machines = machines
+		// 内嵌 MCP 的客户端全是远程接入的——「本机」是这台服务器，没人
+		// 值守；auto 模式下审批不该落本地待批等到超时，客户端不支持
+		// 弹窗时走会话内确认（等的是对话那头的用户）。
+		cfg.Remote = true
 		// ApproveCmd 带 --approvals-dir：提示里显示的命令直接可粘到
 		// 服务器终端跑——裸 approve 只会找默认目录，自定义位置下根本
 		// 找不到待批文件。

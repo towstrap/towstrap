@@ -142,6 +142,104 @@ func TestAutoFallsBackToLocal(t *testing.T) {
 	}
 }
 
+// TestRemoteAutoGoesLLM：内嵌模式（Remote=true）下 auto 且客户端不支持
+// 弹窗时落到会话内确认而不是本地待批——服务器的「本机」没人值守，待批
+// 文件只会挂到超时；审批该落在远程用户所在的对话里。
+func TestRemoteAutoGoesLLM(t *testing.T) {
+	op := &countingRunner{}
+	s := newTestServer(t, op, 4)
+	s.cfg.Remote = true
+	s.cfg.ApprovalsDir = t.TempDir()
+	pending := make(chan string, 1)
+	s.cfg.OnPending = func(machine, text string) { pending <- machine + "|" + text }
+
+	// 无会话请求（= 客户端没声明弹窗能力）：Remote+auto 走 llm 确认
+	res, _, err := s.runCommand(context.Background(), &mcp.CallToolRequest{},
+		runIn{Machine: "m", Command: "rm /tmp/x", Cwd: "/srv"})
+	if err != nil || res == nil || !res.IsError {
+		t.Fatalf("应返回确认指引: %v %+v", err, res)
+	}
+	txt := resultTextForTest(res)
+	for _, want := range []string{"confirmed=true", "cwd：/srv", "请求：ap-"} {
+		if !strings.Contains(txt, want) {
+			t.Fatalf("确认指引缺 %q: %s", want, txt)
+		}
+	}
+	if op.count() != 0 {
+		t.Fatal("没确认就执行了")
+	}
+	// Remote 不落本地待批文件，但通知面（OnPending→SSH 终端）要收到
+	if pend, _ := Pending(s.cfg.ApprovalsDir); len(pend) != 0 {
+		t.Fatalf("Remote 不该落本地待批文件: %+v", pend)
+	}
+	select {
+	case note := <-pending:
+		if !strings.HasPrefix(note, "m|") || !strings.Contains(note, "会话内确认") {
+			t.Fatalf("OnPending 通知不对: %q", note)
+		}
+	default:
+		t.Fatal("llm 挂起时通知面没收到提示")
+	}
+
+	// confirmed 重试执行一次，墓碑挡第二轮
+	res, out, err := s.runCommand(context.Background(), &mcp.CallToolRequest{},
+		runIn{Machine: "m", Command: "rm /tmp/x", Cwd: "/srv", Confirmed: true})
+	if err != nil || res.IsError || out.Approval != "confirmed" {
+		t.Fatalf("confirmed 重试应执行: %v %s %+v", err, resultTextForTest(res), out)
+	}
+	if op.count() != 1 {
+		t.Fatalf("执行次数不对: %d", op.count())
+	}
+	res, _, err = s.runCommand(context.Background(), &mcp.CallToolRequest{},
+		runIn{Machine: "m", Command: "rm /tmp/x", Cwd: "/srv", Confirmed: true})
+	if err != nil || res == nil || !res.IsError {
+		t.Fatal("墓碑期内 confirmed 重试不该放行")
+	}
+	if op.count() != 1 {
+		t.Fatal("确认标记被复用了")
+	}
+}
+
+// TestRemoteElicitStillFirst：Remote 只是「没有弹窗能力时的落点」，客户端
+// 声明了 elicitation 就仍走弹窗——能点到真人的通道永远优先，Remote 不改
+// 这个序。
+func TestRemoteElicitStillFirst(t *testing.T) {
+	op := &countingRunner{}
+	s := newTestServer(t, op, 4)
+	s.cfg.Remote = true
+	sess, elicitGot := elicitClient(t, s)
+
+	type res struct {
+		r   *mcp.CallToolResult
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		r, err := sess.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "run_command",
+			Arguments: map[string]any{"machine": "m", "command": "rm -rf /tmp/x"},
+		})
+		done <- res{r, err}
+	}()
+	select {
+	case <-elicitGot:
+		// Remote 下照样弹到客户端——而不是吞去本地待批/会话内确认
+	case <-time.After(10 * time.Second):
+		t.Fatal("Remote+支持弹窗的客户端没收到 elicitation/create")
+	}
+	select {
+	case r := <-done:
+		if r.err != nil || r.r == nil || r.r.IsError {
+			t.Fatalf("批准后应执行成功: %+v %v", r.r, r.err)
+		}
+		if op.count() != 1 {
+			t.Fatal("命令没真的执行")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("应答回去后调用没完成")
+	}
+}
+
 // TestLLMConfirmFlow 覆盖「会话内确认」的两步握手：ask 命令第一次调用只
 // 发指引不执行；LLM 带 confirmed=true 重试才放行；标记一次性、按命令区分。
 func TestLLMConfirmFlow(t *testing.T) {
@@ -182,9 +280,10 @@ func TestLLMConfirmFlow(t *testing.T) {
 		t.Fatalf("执行次数不对: %d", op.count())
 	}
 
-	// 标记一次性：同命令再来一轮还要重新确认
+	// 标记一次性：同命令再来一轮撞上墓碑——回的是「已消费」实话而不是
+	// 新一轮确认指引（指引本身能再走一圈，等于一次同意拆成无数次）。
 	res, _, err = s.runCommand(ctx, req, runIn{Machine: "m", Command: "rm /tmp/x"})
-	if err != nil || res == nil || !res.IsError || !strings.Contains(resultTextForTest(res), "需要用户确认") {
+	if err != nil || res == nil || !res.IsError || !strings.Contains(resultTextForTest(res), "已经用过一次") {
 		t.Fatalf("确认标记应一次性: %v %+v", err, res)
 	}
 	if op.count() != 1 {
@@ -521,7 +620,7 @@ func TestAuthRecordPTY(t *testing.T) {
 
 // TestLLMConfirmSpentNoRearm：一枚 llm 确认标记消费完，窗口内同一条
 // 请求不许再挂起新标记——否则「再确认一轮」的指引本身就够模型再走一圈，
-// 一次同意能拆成无限次执行。消费后窗口内必须一直回指引、永远不执行。
+// 一次同意能拆成无限次执行。消费后窗口内必须一直回 AskSpent、永远不执行。
 func TestLLMConfirmSpentNoRearm(t *testing.T) {
 	op := &countingRunner{}
 	s := newTestServer(t, op, 4)
@@ -541,9 +640,9 @@ func TestLLMConfirmSpentNoRearm(t *testing.T) {
 		t.Fatalf("执行次数不对: %d", op.count())
 	}
 
-	// 第二轮：pending 没了但墓碑在——confirmed 直给也只回指引不执行
+	// 第二轮：pending 没了但墓碑在——confirmed 直给回「已消费」不执行
 	res, _, err := s.runCommand(ctx, req, runIn{Machine: "m", Command: "rm /tmp/x", Confirmed: true})
-	if err != nil || res == nil || !res.IsError || !strings.Contains(resultTextForTest(res), "需要用户确认") {
+	if err != nil || res == nil || !res.IsError || !strings.Contains(resultTextForTest(res), "已经用过一次") {
 		t.Fatalf("墓碑窗口内 confirmed 重试不应执行: %v %+v", err, res)
 	}
 	if op.count() != 1 {

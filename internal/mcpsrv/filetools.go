@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -199,7 +200,11 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 			return elicitRequest(ar), writeOut{}, nil
 		}
 		if out == AwaitingLLM {
-			return llmConfirmResult(ar), writeOut{}, nil
+			return llmConfirmResult(ar, aid), writeOut{}, nil
+		}
+		if out == AskSpent {
+			r, e := errResult("这条写入上一次会话内确认（%s）已经用过一次：同一确认窗口（%d 分钟）内不会放行第二次，也不要再带 confirmed=true 重试。确需再写，请等窗口过后重新向用户确认。", aid, int(llmConfirmTTL/time.Minute))
+			return r, writeOut{}, e
 		}
 		if err != nil && out != Timeout {
 			r, e := errResult("批准环节出错：%v", err)

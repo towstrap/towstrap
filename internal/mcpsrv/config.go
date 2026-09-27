@@ -42,6 +42,12 @@ type Config struct {
 	// 为什么调用挂着。machine 是待批机器 ID（账号+机器名），服务端按
 	// 账号只发给同账号的终端，命令内容不跨账号。stdio 模式留 nil。
 	OnPending func(machine, text string) `yaml:"-"`
+	// Remote 表示「本侧没有值守的真人」：内嵌服务器模式为 true——
+	// 远程客户端天然不在服务器跟前，auto 模式下客户端不支持弹窗时
+	// 审批落到会话内确认（llm），而不是本地待批文件+本机对话框
+	// （那台机器没人，落过去只会挂到超时）。stdio 的 towstrap-mcp 跑
+	// 在用户自己机器上，保持 false，auto 照旧落本地批准。
+	Remote bool `yaml:"-"`
 }
 
 // Machine 一台被控机。Roots 里的目录 write_file 自动放行。
@@ -70,12 +76,14 @@ type PolicyCfg struct {
 	DenyPaths  []string      `yaml:"deny_paths"`
 	AskTimeout time.Duration `yaml:"ask_timeout"`
 	// AskVia 是 ask 请求的确认通道。不写 = auto：客户端支持弹窗就弹
-	// elicitation 确认框，不支持走本地待批文件——审批默认要真人。
-	// 显式写的优先级高于客户端能力：local = 本地待批文件 + 批准命令
-	// （配合 LocalNotify 会弹系统对话框）——客户端声称会弹窗却渲染
-	// 不出来时用 local 绕开它；llm = 会话内确认（把「先问用户」交还给
-	// LLM，用户同意后带 confirmed=true 重试）——只在显式配置时用，
-	// 是较弱的一种确认（LLM 声称的同意）。
+	// elicitation 确认框；不支持时看 Remote——本侧有值守真人（stdio）
+	// 走本地待批文件，没有（内嵌服务器，远程调用场景那头才有人）走
+	// 会话内确认，审批天然就该落在用户所在的对话里。
+	// 显式写的优先级高于客户端能力和 Remote：local = 本地待批文件 +
+	// 批准命令（配合 LocalNotify 会弹系统对话框）——客户端声称会弹窗
+	// 却渲染不出来时用 local 绕开它；llm = 会话内确认（把「先问用户」
+	// 交还给 LLM，用户同意后带 confirmed=true 重试）——是较弱的一种
+	// 确认（LLM 声称的同意），审计里单列 MCP-CONFIRMED 区分。
 	AskVia string `yaml:"ask_via"`
 }
 

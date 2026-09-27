@@ -46,6 +46,7 @@ const (
 	Unavailable                     // 客户端不支持弹窗，本地回退也没法走
 	AwaitingLLM                     // 已把「先问用户」的指引交还给 LLM 会话，等带 confirmed 的重试
 	ApprovedLLM                     // LLM 会话带回 confirmed=true：用户在对话里同意了（弱于真人弹窗，审计单列）
+	AskSpent                        // llm 确认标记在窗口内已消费过：同一条请求不再放行，也不重新挂起
 )
 
 // llmConfirmTTL 是「会话内确认」发起后等 confirmed 重试的窗口：问过就算
@@ -178,20 +179,21 @@ func (s *Server) consumePending(sess *mcp.ServerSession, req ApprovalRequest) (p
 		// elicit/local 消费的是真人答复，不受此限。
 		if p.via == "llm" {
 			if s.spent[id] == nil {
-				s.spent[id] = make(map[string]time.Time)
+				s.spent[id] = make(map[string]pendAsk)
 			}
-			s.spent[id][key] = time.Now()
+			s.spent[id][key] = p
 		}
 	}
 	return p, ok
 }
 
-// spentAt 查墓碑：这条请求在窗口内已经消费过一枚 llm 确认标记吗。
-func (s *Server) spentAt(sess *mcp.ServerSession, req ApprovalRequest) (time.Time, bool) {
+// spentAt 查墓碑：这条请求在窗口内已经消费过一枚 llm 确认标记吗；
+// 命中时把原标记还回来，提示里能指回那一次的授权编号。
+func (s *Server) spentAt(sess *mcp.ServerSession, req ApprovalRequest) (pendAsk, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, ok := s.spent[sessID(sess)][rememberedKey(req)]
-	return t, ok
+	p, ok := s.spent[sessID(sess)][rememberedKey(req)]
+	return p, ok
 }
 
 // supportsElicitation 看客户端 initialize 时声明的能力：会弹确认框才走
@@ -273,16 +275,17 @@ func (s *Server) evalElicit(sess *mcp.ServerSession, req ApprovalRequest, er *mc
 //
 //   - 不写（auto）：客户端支持 elicitation 就弹确认框（本轮返回 askAgain=true，
 //     调用方把 elicitRequest 的结果交出去，SDK 完成往返后会把 handler 再调
-//     一次、InputResponses 里带着答复）；不支持就走本地待批文件——审批
-//     默认要真人，经不经过客户端弹窗都一样。
+//     一次、InputResponses 里带着答复）。不支持弹窗时看本侧有没有真人：
+//     stdio（Remote=false）落本地待批文件——审批默认要真人；内嵌服务
+//     器（Remote=true）的「本机」是无人值守的服务器，落到会话内确认，
+//     等的是对话那头的远程用户。
 //   - ask_via=local：本地待批文件 + 批准命令兜底（客户端会不会弹窗都走这条——
 //     有的客户端声明了 elicitation 却渲染不出弹窗，操作员需要这个开关绕开它）；
 //     local_notify 打开时还会在被批准机器上弹系统对话框。
 //   - ask_via=llm：会话内确认——先记一笔「已发起确认」，返回 AwaitingLLM 让
 //     调用方把「先问用户」的指引报给 LLM；用户同意后 LLM 带 confirmed=true
 //     重试，凭标记放行。confirmed 只是 LLM 声称用户同意——防误操作，不防
-//     恶意模型，审计记成 MCP-CONFIRMED 与真人批准区分。这是**显式可选**：
-//     不写 ask_via 时不会自动走这条。
+//     恶意模型，审计记成 MCP-CONFIRMED 与真人批准区分。
 //
 // 进出批准环节都记审计：MCP-ASK（via=elicit|local|llm）、
 // MCP-APPROVED / MCP-CONFIRMED / MCP-DENIED / MCP-ASK-TIMEOUT。
@@ -335,16 +338,27 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 	} else if ok {
 		s.clearPending(req.Session, ar) // 过期：当成新请求重新发起确认
 	}
-	if s.cfg.Policy.AskVia == "llm" {
-		// 墓碑在窗口内：这条请求的会话内确认标记已消费过，不重新
-		// 挂起。照旧回 AwaitingLLM 指引（模型会再问用户一轮），但
-		// confirmed 重试会一直撞墓碑——要再执行得等 llmConfirmTTL
-		// 过了从头发起，或首次确认时带 remember。
-		if t, ok := s.spentAt(req.Session, ar); ok && time.Since(t) <= llmConfirmTTL {
-			s.audit("MCP-ASK-SPENT", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail)
-			return AwaitingLLM, false, "", nil
+	// 会话内确认通道：显式 ask_via=llm，或 auto 且本侧没人值守
+	// （Remote——内嵌服务器的「本机」是服务器自己，本地待批文件和
+	// 对话框只会挂到超时）且客户端不支持弹窗。stdio 的 Remote 恒
+	// false，auto 照旧落本地批准。
+	if s.cfg.Policy.AskVia == "llm" ||
+		(s.cfg.Policy.AskVia == "" && s.cfg.Remote && !supportsElicitation(req.Session)) {
+		// 墓碑在窗口内：这条请求的会话内确认标记已消费过，不再
+		// 放行也不重新挂起——否则一次同意能拆成无限次执行。要再
+		// 跑这条命令得等 llmConfirmTTL 过了重新确认一轮，或首次
+		// 确认时带 remember。
+		if p, ok := s.spentAt(req.Session, ar); ok && time.Since(p.at) <= llmConfirmTTL {
+			s.audit("MCP-ASK-SPENT", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "auth", p.id)
+			return AskSpent, false, p.id, nil
 		}
 		o, id := s.askViaLLM(req, ar)
+		// 同步到通知面：MCP logging 到客户端、stderr、OnPending 钩子
+		// （内嵌模式会写进同账号的 SSH 终端）——登在服务器上的管理员
+		// 也看得见这笔会话内确认，不只是对话里的人。
+		s.tellNotice(ctx, req.Session, ar.Machine, fmt.Sprintf(
+			"确认请求 %s 已发往会话内确认（%s: %s）——等对话里的用户答复",
+			id, ar.Machine, clip(ar.Detail, 120)))
 		return o, false, id, nil
 	}
 	// auto（没写 ask_via）且客户端支持弹窗：走 elicitation——真人在客户端
@@ -354,12 +368,12 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 		s.markPending(req.Session, ar, pendAsk{id: id, via: "elicit", at: time.Now()})
 		s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "elicit", "auth", id)
 		s.tellNotice(ctx, req.Session, ar.Machine, fmt.Sprintf(
-			"确认请求 %s 已发往客户端弹窗（%s: %s）；看不到弹窗说明客户端不支持渲染，可改用 policy.ask_via: local 走本机批准",
+			"确认请求 %s 已发往客户端弹窗（%s: %s）；客户端不支持渲染弹窗时会走会话内确认，也可配 policy.ask_via 强制通道",
 			id, ar.Machine, clip(ar.Detail, 120)))
 		return Approved, true, id, nil
 	}
-	// 剩下两种进本地待批文件通道：显式 ask_via=local，或 auto 且客户端
-	// 不支持弹窗——审批默认要真人，不自动降格成 LLM 会话内确认。
+	// 剩下两种进本地待批文件通道：显式 ask_via=local，或 stdio auto 且
+	// 客户端不支持弹窗（Remote 的已在上面截走去会话内确认）。
 	id := newAuthID()
 	s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "local", "auth", id)
 	out, rem, err := s.waitLocal(ctx, req.Session, ar, id)
