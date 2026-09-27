@@ -72,7 +72,7 @@ func (s *Store) RemoveSSHKey(username, keyOrFingerprint string) error {
 		keep = append(keep, line)
 	}
 	if !removed {
-		return fmt.Errorf("账号 %s 没有这把公钥", username)
+		return fmt.Errorf("%w: 账号 %s 没有这把公钥", ErrNotFound, username)
 	}
 	blob, err := json.Marshal(keep)
 	if err != nil {

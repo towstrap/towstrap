@@ -26,6 +26,9 @@ const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执�
   @machine help                                     本说明
   @totp                                             绑定/换绑 TOTP 二因素（出二维码，输码确认）
   @totp remove                                      解绑 TOTP
+  @sshkey list                                      列已登记的登录公钥（SHA256 指纹 + 注释）
+  @sshkey add [公钥行]                               登记一把登录公钥；不带参数则提示粘贴一行
+  @sshkey remove <指纹|公钥行>                       删一把登录公钥
 `
 
 // stringFlags 是可重复的字符串旗标（--agent-allow-ip 可以写多次）。
@@ -68,16 +71,19 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 	}
 
 	fields := strings.Fields(rawCmd)
-	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@totp") {
+	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@totp" && fields[0] != "@sshkey") {
 		_, _ = fmt.Fprintln(sess.Stderr(), "未知管理命令，可用：@machine help")
 		_ = sess.Exit(2)
 		return
 	}
-	if fields[0] == "@totp" {
+	switch fields[0] {
+	case "@totp":
 		s.mgmtTOTP(sess, account, fields[1:], from)
-		return
+	case "@sshkey":
+		s.mgmtSSHKey(sess, account, fields[1:], from)
+	default:
+		s.mgmtMachine(sess, account, fields[1:], from)
 	}
-	s.mgmtMachine(sess, account, fields[1:], from)
 }
 
 // mgmtTOTP 是 SSH 里的 TOTP 自助：enroll 出二维码+输码确认（已绑过的走
@@ -156,6 +162,80 @@ func (s *Server) mgmtReverifyTOTP(sess glssh.Session, account, from string) bool
 	_, _ = fmt.Fprintln(sess.Stderr(), "验证码错误次数过多")
 	_ = sess.Exit(1)
 	return false
+}
+
+// mgmtSSHKey 是 SSH 里的公钥自助：list 列已登记的、add 挂一把（不带
+// 参数就提示粘贴一行）、remove 按指纹或公钥行删。能走到这的会话本身
+// 已经过了完整登录 + TOTP 重验（公钥/一次性授权登录在上面就被拦了），
+// 所以这里直接对账号操作。
+func (s *Server) mgmtSSHKey(sess glssh.Session, account string, args []string, from string) {
+	fail := func(err error) {
+		_, _ = fmt.Fprintln(sess.Stderr(), err)
+		_ = sess.Exit(1)
+	}
+	if len(args) == 0 {
+		_, _ = fmt.Fprint(sess, mgmtUsage)
+		_ = sess.Exit(2)
+		return
+	}
+	switch args[0] {
+	case "list":
+		acct, ok := s.cfg.Users.Get(account)
+		if !ok || len(acct.SSHKeys) == 0 {
+			_, _ = fmt.Fprintln(sess, "这个账号还没登记公钥——@sshkey add 挂一把")
+			_ = sess.Exit(0)
+			return
+		}
+		for _, line := range acct.SSHKeys {
+			k := sshKeyInfo(line)
+			fp := k.Fingerprint
+			if fp == "" {
+				fp = "（解析不了）"
+			}
+			_, _ = fmt.Fprintf(sess, "%s  %s\n    %s\n", fp, k.Comment, k.Line)
+		}
+		_ = sess.Exit(0)
+	case "add":
+		line := strings.TrimSpace(strings.Join(args[1:], " "))
+		if line == "" {
+			_, _ = fmt.Fprint(sess, "粘贴要登记的公钥行（authorized_keys 格式，回车结束）: ")
+			l, err := readLine(sess)
+			if err != nil {
+				_ = sess.Exit(1)
+				return
+			}
+			line = strings.TrimSpace(l)
+		}
+		if line == "" {
+			fail(fmt.Errorf("没收到公钥行"))
+			return
+		}
+		if err := s.cfg.Users.AddSSHKey(account, line); err != nil {
+			fail(err)
+			return
+		}
+		fp := sshKeyInfo(line).Fingerprint
+		s.audit.Log("SSHKEY-ADD", "user", sess.User(), "from", from, "fp", fp)
+		_, _ = fmt.Fprintf(sess, "公钥已登记 %s——之后拿对应私钥 ssh -i 登录，不用密码\n", fp)
+		_ = sess.Exit(0)
+	case "remove":
+		if len(args) < 2 {
+			_, _ = fmt.Fprintln(sess.Stderr(), "用法：@sshkey remove <SHA256 指纹|公钥行>")
+			_ = sess.Exit(2)
+			return
+		}
+		keyID := strings.TrimSpace(strings.Join(args[1:], " "))
+		if err := s.cfg.Users.RemoveSSHKey(account, keyID); err != nil {
+			fail(err)
+			return
+		}
+		s.audit.Log("SSHKEY-REMOVE", "user", sess.User(), "from", from, "key", auditCmd(keyID))
+		_, _ = fmt.Fprintln(sess, "公钥已删除")
+		_ = sess.Exit(0)
+	default:
+		_, _ = fmt.Fprintln(sess.Stderr(), "用法：@sshkey list | add [公钥行] | remove <指纹|公钥行>")
+		_ = sess.Exit(2)
+	}
 }
 
 // mgmtArgs 解析「位置参数和旗标可交错」的命令行（标准库 flag 遇到第一个

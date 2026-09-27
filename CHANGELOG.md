@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 新增
+
+- **自助 SSH 公钥管理**：`towstrap ssh-key list/add/remove`（agent 端）和 `@sshkey list/add/remove`（SSH 管理命令）——用户不用找管理员就能给自己的账号挂/删登录公钥。鉴权和 `passwd` 同一条链（POST /sshkey：agent token 认机器 + 密码证本人 + 已绑 TOTP 要当前动态码；`oauth_only` 账号拦截）。`ssh-key add` 不带参数时自动登记 `~/.ssh/id_*.pub`；`@sshkey add` 不带参数提示粘贴公钥行。典型用法：手机/新设备生成密钥对，密码登一次把公钥挂上，之后 `ssh -i` 免密接力。公钥登录的会话依然不能跑管理命令（偷来的钥匙不能给自己配更多钥匙）
+
 ### 修复
 
 - **凭据类子命令的配置行为统一**：`totp`/`passwd`/`oauth`/`token refresh` 的「读配置→合并旗标→定服务器→明文检查→解析 token→建 HTTP client」收进同一个引导帮手——顺带修掉两处漂移：`oauth`/`token refresh` 以前不探测默认安装目录的 agent.yaml（装好的机器上不带 `--config` 会误报「没有 agent token」）；`totp`/`passwd`/`oauth` 的 TLS 跳过校验以前只看 `--insecure` 旗标，配置里的 `insecure: true` 不生效（自签证书环境 agent 能连、管理命令全失败）。`refresh` 的报错也从日志格式收成和其他命令一致的纯文本

@@ -201,6 +201,32 @@ type PasswdResp struct {
 	Err      string `json:"err,omitempty"`
 }
 
+// SSHKeyReq/Resp 是自助公钥管理（POST /sshkey，towstrap ssh-key）的体形。
+// 鉴权和 /passwd 同款：X-Agent-Token 头认机器 + 密码证明本人；
+// 已绑 TOTP 的账号另要当前动态码（need_code 提示位同上）。
+// Action：list 列已登记公钥 / add 登记一把 / remove 删一把。
+type SSHKeyReq struct {
+	Password string `json:"password"`
+	Code     string `json:"code,omitempty"` // 已绑 TOTP 要当前动态码
+	Action   string `json:"action"`
+	// Key：add 时是 authorized_keys 公钥行；remove 时是公钥行或 SHA256 指纹。
+	Key string `json:"key,omitempty"`
+}
+
+// SSHKeyInfo 是一把已登记公钥的展示信息。
+type SSHKeyInfo struct {
+	Fingerprint string `json:"fingerprint"`       // SHA256:... 指纹，删它时用这个
+	Comment     string `json:"comment,omitempty"` // 公钥行尾注释（一般标了来自哪台设备）
+	Line        string `json:"line"`              // authorized_keys 原行
+}
+
+type SSHKeyResp struct {
+	OK       bool         `json:"ok"`
+	NeedCode bool         `json:"need_code,omitempty"`
+	Keys     []SSHKeyInfo `json:"keys,omitempty"` // list 动作返回
+	Err      string       `json:"err,omitempty"`
+}
+
 func SanitizeName(s string) string {
 	s = strings.TrimSpace(s)
 	if ValidName(s) {
