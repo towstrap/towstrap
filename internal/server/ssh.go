@@ -533,6 +533,16 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		return err != nil
 	}
 	s.Hub.pipe(agent, sh, in, sess, sess.Stderr(), isPty, sess.Context().Done(), probeClosed)
+	// 会话是随 agent 掉线收摊的（网络抖动/机器重启/被顶替）：告诉用户
+	// mirror 里的任务还活着——不然看着像工作丢了。PTY 写终端主流，exec
+	// 走 stderr 不污染脚本的 stdout。
+	if sh.wasDropped() {
+		w := io.Writer(sess.Stderr())
+		if isPty {
+			w = sess
+		}
+		_, _ = fmt.Fprintf(w, "\r\n>>> %s 的 agent 掉线了（网络抖动或机器重启）。mirror 终端里的任务还活着——重连后 `mirror <名>` 接着干活；裸会话里的进程已随连接终止。\r\n", machineID)
+	}
 	// agent 那边命令没起得来的原因（比如 shell 不存在）带给客户端
 	if m := sh.errText(); m != "" {
 		_, _ = fmt.Fprintln(sess.Stderr(), "agent: "+m)

@@ -67,3 +67,27 @@ func TestSessionDefaultExitCodeIs255(t *testing.T) {
 		t.Fatalf("close 覆盖后应为真实退出码, got %d", got)
 	}
 }
+
+// TestCloseAllMarksSessionsDropped 掉线收摊（closeAll）要给会话打 dropped
+// 标记——SSH 侧靠它写「mirror 还活着」提示；正常结束（removeSession）的
+// 会话不该被标成掉线。
+func TestCloseAllMarksSessionsDropped(t *testing.T) {
+	a := newAgent("x", "t", nil, AgentHello{})
+	s1, err := a.addSession("s1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := a.addSession("s2", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.removeSession("s2") // s2 是正常结束：收到 agent 的 close
+	a.closeAll()
+
+	if !s1.wasDropped() {
+		t.Fatal("closeAll 收摊的会话该被打上掉线标记")
+	}
+	if s2.wasDropped() {
+		t.Fatal("正常结束的会话不该被打上掉线标记")
+	}
+}

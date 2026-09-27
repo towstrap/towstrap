@@ -31,6 +31,7 @@ type session struct {
 	mu     sync.Mutex
 	code   int    // 子进程退出码，agent 在 close 消息里带回
 	errMsg string // agent 起命令失败的原因（err 消息），透传给 SSH 客户端的 stderr
+	drop   bool   // 会话是随 agent 掉线被动收摊的（不是子进程退出的正常结束）
 }
 
 func (s *session) setCode(c int) {
@@ -55,6 +56,20 @@ func (s *session) errText() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.errMsg
+}
+
+// setDropped/wasDropped：closeAll（agent 掉线收尾）给会话打标记，SSH 侧
+// 拿它区分「任务退了」和「链路断了」——后者要在终端里告诉用户镜像还活着。
+func (s *session) setDropped() {
+	s.mu.Lock()
+	s.drop = true
+	s.mu.Unlock()
+}
+
+func (s *session) wasDropped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.drop
 }
 
 // agentConn 是一台已上线的机器。名字是机器完整 ID（账号+机器名，
@@ -266,7 +281,8 @@ func (a *agentConn) getSession(id string) *session {
 func (a *agentConn) closeAll() {
 	a.sessMu.Lock()
 	ids := make([]string, 0, len(a.sessions))
-	for id := range a.sessions {
+	for id, s := range a.sessions {
+		s.setDropped()
 		ids = append(ids, id)
 	}
 	a.sessMu.Unlock()
