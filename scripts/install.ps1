@@ -143,7 +143,30 @@ if (Get-Process towstrap -ErrorAction SilentlyContinue) {
         Write-Host ">> 正在运行的 towstrap 已停（升级覆盖用）"
     }
 }
-Move-Item -Force $tmpExe $exe
+# 换 exe：Windows 锁的是「覆盖运行中的映像」，改名不受限——先把旧的挪成
+# .old（就算还有残留进程占着也能挪），再移新文件进来。挪不动说明残留进
+# 程还在放锁，补杀一轮重试（taskkill 排除自己——本脚本不是 towstrap.exe，
+# 但保险起见照样带上）。
+$oldExe = "$exe.old"
+Remove-Item $oldExe -Force -ErrorAction SilentlyContinue
+if (Test-Path $exe) {
+    $renamed = $false
+    for ($i = 0; $i -lt 20 -and -not $renamed; $i++) {
+        try {
+            Rename-Item $exe $oldExe -ErrorAction Stop
+            $renamed = $true
+        } catch {
+            Get-Process towstrap -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            taskkill /f /im towstrap.exe /fi "PID ne $PID" 2>$null | Out-Null
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    if (-not $renamed) {
+        Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+        Die "旧的 $exe 一直被占着换不掉——重启机器或手工删掉它再装"
+    }
+}
+Move-Item $tmpExe $exe
 Write-Host ">> 已装到 $exe"
 
 # 加进用户 PATH（新终端生效；当前会话也顺手补上）——不然装完第一件事
