@@ -111,9 +111,19 @@ func runMirror(args []string) int {
 		}
 	}
 
-	// 已在同名镜像里再接自己是套娃：画面套画面，Ctrl-\ 都不好分辨脱离的是哪层。
-	if op == "attach" && os.Getenv("TOWSTRAP_MIRROR") == name {
-		fmt.Fprintf(os.Stderr, "已经在镜像 %q 里了，不用再接（想换镜像直接接别的名字；Ctrl-\\ 脱离后再说）\n", name)
+	// 镜像里不能再接镜像：套起来画面互相截断（典型症状是黑屏），脱离键也
+	// 说不清脱的是哪层。ls 是只读的放行；attach 一律拒绝；kill 自己待着的
+	// 那个也拦——杀了它等于杀了自己脚下的进程。
+	inMirror := os.Getenv("TOWSTRAP_MIRROR")
+	switch {
+	case op == "attach" && inMirror == name:
+		fmt.Fprintf(os.Stderr, "已经在镜像 %q 里了，不用再接（Ctrl-\\ 或行首 ~. 脱离后再说）\n", name)
+		return 1
+	case op == "attach" && inMirror != "":
+		fmt.Fprintf(os.Stderr, "现在就在镜像 %q 里——镜像不能套镜像。先脱离（Ctrl-\\ 或行首 ~.）再接 %q\n", inMirror, name)
+		return 1
+	case op == "kill" && inMirror == name:
+		fmt.Fprintf(os.Stderr, "不能终结自己正待着的镜像 %q——先脱离再 kill（脱离后进程还在，接回再杀也行）\n", name)
 		return 1
 	}
 

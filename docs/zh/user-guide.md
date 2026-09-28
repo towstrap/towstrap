@@ -329,6 +329,7 @@ mirror kill work                     # 终结 work（杀掉里面的进程）
 - 想让工作「默认就在镜像里」（离开机器后随时远程接力）：`mirror setup --write` 往 shell 启动文件写一段钩子（Linux/macOS 是 `~/.zshrc`/`~/.bashrc`，Windows 写 PowerShell profile——cmd.exe 没有启动文件机制，手动 `mirror <名字>` 接入即可）——**默认只提醒不接入**：新终端里有活镜像时提示一行；把段里 `TOWSTRAP_MIRROR_AUTO=` 后面填上镜像名（或 `mirror setup work --write` 预填）才会自动接入它。`mirror setup` 不加 `--write` 只打印片段自己贴；临时跳过 `export TOWSTRAP_NO_MIRROR=1`（PowerShell 里 `$env:TOWSTRAP_NO_MIRROR=1`），彻底去掉删掉 `# >>> towstrap mirror >>>` 那段即可
 - `mirror ls -q` 是存在性探针：有活镜像退出 0，没有退出 1，不打印——rc 钩子和脚本用它判断「有没有可接的」
 - 多个接入方可以同时看同一个镜像（画面同步），谁敲键都进同一个终端；尺寸以最后接入/调整的一方为准
+- 镜像里不能再接镜像（`mirror <名字>` 会被拒绝并提示先脱离）——套娃会让画面互相截断；`mirror ls` 只读查询在镜像里照常用
 - 套在 SSH 里接力：`ssh -t 机器 mirror work`（`ssh -t` 经 towstrap 服务器也行）——接力是给人用的功能：本机终端、普通 sshd、towstrap SSH 三种门进来，最后都是跑本机 `mirror` 命令
 - MCP 不参与：`terminal_open` 开的是会话级临时终端，接入不了镜像终端——AI 没有「接管人正在用的终端」的入口
 - 实现位置：Linux/macOS 是 `~/.towstrap/mirror.sock`（进程以 root 直接跑时 `/var/lib/towstrap/mirror.sock`；root 装的 launchd 守护项跑在 `_towstrap` 下，落在 `/var/lib/towstrap/.towstrap/mirror.sock`），0600，只有 agent 的系统用户能连——和「能在本机给这个用户开 shell」等价。Windows 是命名管道 `\\.\pipe\towstrap-mirror-<owner SID>`，ACL 只放 owner 本人、SYSTEM 和管理员；客户端连上后还会核对管道服务端进程的真实身份（防同名管道抢注骗按键）。**服务装法（SYSTEM）下本机接入要求管理员终端**——普通用户跑 `mirror` 会被 ACL 挡掉；经 towstrap SSH 进去的会话本身就是 SYSTEM 子进程，不受限
