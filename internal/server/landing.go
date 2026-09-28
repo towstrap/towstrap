@@ -66,8 +66,9 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Register {
 		intro = "本服务器已开启自助注册——安装完成后执行 <code>towstrap register</code> 创建账号并获取 token，无需管理员签发："
 		shTok, psTok = "", ""
-		regStep = `<pre><span class="c"># 安装后注册：交互输入账号名与密码，自动写入 token 与配置；一台机器仅允许注册一个账号</span>
-towstrap register` + html.EscapeString(regServerArg(server)) + `</pre>`
+		regStep = `<div class="cmt"># 安装后注册：交互输入账号名与密码，自动写入 token 与配置；一台机器仅允许注册一个账号</div>` +
+			`<div class="cmdrow"><pre class="cmdline">towstrap register` + html.EscapeString(regServerArg(server)) +
+			`</pre><button class="copy" type="button">复制</button></div>`
 	}
 
 	page := strings.NewReplacer(

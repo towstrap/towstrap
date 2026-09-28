@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>towstrap — 反向连接的远程访问</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
   * { margin: 0; box-sizing: border-box; }
   body {
     font: 15px/1.7 -apple-system, "SF Pro SC", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -20,7 +23,7 @@
   .hero { position: relative; margin-bottom: 54px; }
   h1 {
     font-size: 46px; letter-spacing: -1.5px; color: #fff; line-height: 1.1;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-weight: 700;
+    font-family: var(--mono); font-weight: 700;
     background: linear-gradient(120deg, #fff 30%, #6ee7b7 90%);
     -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
     display: inline-block;
@@ -29,7 +32,7 @@
   .tagline-en { color: #57616e; font-size: 13px; }
   .badges { display: flex; gap: 8px; margin-top: 22px; flex-wrap: wrap; }
   .badge {
-    font: 12px/1 ui-monospace, Menlo, monospace; color: #8b95a3;
+    font: 12px/1 var(--mono); color: #8b95a3;
     border: 1px solid #232b36; border-radius: 999px; padding: 7px 13px;
     background: rgba(18,23,31,.7);
   }
@@ -39,7 +42,7 @@
   section { margin-top: 48px; }
   .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
   .sec-no {
-    font: 700 13px/1 ui-monospace, Menlo, monospace; color: #2e3947;
+    font: 700 13px/1 var(--mono); color: #2e3947;
     letter-spacing: 1px;
   }
   h2 { font-size: 19px; color: #eef2f7; font-weight: 650; letter-spacing: -.2px; }
@@ -53,15 +56,36 @@
     box-shadow: 0 12px 32px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.03);
   }
   pre {
-    font: 13.5px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.7;
     white-space: pre-wrap; word-break: break-all; color: #cdd7e2;
   }
-  pre + pre { margin-top: 14px; padding-top: 14px; border-top: 1px dashed #222b37; }
   pre .c { color: #55606e; }
   pre .hl { color: #6ee7b7; }
+
+  /* ── 命令行（带复制按钮）── */
+  .cmt { font-family: var(--mono); font-size: 13px; color: #55606e; margin: 10px 0 4px; }
+  .card > .cmt:first-child { margin-top: 0; }
+  .cmdrow {
+    position: relative; margin: 4px 0 10px;
+    background: #0a0d12; border: 1px solid #1a212b; border-radius: 8px;
+  }
+  .cmdrow .cmdline {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
+    padding: 9px 52px 9px 12px; color: #cdd7e2;
+  }
+  .copy {
+    position: absolute; top: 6px; right: 6px;
+    font-family: var(--mono); font-size: 11px; line-height: 1; color: #7d8794;
+    background: #141a23; border: 1px solid #232b36; border-radius: 6px;
+    padding: 5px 9px; cursor: pointer; opacity: .8;
+  }
+  .copy:hover { color: #6ee7b7; border-color: #2a4a3a; opacity: 1; }
+  .copy.ok { color: #6ee7b7; border-color: #1d3a2f; opacity: 1; }
+  .copy.err { color: #e08a8a; border-color: #4a2a2a; opacity: 1; }
+
   .note { color: #5c6674; font-size: 12.5px; margin-top: 14px; }
   .note b { color: #8b95a3; font-weight: 600; }
-  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .92em; color: #9aa5b3; }
+  code { font-family: var(--mono); font-size: .92em; color: #9aa5b3; }
   details.conf { margin-top: 14px; }
   details.conf summary { color: #8b95a3; font-size: 13px; cursor: pointer; user-select: none; }
   details.conf summary:hover { color: #cdd7e2; }
@@ -70,7 +94,7 @@
   /* ── SSH 客户端 ── */
   .clients { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .cli-group h3 {
-    font-size: 13px; color: #6ee7b7; font-family: ui-monospace, Menlo, monospace;
+    font-size: 13px; color: #6ee7b7; font-family: var(--mono);
     font-weight: 600; letter-spacing: .5px; margin-bottom: 12px;
   }
   .cli {
@@ -84,7 +108,7 @@
   .cli .ds { color: #6b7684; font-size: 12.5px; flex: 1; }
   .tag {
     font-size: 11px; color: #7d8794; border: 1px solid #232b36; border-radius: 5px;
-    padding: 2px 7px; white-space: nowrap; font-family: ui-monospace, Menlo, monospace;
+    padding: 2px 7px; white-space: nowrap; font-family: var(--mono);
   }
   .tag.free { color: #6ee7b7; border-color: #1d3a2f; }
   .tag.oss  { color: #6ea8fe; border-color: #1d2f4a; }
@@ -103,7 +127,7 @@
   footer {
     margin-top: 60px; padding-top: 20px; border-top: 1px solid #1c242f;
     color: #4c5563; font-size: 12.5px; display: flex; justify-content: space-between;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--mono);
   }
   a { color: #6ea8fe; text-decoration: none; }
   a:hover { text-decoration: underline; }
@@ -131,11 +155,10 @@
     <div class="sec-head"><span class="sec-no">01</span><h2>安装 agent</h2><span class="sec-sub">于被控机执行</span></div>
     <p class="intro">{{INTRO}}</p>
     <div class="card">
-<pre><span class="c"># Linux / macOS —— 由本服务器下发（地址已写入）</span>
-curl -fsSL <span class="hl">{{BASE}}/install.sh</span> | sh -s --{{SH_TOKEN_ARG}}{{VERARG}}
-
-<span class="c"># Windows（PowerShell）</span>
-powershell -Command "&amp; { $(irm <span class="hl">{{BASE}}/install.ps1</span>) }{{PS_TOKEN_ARG}}{{VERARG}}"</pre>{{REGISTER_STEP}}
+      <div class="cmt"># Linux / macOS —— 由本服务器下发（地址已写入）</div>
+      <div class="cmdrow"><pre class="cmdline">curl -fsSL <span class="hl">{{BASE}}/install.sh</span> | sh -s --{{SH_TOKEN_ARG}}{{VERARG}}</pre><button class="copy" type="button">复制</button></div>
+      <div class="cmt"># Windows（PowerShell）</div>
+      <div class="cmdrow"><pre class="cmdline">powershell -Command "&amp; { $(irm <span class="hl">{{BASE}}/install.ps1</span>) }{{PS_TOKEN_ARG}}{{VERARG}}"</pre><button class="copy" type="button">复制</button></div>{{REGISTER_STEP}}
       <p class="note">脚本按系统架构从 <b>GitHub Releases 下载与服务器同版本的二进制</b>并校验 SHA256。<b>默认注册并启动常驻服务</b>（Linux 建 systemd 单元、macOS 建 launchd 项 <code>com.towstrap.agent</code>、Windows 建计划任务）——只放二进制不常驻就加 <code>--no-service</code>（PowerShell 用 <code>-NoService</code>）。亦可从 GitHub 直接获取脚本：<code>curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s --{{SH_TOKEN_ARG}}{{VERARG}}</code>（未指定 --version 时默认官方服务器与 latest）。</p>
       {{AGENTCONF_BLOCK}}
     </div>
@@ -144,11 +167,10 @@ powershell -Command "&amp; { $(irm <span class="hl">{{BASE}}/install.ps1</span>)
   <section>
     <div class="sec-head"><span class="sec-no">02</span><h2>接入</h2><span class="sec-sub">于客户端执行</span></div>
     <div class="card">
-<pre><span class="c"># 标准 OpenSSH 协议，系统自带客户端即可接入</span>
-ssh -p {{SSHPORT}} 账号@{{HOST}}
-
-<span class="c"># 持久终端：脱离后进程保持运行，可从其他设备恢复同一会话</span>
-ssh -t -p {{SSHPORT}} 账号@{{HOST}} 'mirror work'</pre>
+      <div class="cmt"># 标准 OpenSSH 协议，系统自带客户端即可接入</div>
+      <div class="cmdrow"><pre class="cmdline">ssh -p {{SSHPORT}} 账号@{{HOST}}</pre><button class="copy" type="button">复制</button></div>
+      <div class="cmt"># 持久终端：脱离后进程保持运行，可从其他设备恢复同一会话</div>
+      <div class="cmdrow"><pre class="cmdline">ssh -t -p {{SSHPORT}} 账号@{{HOST}} 'mirror work'</pre><button class="copy" type="button">复制</button></div>
       <p class="note">会话内 Ctrl-\ 脱离；本机安装 towstrap 后可使用 <code>mirror ls / kill</code> 等管理命令。</p>
     </div>
   </section>
@@ -189,12 +211,10 @@ ssh -t -p {{SSHPORT}} 账号@{{HOST}} 'mirror work'</pre>
   <section>
     <div class="sec-head"><span class="sec-no">05</span><h2>自行部署</h2><span class="sec-sub">数据保存在自有机器</span></div>
     <div class="card">
-      <div class="codeblock">
-        <div><span class="cmt"># 服务端安装（GitHub raw）：二进制 + server.yaml + systemd 服务（Linux+root）</span></div>
-        <div>curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh</div>
-        <div><span class="cmt"># 随后执行初始化向导：对外地址 / 自助注册 / 首个账号</span></div>
-        <div>sudo towstrap-server init</div>
-      </div>
+      <div class="cmt"># 服务端安装（GitHub raw）：二进制 + server.yaml + systemd 服务（Linux+root）</div>
+      <div class="cmdrow"><pre class="cmdline">curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh</pre><button class="copy" type="button">复制</button></div>
+      <div class="cmt"># 随后执行初始化向导：对外地址 / 自助注册 / 首个账号</div>
+      <div class="cmdrow"><pre class="cmdline">sudo towstrap-server init</pre><button class="copy" type="button">复制</button></div>
       <div class="note" style="margin-top:12px">二进制从 GitHub Releases 下载并校验 SHA256SUMS。安装后执行 <code>towstrap-server init</code> 配置对外地址、自助注册与首个账号（可重复执行）；HTTP 面由 nginx 443 反代对外，SSH 端口直接放行。账号库为本地 SQLite，无第三方依赖。</div>
     </div>
   </section>
@@ -204,5 +224,34 @@ ssh -t -p {{SSHPORT}} 账号@{{HOST}} 'mirror work'</pre>
     <span><a href="https://github.com/towstrap/towstrap">github.com/towstrap/towstrap</a></span>
   </footer>
 </div>
+<script>
+(function () {
+  function flash(b, ok) {
+    b.textContent = ok ? "已复制" : "复制失败";
+    b.classList.add(ok ? "ok" : "err");
+    setTimeout(function () { b.textContent = "复制"; b.classList.remove("ok", "err"); }, 1500);
+  }
+  // navigator.clipboard 只在 https/localhost 下可用，http 部署退回 execCommand
+  function fallback(t) {
+    var ta = document.createElement("textarea");
+    ta.value = t; ta.style.cssText = "position:fixed;top:0;opacity:0";
+    document.body.appendChild(ta); ta.select();
+    try { return document.execCommand("copy"); } catch (e) { return false; }
+    finally { document.body.removeChild(ta); }
+  }
+  document.querySelectorAll(".copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var el = b.parentNode.querySelector(".cmdline");
+      if (!el) return;
+      var t = el.innerText;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(function () { flash(b, true); }, function () { flash(b, fallback(t)); });
+      } else {
+        flash(b, fallback(t));
+      }
+    });
+  });
+})();
+</script>
 </body>
 </html>
