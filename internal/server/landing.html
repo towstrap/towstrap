@@ -6,130 +6,130 @@
 <title>towstrap — 反向连接的远程访问</title>
 <style>
   :root {
-    color-scheme: dark;
+    color-scheme: light;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
   * { margin: 0; box-sizing: border-box; }
   body {
     font: 15px/1.7 -apple-system, "SF Pro SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #0a0d12; color: #d7dde6; min-height: 100vh;
+    background: #f4f5f7; color: #3d444d; min-height: 100vh;
     background-image:
-      radial-gradient(900px 420px at 15% -8%, rgba(110,231,183,.07), transparent 60%),
-      radial-gradient(700px 380px at 88% -5%, rgba(110,168,254,.06), transparent 60%);
+      radial-gradient(900px 420px at 15% -8%, rgba(13,138,82,.06), transparent 60%),
+      radial-gradient(700px 380px at 88% -5%, rgba(47,111,221,.05), transparent 60%);
   }
   .wrap { max-width: 840px; margin: 0 auto; padding: 72px 24px 56px; }
 
   /* ── 顶部 ── */
   .hero { position: relative; margin-bottom: 54px; }
   h1 {
-    font-size: 46px; letter-spacing: -1.5px; color: #fff; line-height: 1.1;
+    font-size: 46px; letter-spacing: -1.5px; color: #1a1d21; line-height: 1.1;
     font-family: var(--mono); font-weight: 700;
-    background: linear-gradient(120deg, #fff 30%, #6ee7b7 90%);
+    background: linear-gradient(120deg, #1a1d21 30%, #0d8a52 90%);
     -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
     display: inline-block;
   }
-  .tagline { color: #9aa5b3; font-size: 17px; margin: 14px 0 8px; max-width: 640px; }
-  .tagline-en { color: #57616e; font-size: 13px; }
+  .tagline { color: #5a6472; font-size: 17px; margin: 14px 0 8px; max-width: 640px; }
+  .tagline-en { color: #98a1ad; font-size: 13px; }
   .badges { display: flex; gap: 8px; margin-top: 22px; flex-wrap: wrap; }
   .badge {
-    font: 12px/1 var(--mono); color: #8b95a3;
-    border: 1px solid #232b36; border-radius: 999px; padding: 7px 13px;
-    background: rgba(18,23,31,.7);
+    font: 12px/1 var(--mono); color: #5a6472;
+    border: 1px solid #dde2e8; border-radius: 999px; padding: 7px 13px;
+    background: rgba(255,255,255,.75);
   }
-  .badge b { color: #6ee7b7; font-weight: 600; }
+  .badge b { color: #0d8a52; font-weight: 600; }
 
   /* ── 区块 ── */
   section { margin-top: 48px; }
   .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
   .sec-no {
-    font: 700 13px/1 var(--mono); color: #2e3947;
+    font: 700 13px/1 var(--mono); color: #b8c0ca;
     letter-spacing: 1px;
   }
-  h2 { font-size: 19px; color: #eef2f7; font-weight: 650; letter-spacing: -.2px; }
-  .sec-sub { color: #57616e; font-size: 13px; }
-  p.intro { color: #a7b0bd; margin-bottom: 12px; }
-  p.intro code { color: #9fdcb8; }
+  h2 { font-size: 19px; color: #1c2128; font-weight: 650; letter-spacing: -.2px; }
+  .sec-sub { color: #98a1ad; font-size: 13px; }
+  p.intro { color: #4a5260; margin-bottom: 12px; }
+  p.intro code { color: #0d7a4d; }
 
   .card {
-    background: linear-gradient(180deg, #121821 0%, #0f141c 100%);
-    border: 1px solid #1e2631; border-radius: 14px; padding: 20px 22px;
-    box-shadow: 0 12px 32px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.03);
+    background: #ffffff;
+    border: 1px solid #e3e7ec; border-radius: 14px; padding: 20px 22px;
+    box-shadow: 0 8px 24px rgba(20,30,45,.06);
   }
   pre {
     font-family: var(--mono); font-size: 13.5px; line-height: 1.7;
-    white-space: pre-wrap; word-break: break-all; color: #cdd7e2;
+    white-space: pre-wrap; word-break: break-all; color: #2a313a;
   }
-  pre .c { color: #55606e; }
-  pre .hl { color: #6ee7b7; }
+  pre .c { color: #8a94a0; }
+  pre .hl { color: #0d8a52; }
 
   /* ── 命令行（带复制按钮）── */
-  .cmt { font-family: var(--mono); font-size: 13px; color: #55606e; margin: 10px 0 4px; }
+  .cmt { font-family: var(--mono); font-size: 13px; color: #8a94a0; margin: 10px 0 4px; }
   .card > .cmt:first-child { margin-top: 0; }
   .cmdrow {
     position: relative; margin: 4px 0 10px;
-    background: #0a0d12; border: 1px solid #1a212b; border-radius: 8px;
+    background: #f6f8fa; border: 1px solid #e1e6eb; border-radius: 8px;
   }
   .cmdrow .cmdline {
     font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
-    padding: 9px 52px 9px 12px; color: #cdd7e2;
+    padding: 9px 52px 9px 12px; color: #2a313a;
   }
   .copy {
     position: absolute; top: 6px; right: 6px;
-    font-family: var(--mono); font-size: 11px; line-height: 1; color: #7d8794;
-    background: #141a23; border: 1px solid #232b36; border-radius: 6px;
-    padding: 5px 9px; cursor: pointer; opacity: .8;
+    font-family: var(--mono); font-size: 11px; line-height: 1; color: #6b7480;
+    background: #ffffff; border: 1px solid #d8dee5; border-radius: 6px;
+    padding: 5px 9px; cursor: pointer; opacity: .85;
   }
-  .copy:hover { color: #6ee7b7; border-color: #2a4a3a; opacity: 1; }
-  .copy.ok { color: #6ee7b7; border-color: #1d3a2f; opacity: 1; }
-  .copy.err { color: #e08a8a; border-color: #4a2a2a; opacity: 1; }
+  .copy:hover { color: #0d8a52; border-color: #bfe0cf; opacity: 1; }
+  .copy.ok { color: #0d8a52; border-color: #bfe0cf; opacity: 1; }
+  .copy.err { color: #c0392b; border-color: #ecc2bc; opacity: 1; }
 
-  .note { color: #5c6674; font-size: 12.5px; margin-top: 14px; }
-  .note b { color: #8b95a3; font-weight: 600; }
-  code { font-family: var(--mono); font-size: .92em; color: #9aa5b3; }
+  .note { color: #7a838f; font-size: 12.5px; margin-top: 14px; }
+  .note b { color: #556070; font-weight: 600; }
+  code { font-family: var(--mono); font-size: .92em; color: #3d444d; background: rgba(175,184,193,.22); padding: .12em .35em; border-radius: 4px; }
   details.conf { margin-top: 14px; }
-  details.conf summary { color: #8b95a3; font-size: 13px; cursor: pointer; user-select: none; }
-  details.conf summary:hover { color: #cdd7e2; }
-  details.conf pre { margin-top: 8px; padding: 12px 14px; background: #0a0d12; border: 1px solid #1a212b; border-radius: 8px; }
+  details.conf summary { color: #5a6472; font-size: 13px; cursor: pointer; user-select: none; }
+  details.conf summary:hover { color: #333a45; }
+  details.conf pre { margin-top: 8px; padding: 12px 14px; background: #f6f8fa; border: 1px solid #e1e6eb; border-radius: 8px; }
 
   /* ── SSH 客户端 ── */
   .clients { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .cli-group h3 {
-    font-size: 13px; color: #6ee7b7; font-family: var(--mono);
+    font-size: 13px; color: #0d8a52; font-family: var(--mono);
     font-weight: 600; letter-spacing: .5px; margin-bottom: 12px;
   }
   .cli {
-    padding: 10px 0; border-top: 1px solid #1a212b;
+    padding: 10px 0; border-top: 1px solid #e6eaee;
     display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
   }
   .cli:first-of-type { border-top: 0; padding-top: 0; }
-  .cli .nm { color: #dde4ec; font-weight: 600; font-size: 14px; white-space: nowrap; }
+  .cli .nm { color: #1c2128; font-weight: 600; font-size: 14px; white-space: nowrap; }
   .cli .nm a { color: inherit; }
-  .cli .nm a:hover { color: #6ee7b7; text-decoration: none; }
-  .cli .ds { color: #6b7684; font-size: 12.5px; flex: 1; }
+  .cli .nm a:hover { color: #0d8a52; text-decoration: none; }
+  .cli .ds { color: #7a838f; font-size: 12.5px; flex: 1; }
   .tag {
-    font-size: 11px; color: #7d8794; border: 1px solid #232b36; border-radius: 5px;
+    font-size: 11px; color: #6b7480; border: 1px solid #dde2e8; border-radius: 5px;
     padding: 2px 7px; white-space: nowrap; font-family: var(--mono);
   }
-  .tag.free { color: #6ee7b7; border-color: #1d3a2f; }
-  .tag.oss  { color: #6ea8fe; border-color: #1d2f4a; }
-  .tag.paid { color: #c9a06b; border-color: #3a2f1d; }
+  .tag.free { color: #0d8a52; border-color: #c4e2d2; }
+  .tag.oss  { color: #2f6fdd; border-color: #c7d6f2; }
+  .tag.paid { color: #9a6a1f; border-color: #e6d5ac; }
 
   /* ── 能力 ── */
   .feats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .feat {
-    background: #0f141c; border: 1px solid #1c242f; border-radius: 12px;
-    padding: 16px 18px; font-size: 13.5px; color: #98a3b1; line-height: 1.55;
+    background: #ffffff; border: 1px solid #e6eaee; border-radius: 12px;
+    padding: 16px 18px; font-size: 13.5px; color: #5a6472; line-height: 1.55;
   }
-  .feat b { display: block; color: #e8edf3; font-weight: 650; font-size: 14.5px; margin-bottom: 4px; }
-  .feat svg { width: 18px; height: 18px; stroke: #6ee7b7; fill: none; stroke-width: 1.8;
+  .feat b { display: block; color: #1c2128; font-weight: 650; font-size: 14.5px; margin-bottom: 4px; }
+  .feat svg { width: 18px; height: 18px; stroke: #0d8a52; fill: none; stroke-width: 1.8;
     stroke-linecap: round; stroke-linejoin: round; margin-bottom: 8px; display: block; }
 
   footer {
-    margin-top: 60px; padding-top: 20px; border-top: 1px solid #1c242f;
-    color: #4c5563; font-size: 12.5px; display: flex; justify-content: space-between;
+    margin-top: 60px; padding-top: 20px; border-top: 1px solid #e3e7ec;
+    color: #98a1ad; font-size: 12.5px; display: flex; justify-content: space-between;
     font-family: var(--mono);
   }
-  a { color: #6ea8fe; text-decoration: none; }
+  a { color: #2f6fdd; text-decoration: none; }
   a:hover { text-decoration: underline; }
   @media (max-width: 640px) {
     .wrap { padding: 48px 18px 40px; }
@@ -221,6 +221,7 @@
 
   <footer>
     <span>towstrap {{VERSION}}</span>
+    <span><a href="?lang=zh">中文</a> · <a href="?lang=en">English</a></span>
     <span><a href="https://github.com/towstrap/towstrap">github.com/towstrap/towstrap</a></span>
   </footer>
 </div>

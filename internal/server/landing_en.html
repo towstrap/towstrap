@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>towstrap — reverse-connected remote access</title>
+<style>
+  :root {
+    color-scheme: light;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { margin: 0; box-sizing: border-box; }
+  body {
+    font: 15px/1.7 -apple-system, "SF Pro SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f4f5f7; color: #3d444d; min-height: 100vh;
+    background-image:
+      radial-gradient(900px 420px at 15% -8%, rgba(13,138,82,.06), transparent 60%),
+      radial-gradient(700px 380px at 88% -5%, rgba(47,111,221,.05), transparent 60%);
+  }
+  .wrap { max-width: 840px; margin: 0 auto; padding: 72px 24px 56px; }
+
+  /* ── header ── */
+  .hero { position: relative; margin-bottom: 54px; }
+  h1 {
+    font-size: 46px; letter-spacing: -1.5px; color: #1a1d21; line-height: 1.1;
+    font-family: var(--mono); font-weight: 700;
+    background: linear-gradient(120deg, #1a1d21 30%, #0d8a52 90%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    display: inline-block;
+  }
+  .tagline { color: #5a6472; font-size: 17px; margin: 14px 0 8px; max-width: 640px; }
+  .tagline-en { color: #98a1ad; font-size: 13px; }
+  .badges { display: flex; gap: 8px; margin-top: 22px; flex-wrap: wrap; }
+  .badge {
+    font: 12px/1 var(--mono); color: #5a6472;
+    border: 1px solid #dde2e8; border-radius: 999px; padding: 7px 13px;
+    background: rgba(255,255,255,.75);
+  }
+  .badge b { color: #0d8a52; font-weight: 600; }
+
+  /* ── sections ── */
+  section { margin-top: 48px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  .sec-no {
+    font: 700 13px/1 var(--mono); color: #b8c0ca;
+    letter-spacing: 1px;
+  }
+  h2 { font-size: 19px; color: #1c2128; font-weight: 650; letter-spacing: -.2px; }
+  .sec-sub { color: #98a1ad; font-size: 13px; }
+  p.intro { color: #4a5260; margin-bottom: 12px; }
+  p.intro code { color: #0d7a4d; }
+
+  .card {
+    background: #ffffff;
+    border: 1px solid #e3e7ec; border-radius: 14px; padding: 20px 22px;
+    box-shadow: 0 8px 24px rgba(20,30,45,.06);
+  }
+  pre {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.7;
+    white-space: pre-wrap; word-break: break-all; color: #2a313a;
+  }
+  pre .c { color: #8a94a0; }
+  pre .hl { color: #0d8a52; }
+
+  /* ── command rows (with copy button) ── */
+  .cmt { font-family: var(--mono); font-size: 13px; color: #8a94a0; margin: 10px 0 4px; }
+  .card > .cmt:first-child { margin-top: 0; }
+  .cmdrow {
+    position: relative; margin: 4px 0 10px;
+    background: #f6f8fa; border: 1px solid #e1e6eb; border-radius: 8px;
+  }
+  .cmdrow .cmdline {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.65;
+    padding: 9px 52px 9px 12px; color: #2a313a;
+  }
+  .copy {
+    position: absolute; top: 6px; right: 6px;
+    font-family: var(--mono); font-size: 11px; line-height: 1; color: #6b7480;
+    background: #ffffff; border: 1px solid #d8dee5; border-radius: 6px;
+    padding: 5px 9px; cursor: pointer; opacity: .85;
+  }
+  .copy:hover { color: #0d8a52; border-color: #bfe0cf; opacity: 1; }
+  .copy.ok { color: #0d8a52; border-color: #bfe0cf; opacity: 1; }
+  .copy.err { color: #c0392b; border-color: #ecc2bc; opacity: 1; }
+
+  .note { color: #7a838f; font-size: 12.5px; margin-top: 14px; }
+  .note b { color: #556070; font-weight: 600; }
+  code { font-family: var(--mono); font-size: .92em; color: #3d444d; background: rgba(175,184,193,.22); padding: .12em .35em; border-radius: 4px; }
+  details.conf { margin-top: 14px; }
+  details.conf summary { color: #5a6472; font-size: 13px; cursor: pointer; user-select: none; }
+  details.conf summary:hover { color: #333a45; }
+  details.conf pre { margin-top: 8px; padding: 12px 14px; background: #f6f8fa; border: 1px solid #e1e6eb; border-radius: 8px; }
+
+  /* ── SSH clients ── */
+  .clients { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .cli-group h3 {
+    font-size: 13px; color: #0d8a52; font-family: var(--mono);
+    font-weight: 600; letter-spacing: .5px; margin-bottom: 12px;
+  }
+  .cli {
+    padding: 10px 0; border-top: 1px solid #e6eaee;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  }
+  .cli:first-of-type { border-top: 0; padding-top: 0; }
+  .cli .nm { color: #1c2128; font-weight: 600; font-size: 14px; white-space: nowrap; }
+  .cli .nm a { color: inherit; }
+  .cli .nm a:hover { color: #0d8a52; text-decoration: none; }
+  .cli .ds { color: #7a838f; font-size: 12.5px; flex: 1; }
+  .tag {
+    font-size: 11px; color: #6b7480; border: 1px solid #dde2e8; border-radius: 5px;
+    padding: 2px 7px; white-space: nowrap; font-family: var(--mono);
+  }
+  .tag.free { color: #0d8a52; border-color: #c4e2d2; }
+  .tag.oss  { color: #2f6fdd; border-color: #c7d6f2; }
+  .tag.paid { color: #9a6a1f; border-color: #e6d5ac; }
+
+  /* ── features ── */
+  .feats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .feat {
+    background: #ffffff; border: 1px solid #e6eaee; border-radius: 12px;
+    padding: 16px 18px; font-size: 13.5px; color: #5a6472; line-height: 1.55;
+  }
+  .feat b { display: block; color: #1c2128; font-weight: 650; font-size: 14.5px; margin-bottom: 4px; }
+  .feat svg { width: 18px; height: 18px; stroke: #0d8a52; fill: none; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round; margin-bottom: 8px; display: block; }
+
+  footer {
+    margin-top: 60px; padding-top: 20px; border-top: 1px solid #e3e7ec;
+    color: #98a1ad; font-size: 12.5px; display: flex; justify-content: space-between;
+    font-family: var(--mono);
+  }
+  a { color: #2f6fdd; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  @media (max-width: 640px) {
+    .wrap { padding: 48px 18px 40px; }
+    h1 { font-size: 34px; }
+    .clients, .feats { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>towstrap</h1>
+    <p class="tagline">A reverse-connect remote access system: the controlled machine joins via outbound connection — no public address or inbound ports needed. SSH for humans, MCP for AI agents.</p>
+    <p class="tagline-en">反向连接远程访问系统：被控机以出站连接接入，无需公网地址与入站端口；SSH 面向人工接入，MCP 面向 AI 代理。</p>
+    <div class="badges">
+      <span class="badge">server <b>{{VERSION}}</b></span>
+      <span class="badge">ssh <b>:{{SSHPORT}}</b></span>
+      <span class="badge">host <b>{{HOST}}</b></span>
+    </div>
+  </div>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">01</span><h2>Install the agent</h2><span class="sec-sub">run on the controlled machine</span></div>
+    <p class="intro">{{INTRO}}</p>
+    <div class="card">
+      <div class="cmt"># Linux / macOS — served by this server (address pre-filled)</div>
+      <div class="cmdrow"><pre class="cmdline">curl -fsSL <span class="hl">{{BASE}}/install.sh</span> | sh -s --{{SH_TOKEN_ARG}}{{VERARG}}</pre><button class="copy" type="button">Copy</button></div>
+      <div class="cmt"># Windows (PowerShell)</div>
+      <div class="cmdrow"><pre class="cmdline">powershell -Command "&amp; { $(irm <span class="hl">{{BASE}}/install.ps1</span>) }{{PS_TOKEN_ARG}}{{VERARG}}"</pre><button class="copy" type="button">Copy</button></div>{{REGISTER_STEP}}
+      <p class="note">The script downloads a binary <b>matching this server's version</b> for your architecture from GitHub Releases and verifies its SHA256. <b>A resident service is registered and started by default</b> (a systemd unit on Linux, a <code>com.towstrap.agent</code> launchd item on macOS, a system service on Windows) — pass <code>--no-service</code> (<code>-NoService</code> in PowerShell) to only place the binaries. You can also fetch the script straight from GitHub: <code>curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install.sh | sh -s --{{SH_TOKEN_ARG}}{{VERARG}}</code> (without --version it defaults to the official server and latest).</p>
+      {{AGENTCONF_BLOCK}}
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">02</span><h2>Connect</h2><span class="sec-sub">run on your client</span></div>
+    <div class="card">
+      <div class="cmt"># Standard OpenSSH — the client built into your system just works</div>
+      <div class="cmdrow"><pre class="cmdline">ssh -p {{SSHPORT}} account@{{HOST}}</pre><button class="copy" type="button">Copy</button></div>
+      <div class="cmt"># Persistent terminal: detaching keeps processes running; resume the same session from another device</div>
+      <div class="cmdrow"><pre class="cmdline">ssh -t -p {{SSHPORT}} account@{{HOST}} 'mirror work'</pre><button class="copy" type="button">Copy</button></div>
+      <p class="note">Detach inside a session with Ctrl-\ or ~. at line start; with towstrap installed locally, <code>mirror ls / kill</code> and friends manage your mirrors.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">03</span><h2>SSH clients</h2><span class="sec-sub">standard SSH — pick any client</span></div>
+    <div class="clients">
+      <div class="card cli-group">
+        <h3>Desktop</h3>
+        <div class="cli"><span class="nm">Built-in terminal</span><span class="ds">OpenSSH ships with macOS, Windows and Linux</span><span class="tag free">free</span></div>
+        <div class="cli"><span class="nm"><a href="https://tabby.sh">Tabby</a></span><span class="ds">cross-platform GUI client</span><span class="tag oss">open source</span></div>
+        <div class="cli"><span class="nm"><a href="https://termius.com">Termius</a></span><span class="ds">cross-platform GUI client with multi-device sync</span><span class="tag">free + subscription</span></div>
+        <div class="cli"><span class="nm"><a href="https://www.microsoft.com/p/windows-terminal/9n0dx20hk701">Windows Terminal</a></span><span class="ds">official Windows terminal</span><span class="tag free">free</span></div>
+      </div>
+      <div class="card cli-group">
+        <h3>Mobile</h3>
+        <div class="cli"><span class="nm"><a href="https://termius.com">Termius</a></span><span class="ds">iOS / Android — recommended for mobile access</span><span class="tag">free + subscription</span></div>
+        <div class="cli"><span class="nm"><a href="https://panic.com/prompt/">Prompt 3</a></span><span class="ds">iOS SSH client (Panic)</span><span class="tag paid">paid</span></div>
+        <div class="cli"><span class="nm"><a href="https://juicessh.com">JuiceSSH</a></span><span class="ds">Android SSH client</span><span class="tag free">free</span></div>
+        <div class="cli"><span class="nm"><a href="https://termux.dev">Termux</a></span><span class="ds">Android terminal emulator; openssh installable via pkg</span><span class="tag oss">open source</span></div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:12px">All are standard SSH clients: host <code>{{HOST}}</code>, port <code>{{SSHPORT}}</code>, password authentication. Pair with <code>mirror</code> persistent terminals to resume the same session across devices.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">04</span><h2>Capabilities</h2></div>
+    <div class="feats">
+      <div class="feat"><svg viewBox="0 0 24 24"><path d="M4 12h16M4 12l4-4M4 12l4 4"/><path d="M20 5v14"/></svg><b>Reverse connect, zero inbound</b>The agent dials out over WebSocket — reachable behind NAT and firewalls, no ports to open on the controlled machine</div>
+      <div class="feat"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><b>Standard SSH</b>Password + TOTP + public-key auth with login rate-limiting; one account across machines via <code>alice+box@</code></div>
+      <div class="feat"><svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.2 2.2M16.2 16.2l2.2 2.2M5.6 18.4l2.2-2.2M16.2 7.8l2.2-2.2"/><circle cx="12" cy="12" r="3"/></svg><b>MCP interface</b>Clients like Claude Code / Cursor can run commands, read and write files, and manage terminals — with a three-tier policy and human approval</div>
+      <div class="feat"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><b>Persistent terminals</b>Self-hosted resident terminals (no tmux needed) — detach with Ctrl-\ and resume the same session from another device</div>
+      <div class="feat"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg><b>Audit &amp; awareness</b>Desktop notifications and broadcasts on session start/stop; connections, executions, approvals and credential changes fully audited</div>
+      <div class="feat"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3.3 8.3L12 13l8.7-4.7M12 13v8"/></svg><b>Single binaries</b>server / agent / mcp — three standalone executables with zero external dependencies, ready to deploy</div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">05</span><h2>Self-host</h2><span class="sec-sub">data stays on your own machines</span></div>
+    <div class="card">
+      <div class="cmt"># Server install (GitHub raw): binary + server.yaml + systemd service (Linux + root)</div>
+      <div class="cmdrow"><pre class="cmdline">curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh</pre><button class="copy" type="button">Copy</button></div>
+      <div class="cmt"># Then run the init wizard: public address / self-registration / first account</div>
+      <div class="cmdrow"><pre class="cmdline">sudo towstrap-server init</pre><button class="copy" type="button">Copy</button></div>
+      <div class="note" style="margin-top:12px">Binaries are downloaded from GitHub Releases and verified against SHA256SUMS. After install, run <code>towstrap-server init</code> to configure the public address, self-registration and the first account (re-runnable); the HTTP side is reverse-proxied through nginx on 443, the SSH port is exposed directly. Accounts live in a local SQLite database — no third-party dependencies.</div>
+    </div>
+  </section>
+
+  <footer>
+    <span>towstrap {{VERSION}}</span>
+    <span><a href="?lang=zh">中文</a> · <a href="?lang=en">English</a></span>
+    <span><a href="https://github.com/towstrap/towstrap">github.com/towstrap/towstrap</a></span>
+  </footer>
+</div>
+<script>
+(function () {
+  function flash(b, ok) {
+    b.textContent = ok ? "Copied" : "Failed";
+    b.classList.add(ok ? "ok" : "err");
+    setTimeout(function () { b.textContent = "Copy"; b.classList.remove("ok", "err"); }, 1500);
+  }
+  // navigator.clipboard is only available on https/localhost; fall back to execCommand on http
+  function fallback(t) {
+    var ta = document.createElement("textarea");
+    ta.value = t; ta.style.cssText = "position:fixed;top:0;opacity:0";
+    document.body.appendChild(ta); ta.select();
+    try { return document.execCommand("copy"); } catch (e) { return false; }
+    finally { document.body.removeChild(ta); }
+  }
+  document.querySelectorAll(".copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var el = b.parentNode.querySelector(".cmdline");
+      if (!el) return;
+      var t = el.innerText;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(function () { flash(b, true); }, function () { flash(b, fallback(t)); });
+      } else {
+        flash(b, fallback(t));
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>
