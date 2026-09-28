@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.10（2026-09-28）
+
+### 新增
+
+- **主页命令行加复制按钮**：安装 agent（curl / PowerShell）、接入 ssh、自助注册的 `towstrap register`、自行部署段每条命令右上角带「复制」按钮，复制的是服务器填好地址端口后的最终命令；`navigator.clipboard` 不可用的 http 部署自动退回 execCommand
+- **命令行内容统一终端字体**：`pre`/`code`/命令行/badge/tag/footer 全部走 `--mono` 字体栈，补上 Windows Consolas 与 Linux Liberation Mono 回落；顺带修掉「自行部署」段 `.codeblock` 从未定义样式、一直按正文非等宽渲染的问题
+
 ## v0.6.9（2026-09-28）
 
 ### 修复
