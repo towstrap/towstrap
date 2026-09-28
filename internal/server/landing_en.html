@@ -178,7 +178,9 @@
   <section>
     <div class="sec-head"><span class="sec-no">03</span><h2>MCP — for AI clients</h2><span class="sec-sub">let an LLM operate your machines</span></div>
     <div class="card">
-      <div class="cmt"># An admin issues an MCP token on the server (scoped to specific machines)</div>
+      <div class="cmt"># Self-issue an MCP token over SSH password login (grants pinned to your account)</div>
+      <div class="cmdrow"><pre class="cmdline">ssh -p {{SSHPORT}} account@{{HOST}} '@mcp add my-laptop'</pre><button class="copy" type="button">Copy</button></div>
+      <div class="cmt"># Or an admin issues one on the server (any account/machine)</div>
       <div class="cmdrow"><pre class="cmdline">towstrap-server mcp add my-laptop --machine alice</pre><button class="copy" type="button">Copy</button></div>
       <div class="cmt"># One command on the machine running AI agents: install towstrap-mcp and wire it into detected harnesses</div>
       <div class="cmdrow"><pre class="cmdline">curl -fsSL <span class="hl">{{BASE}}/install-mcp.sh</span> | sh -s -- --token tsm-…</pre><button class="copy" type="button">Copy</button></div>

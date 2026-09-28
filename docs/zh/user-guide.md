@@ -14,7 +14,7 @@ TowStrap 让 NAT/防火墙后面的机器可以被安全访问：被控机上的
 4. [账号与机器](#4-账号与机器)
 5. [登录与认证](#5-登录与认证)
 6. [执行命令与自动化](#6-执行命令与自动化)
-7. [账号本人自助管理（@machine）](#7-账号本人自助管理machine)
+7. [账号本人自助管理（@machine / @mcp / @totp）](#7-账号本人自助管理machine--mcp--totp)
 8. [换 token](#8-换-token)
 9. [MCP：给 LLM 用](#9-mcp给-llm-用)
 10. [给 LLM 助手装 skill](#10-给-llm-助手装-skill)
@@ -460,7 +460,7 @@ echo hello | ssh -p 7822 alice@towstrap.vast-plan.com 'cat'         # stdin 管�
 
 ---
 
-## 7. 账号本人自助管理（@machine / @totp）
+## 7. 账号本人自助管理（@machine / @mcp / @totp）
 
 `@` 开头的命令由服务器自己执行，不发给 agent。账号本人 SSH 登录后直接管名下机器和自己的二因素：
 
@@ -471,6 +471,11 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # 删机器，在线 agent 立刻断开
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # 看这台的 token
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # 用法说明
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop'               # 自签 MCP token：默认授权本账号全部机器，打印 tsm- token 和一键接入命令
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop --machine office' # 只授权本账号的一台（office = alice+office）
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp list'                     # 列本账号自签的 MCP 客户端
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp token laptop --regen'     # 换发 token（旧的立刻作废）
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp remove laptop'            # 删客户端，token 作废
 ssh -t alice@towstrap.vast-plan.com -p 7822 '@totp'                      # 自助绑/换绑 TOTP（出二维码输码确认）
 ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # 解绑 TOTP
 ```
@@ -484,6 +489,7 @@ TOTP 也可以直接在被管的机器上管——SSH 进机器后在 shell 里�
 - **只能密码类登录**跑：公钥登录会被拒（`MGMT-DENY reason=pubkey`）——公钥是给自动化的，不能管机器
 - **绑了 TOTP 的账号要再输一个新验证码**（登录时用过的那个不能重放）；连错 3 次断开，每次错记 `MGMT-DENY reason=totp` 并计入登录限速
 - 登录名带 `+机器名` 也行，按账号部分处理
+- `@mcp` 的授权范围锁死在本账号：`--machine` 写别人账号或 `'*'` 直接拒——这人本来就能 SSH 上自己的机器拿完整 shell，MCP token 只过策略引擎，不算放权。客户端在库里按 `账号.名字` 归属，跨账号互不可见
 - 换 token 不在这里——在 agent 机器上跑 `towstrap token refresh`（见下节）
 
 ---
@@ -617,6 +623,8 @@ towstrap-server mcp add ops --machine alice --machine bob # 多个账号
 ```
 
 `--machine` 四种写法：`'*'`（全部）、`'alice'`（该账号全部）、`'alice+*'`（同上，显式通配）、`'alice+office'`（指定一台）。签发时机器不存在不挡（先建凭据后建机器），只提醒。
+
+**账号本人自签（不找管理员）**：密码登进 SSH 后 `@mcp add laptop` 即可，授权范围被锁在本账号（`--machine` 只能写自己的机器，默认整个账号），打印 `tsm-` token 和一键接入命令——见第 7 节。
 
 客户端（Claude Code 等）只填 URL 和 token（`mcp add` 的输出里就有现成的配置片段）：
 

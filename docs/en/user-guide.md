@@ -14,7 +14,7 @@ TowStrap makes machines behind NAT/firewalls securely reachable: an agent on the
 4. [Accounts and machines](#4-accounts-and-machines)
 5. [Login and authentication](#5-login-and-authentication)
 6. [Running commands & automation](#6-running-commands--automation)
-7. [Self-service machine management (@machine)](#7-self-service-machine-management-machine)
+7. [Self-service management (@machine / @mcp / @totp)](#7-self-service-management-machine--mcp--totp)
 8. [Rotating tokens](#8-rotating-tokens)
 9. [MCP: for LLMs](#9-mcp-for-llms)
 10. [Installing the skill for LLM assistants](#10-installing-the-skill-for-llm-assistants)
@@ -461,7 +461,7 @@ echo hello | ssh -p 7822 alice@towstrap.vast-plan.com 'cat'         # stdin pipe
 
 ---
 
-## 7. Self-service management (@machine / @totp)
+## 7. Self-service management (@machine / @mcp / @totp)
 
 Commands starting with `@` are executed by the server itself and never reach the agent. After SSH login, the account owner manages their machines and their own second factor:
 
@@ -472,6 +472,11 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # delete; a connected agent drops immediately
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # show this machine's token
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # usage
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop'               # self-issue an MCP token: grants all of your machines by default, prints tsm- token + one-line install
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop --machine office' # grant one machine only (office = alice+office)
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp list'                     # list your self-issued MCP clients
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp token laptop --regen'     # rotate the token (old one dies immediately)
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp remove laptop'            # delete client, revoking its token
 ssh -t alice@towstrap.vast-plan.com -p 7822 '@totp'                      # bind/rebind TOTP yourself (QR + code confirm)
 ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # unbind TOTP
 ```
@@ -483,6 +488,7 @@ Restrictions:
 - **Password-class logins only**: public-key sessions are rejected (`MGMT-DENY reason=pubkey`) — keys are for automation, not management
 - **TOTP-bound accounts must enter a fresh code** (the one used at login can't be replayed); 3 wrong codes disconnect, each logged as `MGMT-DENY reason=totp` and counted by the login rate limiter
 - A `+machine` suffix in the login name is fine — it's handled by the account part
+- `@mcp` grants are pinned to your own account: `--machine` rejects other accounts and `'*'` — you can already SSH into your machines for a full shell, and an MCP token only goes through the policy engine, so this isn't a privilege grant. Clients are namespaced as `account.name`, invisible across accounts
 - Token rotation doesn't live here — run `towstrap token refresh` on the machine (next section)
 
 ---
@@ -616,6 +622,8 @@ towstrap-server mcp add ops --machine alice --machine bob # several accounts
 ```
 
 Four `--machine` forms: `'*'` (everything), `'alice'` (all of the account's), `'alice+*'` (same, explicit wildcard), `'alice+office'` (one machine). Referencing a not-yet-existing machine only warns — you can mint credentials before creating machines.
+
+**Self-service issuance (no admin needed)**: after a password SSH login, run `@mcp add laptop` — grants are pinned to your own account (`--machine` only accepts your machines, default is the whole account) and it prints the `tsm-` token plus the one-line install command — see section 7.
 
 Clients (Claude Code etc.) only need URL + token (`mcp add` prints a ready-made snippet):
 

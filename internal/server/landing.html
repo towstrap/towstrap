@@ -178,7 +178,9 @@
   <section>
     <div class="sec-head"><span class="sec-no">03</span><h2>MCP —— 给 AI 客户端接入</h2><span class="sec-sub">让 LLM 操作被控机</span></div>
     <div class="card">
-      <div class="cmt"># 管理员在服务器上签发 MCP token（指定授权哪台/哪些机器）</div>
+      <div class="cmt"># 账号本人 SSH 密码登录后自签 MCP token（授权锁在本账号）</div>
+      <div class="cmdrow"><pre class="cmdline">ssh -p {{SSHPORT}} 账号@{{HOST}} '@mcp add my-laptop'</pre><button class="copy" type="button">复制</button></div>
+      <div class="cmt"># 或管理员在服务器上签发（可指定任意账号/机器）</div>
       <div class="cmdrow"><pre class="cmdline">towstrap-server mcp add my-laptop --machine alice</pre><button class="copy" type="button">复制</button></div>
       <div class="cmt"># 跑 AI 助手的机器上一键接入：装 towstrap-mcp 并把配置写进检测到的各家助手</div>
       <div class="cmdrow"><pre class="cmdline">curl -fsSL <span class="hl">{{BASE}}/install-mcp.sh</span> | sh -s -- --token tsm-…</pre><button class="copy" type="button">复制</button></div>

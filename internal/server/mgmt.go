@@ -12,6 +12,7 @@ import (
 
 	glssh "github.com/gliderlabs/ssh"
 
+	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/config"
 	"github.com/towstrap/towstrap/internal/qrcode"
 	"github.com/towstrap/towstrap/internal/totp"
@@ -24,6 +25,10 @@ const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执�
   @machine token <名字>                             看这台机器的 token
                                                     （换 token 在 agent 机器上跑 towstrap token refresh）
   @machine help                                     本说明
+  @mcp add <名字> [--machine 机器名]...               签一个 MCP token，默认授权本账号全部机器
+  @mcp list                                         列本账号自签的 MCP 客户端
+  @mcp token <名字> [--regen]                        看 / 换发这个客户端的 token
+  @mcp remove <名字>                                 删客户端（token 作废）
   @totp                                             绑定/换绑 TOTP 二因素（出二维码，输码确认）
   @totp remove                                      解绑 TOTP
   @sshkey list                                      列已登记的登录公钥（SHA256 指纹 + 注释）
@@ -71,7 +76,7 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 	}
 
 	fields := strings.Fields(rawCmd)
-	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@totp" && fields[0] != "@sshkey") {
+	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@mcp" && fields[0] != "@totp" && fields[0] != "@sshkey") {
 		_, _ = fmt.Fprintln(sess.Stderr(), "未知管理命令，可用：@machine help")
 		_ = sess.Exit(2)
 		return
@@ -79,6 +84,8 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 	switch fields[0] {
 	case "@totp":
 		s.mgmtTOTP(sess, account, fields[1:], from)
+	case "@mcp":
+		s.mgmtMCP(sess, account, fields[1:], from)
 	case "@sshkey":
 		s.mgmtSSHKey(sess, account, fields[1:], from)
 	default:
@@ -349,6 +356,172 @@ func (s *Server) mgmtMachine(sess glssh.Session, account string, args []string, 
 		}
 		s.audit.Log("MACHINE-TOKEN", "user", sess.User(), "machine", id, "from", from)
 		_, _ = fmt.Fprintf(sess, "agent token: %s\n", m.Token)
+		_ = sess.Exit(0)
+	default:
+		usage(2)
+	}
+}
+
+// mcpSelfName 是账号自签 MCP 客户端在库里的归属写法：「账号.名字」。
+// 管理员用 mcp add 签的同名前缀客户端也归该账号管（管理员本来就是
+// 代签），@mcp list/remove 只碰这个前缀，越不到别人的名字空间。
+func mcpSelfName(account, name string) string {
+	return account + "." + strings.TrimPrefix(name, account+".")
+}
+
+// mcpSelfMachines 把 --machine 参数收敛成「只能指向本账号」的授权列表：
+// 允许 机器名（补成 账号+机器名）、账号、账号+*、账号+机器名；裸 "*"
+// 和别人账号一律拒。空列表默认授权整个账号。
+func (s *Server) mcpSelfMachines(account string, specs []string) ([]string, error) {
+	if len(specs) == 0 {
+		return []string{account}, nil
+	}
+	out := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		u, mn := accounts.SplitMachineID(spec)
+		if mn == "" && u != account {
+			mn, u = u, account // 裸机器名写法：--machine office = 本账号+office
+		}
+		switch {
+		case spec == "*" || u != account:
+			return nil, fmt.Errorf("--machine %q 越界：自签 token 只能授权本账号（%s）下的机器", spec, account)
+		case mn == "" || mn == "*":
+			out = append(out, account)
+		default:
+			if _, ok := s.cfg.Users.GetMachine(account, mn); !ok {
+				return nil, fmt.Errorf("机器 %s+%s 不存在（@machine list 看现有的，或先 @machine add）", account, mn)
+			}
+			out = append(out, account+"+"+mn)
+		}
+	}
+	return out, nil
+}
+
+// mgmtMCP 是 SSH 里的 MCP token 自助签发：账号本人给自己的机器签 MCP
+// 凭据，不需要管理员跑 towstrap-server mcp add。安全性来自两点：一是
+// 走到这已经过了密码登录 + TOTP 重验（公钥/一次性授权在上面被拦）；二是
+// 授权范围被锁死在本账号——这人本来就能 SSH 上这些机器拿完整 shell，
+// MCP token 只过策略引擎，是比 shell 更弱的凭据，不算放权。
+func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from string) {
+	usage := func(code int) {
+		_, _ = fmt.Fprint(sess, mgmtUsage)
+		_ = sess.Exit(code)
+	}
+	fail := func(err error) {
+		_, _ = fmt.Fprintln(sess.Stderr(), err)
+		_ = sess.Exit(1)
+	}
+	// 本账号自签的客户端都挂在「账号.名字」下，操作前校验存在性，
+	// 也把管理员签的别的名字的客户端挡在外面。
+	get := func(name string) (accounts.MCPClient, bool) {
+		return s.cfg.Users.MCPGet(mcpSelfName(account, name))
+	}
+	if len(args) == 0 {
+		usage(2)
+		return
+	}
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("@mcp add", flag.ContinueOnError)
+		fs.SetOutput(sess.Stderr())
+		var machines stringFlags
+		fs.Var(&machines, "machine", "授权哪台机器（可重复）；写机器名或 账号+机器名，只能是本账号的；不带 = 整个账号")
+		pos, err := mgmtArgs(fs, args[1:])
+		if err != nil {
+			_ = sess.Exit(2)
+			return
+		}
+		if len(pos) != 1 {
+			usage(2)
+			return
+		}
+		grants, err := s.mcpSelfMachines(account, machines)
+		if err != nil {
+			fail(err)
+			return
+		}
+		c, token, err := s.cfg.Users.MCPAdd(mcpSelfName(account, pos[0]), grants, nil)
+		if err != nil {
+			fail(err)
+			return
+		}
+		s.audit.Log("MCP-ADD", "user", sess.User(), "client", c.Name, "machines", strings.Join(grants, ","), "from", from)
+		_, _ = fmt.Fprintf(sess, "MCP 客户端 %s 已创建（授权：%s）\ntoken: %s\n", c.Name, strings.Join(grants, " "), token)
+		if s.cfg.PublicURL != "" {
+			_, _ = fmt.Fprintf(sess, "\n跑 AI 客户端的机器上一条命令接入：\n  curl -fsSL %s/install-mcp.sh | sh -s -- --token %s\n", s.cfg.PublicURL, token)
+		}
+		_, _ = fmt.Fprintln(sess, "token 只在这里显示这一次——丢了用 @mcp token "+pos[0]+" --regen 换新的")
+		_ = sess.Exit(0)
+	case "list":
+		prefix := account + "."
+		tw := tabwriter.NewWriter(sess, 0, 2, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "名字\t授权\t状态\t创建时间")
+		n := 0
+		for _, c := range s.cfg.Users.MCPList() {
+			if !strings.HasPrefix(c.Name, prefix) {
+				continue
+			}
+			state := "启用"
+			if c.Disabled {
+				state = "停用"
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", strings.TrimPrefix(c.Name, prefix),
+				strings.Join(c.Machines, ","), state, c.CreatedAt.Local().Format("2006-01-02 15:04"))
+			n++
+		}
+		_ = tw.Flush()
+		if n == 0 {
+			_, _ = fmt.Fprintln(sess, "还没有自签的 MCP 客户端——@mcp add <名字> 签一个")
+		}
+		_ = sess.Exit(0)
+	case "token":
+		fs := flag.NewFlagSet("@mcp token", flag.ContinueOnError)
+		fs.SetOutput(sess.Stderr())
+		regen := fs.Bool("regen", false, "换发新 token（旧的立刻作废）")
+		pos, err := mgmtArgs(fs, args[1:])
+		if err != nil {
+			_ = sess.Exit(2)
+			return
+		}
+		if len(pos) != 1 {
+			usage(2)
+			return
+		}
+		full := mcpSelfName(account, pos[0])
+		if _, ok := get(pos[0]); !ok {
+			fail(fmt.Errorf("MCP 客户端 %s 不存在（@mcp list 看现有的）", full))
+			return
+		}
+		if *regen {
+			token, err := s.cfg.Users.MCPRegenToken(full)
+			if err != nil {
+				fail(err)
+				return
+			}
+			s.audit.Log("MCP-TOKEN", "user", sess.User(), "client", full, "op", "regen", "from", from)
+			_, _ = fmt.Fprintf(sess, "新 token: %s\n旧的已作废——各 AI 客户端配置里的 token 要更新\n", token)
+		} else {
+			c, _ := get(pos[0])
+			s.audit.Log("MCP-TOKEN", "user", sess.User(), "client", full, "op", "show", "from", from)
+			_, _ = fmt.Fprintf(sess, "token: %s\n", c.Token)
+		}
+		_ = sess.Exit(0)
+	case "remove":
+		if len(args) != 2 {
+			usage(2)
+			return
+		}
+		full := mcpSelfName(account, args[1])
+		if _, ok := get(args[1]); !ok {
+			fail(fmt.Errorf("MCP 客户端 %s 不存在（@mcp list 看现有的）", full))
+			return
+		}
+		if err := s.cfg.Users.MCPRemove(full); err != nil {
+			fail(err)
+			return
+		}
+		s.audit.Log("MCP-REMOVE", "user", sess.User(), "client", full, "from", from)
+		_, _ = fmt.Fprintf(sess, "MCP 客户端 %s 已删除，token 作废\n", full)
 		_ = sess.Exit(0)
 	default:
 		usage(2)
