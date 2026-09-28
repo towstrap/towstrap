@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布
+
+### 修复
+
+- **SSH 进 Windows 后 `mirror`/`towstrap` 报「找不到命令」**：agent 以服务（SYSTEM）跑时，它拉起的会话继承的是 SYSTEM 的 PATH——安装脚本只把目录写进了用户 PATH，SYSTEM 看不到。两层修：`childEnv` 起子进程时把 towstrap.exe 所在目录补进 PATH（全平台生效，不依赖任何 PATH 配置）；`install.ps1` 管理员装法时把安装目录同时写进**机器** PATH（SYSTEM 会话继承机器 PATH）。已有安装补一条注册表 PATH 或重跑安装脚本即可
+
 ## v0.6.6（2026-09-28）
 
 ### 新增

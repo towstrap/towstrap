@@ -107,6 +107,51 @@ func TestChildEnvDropsMirror(t *testing.T) {
 	}
 }
 
+// TestChildEnvAddsExeDir 子进程 PATH 必须能找到 towstrap 自己所在目录——
+// 服务/SYSTEM 跑的 agent 拉起会话时继承的是 SYSTEM 的 PATH，不补的话
+// SSH 进去敲 towstrap/mirror 都报「找不到命令」。也不能丢原有的 PATH。
+func TestChildEnvAddsExeDir(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	var pathVal string
+	pathCount := 0
+	for _, kv := range childEnv() {
+		if i := strings.IndexByte(kv, '='); i > 0 && strings.EqualFold(kv[:i], "PATH") {
+			pathVal = kv[i+1:]
+			pathCount++
+		}
+	}
+	if pathCount != 1 {
+		t.Fatalf("PATH 条目数 = %d，该只有一条", pathCount)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip("取不到可执行文件路径")
+	}
+	dir := filepath.Dir(exe)
+	parts := filepath.SplitList(pathVal)
+	if parts[0] != dir {
+		t.Fatalf("PATH 第一项应为 exe 目录 %q，实得 %q", dir, parts[0])
+	}
+	if !pathHasDir(pathVal, "/usr/bin") || !pathHasDir(pathVal, "/bin") {
+		t.Fatalf("原 PATH 项丢了：%q", pathVal)
+	}
+}
+
+// TestPathHasDir 去重判定：已在 PATH 里的目录不重复塞。
+func TestPathHasDir(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	p := strings.Join([]string{"/a/b", "/c"}, sep)
+	if !pathHasDir(p, "/a/b") || !pathHasDir(p, "/a/b/") {
+		t.Fatal("该判含 /a/b")
+	}
+	if pathHasDir(p, "/a") || pathHasDir(p, "/a/bc") {
+		t.Fatal("不该误判前缀目录")
+	}
+	if pathHasDir("", "/a") {
+		t.Fatal("空 PATH 不该含任何目录")
+	}
+}
+
 func TestBackoff(t *testing.T) {
 	cases := []struct {
 		cur, want time.Duration

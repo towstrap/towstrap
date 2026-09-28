@@ -182,6 +182,18 @@ if (($userPath -split ';') -notcontains $Prefix) {
     Write-Host ">> $Prefix 已写进用户 PATH（新开的终端生效）"
 }
 if (($env:PATH -split ';') -notcontains $Prefix) { $env:PATH += ";$Prefix" }
+# 管理员装法顺手写进机器 PATH：服务以 SYSTEM 跑，它拉起的会话（含
+# towstrap SSH 进来的 shell）继承的是机器 PATH——不写的话那边敲
+# towstrap/mirror 都是「找不到命令」。
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+    $machPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    if (-not $machPath) { $machPath = '' }
+    if (($machPath -split ';') -notcontains $Prefix) {
+        [Environment]::SetEnvironmentVariable('PATH', ($machPath.TrimEnd(';') + ';' + $Prefix), 'Machine')
+        Write-Host ">> $Prefix 已写进机器 PATH（SYSTEM/服务会话可用）"
+    }
+}
 
 $tokenfile = Join-Path $Prefix "agent-token"
 if (-not (Test-Path $tokenfile)) {

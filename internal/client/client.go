@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -616,7 +617,11 @@ func (p *execProc) Close() error {
 // 拿到的是本机 shell，没必要再把 agent 自己的凭据白送给他。TERM 统一换成
 // xterm-256color：直接追加会和继承的旧 TERM 并存（execve 里重复的变量
 // 生效的是第一个），彩色能力取决于 agent 启动环境，必须滤掉再设。
+// PATH 里补进 towstrap 自己所在目录：agent 以服务/SYSTEM 跑时子进程继承
+// 的是 SYSTEM 的 PATH，看不到用户 PATH 里的安装目录——不补的话 SSH 进来
+// 敲 towstrap/mirror 都是「找不到命令」。
 func childEnv() []string {
+	pathVal := ""
 	env := make([]string, 0, 32)
 	for _, kv := range os.Environ() {
 		// TOWSTRAP_MIRROR 是镜像的套娃标记，只能由起进程的调用方显式给——
@@ -625,9 +630,36 @@ func childEnv() []string {
 			strings.HasPrefix(kv, "TOWSTRAP_MIRROR=") {
 			continue
 		}
+		// PATH/Path 都滤掉统一重发（Windows 环境名大小写不敏感，惯例写 Path）
+		if i := strings.IndexByte(kv, '='); i > 0 && strings.EqualFold(kv[:i], "PATH") {
+			pathVal = kv[i+1:]
+			continue
+		}
 		env = append(env, kv)
 	}
-	return append(env, "TERM=xterm-256color")
+	if exe, err := os.Executable(); err == nil {
+		if dir := filepath.Dir(exe); !pathHasDir(pathVal, dir) {
+			sep := string(os.PathListSeparator)
+			if pathVal == "" {
+				pathVal = dir
+			} else {
+				pathVal = dir + sep + pathVal
+			}
+		}
+	}
+	return append(env, "PATH="+pathVal, "TERM=xterm-256color")
+}
+
+// pathHasDir PATH 里是否已含该目录（Windows 大小写不敏感，其余精确比）。
+func pathHasDir(pathVal, dir string) bool {
+	clean := filepath.Clean(dir)
+	for _, p := range filepath.SplitList(pathVal) {
+		c := filepath.Clean(p)
+		if c == clean || (runtime.GOOS == "windows" && strings.EqualFold(c, clean)) {
+			return true
+		}
+	}
+	return false
 }
 
 // openShell 在 read 循环里同步调用：它只负责把子进程起好、会话挂上 sess
