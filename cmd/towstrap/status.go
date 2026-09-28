@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -24,13 +24,14 @@ import (
 // 1 = 没在跑或查不到。
 //
 // 数据分三层，越往后越是兜底：
-//  1. mirror.sock 的 status 操作——agent 进程活着才会应答（权威实时态）
-//  2. 进程表探测——socket 挂了/老版本没 status 时证明进程还在
+//  1. 本机接入通道（mirror.sock/命名管道）的 status 操作——agent 进程活着
+//     才会应答（权威实时态）
+//  2. 进程表探测——通道挂了/老版本没 status 时证明进程还在
 //  3. 服务管理器与配置文件——没在跑时回答「怎么起」
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	configPath := fs.String("config", "", "agent.yaml 路径（默认按安装位置探测）")
-	sock := fs.String("sock", "", "mirror socket 路径（默认环境变量/审计目录约定）")
+	sock := fs.String("sock", "", "mirror 通道地址（默认环境变量/平台约定：mirror.sock 或命名管道）")
 	agentToken := fs.String("agent-token", "", "覆盖凭据来源（默认和 agent 同款优先级）")
 	tokenFile := fs.String("agent-token-file", "", "覆盖 token 文件路径")
 	showToken := fs.Bool("show-token", false, "显示完整 token 值（默认只露头尾）")
@@ -45,24 +46,27 @@ func runStatus(args []string) int {
 	}
 	out("towstrap %s", version.String())
 
-	// —— 实时态：问 mirror.sock ——
+	// —— 实时态：问本机查询通道（unix socket / Windows 命名管道） ——
 	sockPath := *sock
 	if sockPath == "" {
 		sockPath = os.Getenv("TOWSTRAP_MIRROR_SOCK")
 	}
-	if sockPath == "" {
-		sockPath = client.DefaultMirrorSockPath()
-	}
 	running, connected := false, false
 	var info *client.StatusInfo
 	var errReply string
-	var err error
-	if sockPath == "" {
-		out("进程：mirror.sock 探测路径推导不出（HOME 未设置；--sock 指定）")
-	} else {
-		info, errReply, err = client.QueryStatus(sockPath)
+	targets := client.MirrorDialTargets(sockPath)
+	// 逐个候选拨：传输层失败换下一个；通了（拿到 status 或协议层拒答都
+	// 算应答）就停。Windows 上通常两条候选：自己 SID 的管道 + SYSTEM 服务的。
+	for _, t := range targets {
+		var err error
+		info, errReply, err = client.QueryStatus(t)
+		if err == nil || errReply != "" {
+			break
+		}
 	}
 	switch {
+	case len(targets) == 0:
+		out("进程：本机查询通道探测路径推导不出（HOME/SID 取不到；--sock 指定）")
 	case info != nil:
 		running, connected = true, info.Connected
 		out("进程：运行中（pid %d，启动于 %s 前）", info.PID, shortDur(time.Since(info.StartedAt)))
@@ -78,19 +82,15 @@ func runStatus(args []string) int {
 		}
 		out("远程会话 %d 个 · 镜像终端 %d 个", info.Sessions, info.Mirrors)
 	case errReply != "":
-		running = true // socket 应答了 = 进程活着，只是不肯/不会报详情
-		out("进程：运行中（socket 有应答，但查询被拒：%s）", errReply)
-	default:
-		if errors.Is(err, client.ErrNoLocalSock) {
-			out("进程：本机查询通道不可用（Windows 无 mirror.sock，看进程/任务状态）")
-		}
+		running = true // 通道应答了 = 进程活着，只是不肯/不会报详情
+		out("进程：运行中（查询通道有应答，但查询被拒：%s）", errReply)
 	}
 
-	// —— 进程兜底探测：socket 不应答时用进程表说话 ——
+	// —— 进程兜底探测：通道不应答时用进程表说话 ——
 	if !running {
 		if pids := findTowstrapPIDs(); len(pids) > 0 {
 			running = true
-			out("进程：在跑（pid %s）但 mirror.sock 不应答——socket 监听失败或版本太老",
+			out("进程：在跑（pid %s）但本机查询通道不应答——监听失败或版本太老",
 				strings.Join(pids, ", "))
 		} else {
 			out("进程：没在跑")
@@ -244,6 +244,17 @@ func serviceState() []string {
 				"）——加载：sudo launchctl bootstrap system "+daemonPlist)
 		}
 	case "windows":
+		// SCM 服务（管理员装法）：sc query 拿到 STATE 行就报。计划任务
+		// 是非管理员装法的退路，两种形态可能并存过但只能有一个在跑。
+		if b, err := exec.Command("sc", "query", "towstrap").Output(); err == nil {
+			state := "已注册"
+			if bytes.Contains(b, []byte("RUNNING")) {
+				state = "在跑"
+			} else if bytes.Contains(b, []byte("STOPPED")) {
+				state = "已停"
+			}
+			out = append(out, "服务：Windows 服务 towstrap "+state)
+		}
 		if exec.Command("schtasks", "/query", "/tn", "towstrap").Run() == nil {
 			out = append(out, "服务：计划任务 towstrap 已注册")
 		}

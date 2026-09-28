@@ -169,6 +169,10 @@ if (Test-Path $exe) {
 Move-Item $tmpExe $exe
 Write-Host ">> 已装到 $exe"
 
+# mirror.cmd 别名：和 unix 上的 mirror 符号链接同效——`mirror work` 直达
+# `towstrap mirror work`。%* 把全部参数原样透传。
+Set-Content -Path (Join-Path $Prefix "mirror.cmd") -Value "@`"%~dp0towstrap.exe`" mirror %*" -Encoding ascii
+
 # 加进用户 PATH（新终端生效；当前会话也顺手补上）——不然装完第一件事
 # 「towstrap status」都找不到命令。
 $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')

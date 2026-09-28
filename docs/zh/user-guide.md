@@ -321,19 +321,19 @@ mirror work vim a.go                 # 不存在就以该命令新建
 mirror kill work                     # 终结 work（杀掉里面的进程）
 ```
 
-`mirror` 是 `towstrap` 的软链别名（busybox 式，install.sh 装好就有）；没有软链的机器上写全称 `towstrap mirror …`，完全一样。
+`mirror` 是 `towstrap` 的别名（busybox 式）：Linux/macOS 上 install.sh 建软链，Windows 上 install.ps1 写 `mirror.cmd`；没有别名的机器上写全称 `towstrap mirror …`，完全一样。
 
 新建出的镜像，shell 落在你敲命令时所在的目录（`mirror ls` 的「目录」列能看到）；接入已存在的镜像不改变它里面的目录——接力的是原工作现场，不是你这次接入的目录。
 
 - 接入后按 **`Ctrl-\`** 脱离——只断开你的接入，镜像里的进程继续跑；同名再 `mirror` 就接回去
-- 想让工作「默认就在镜像里」（离开机器后随时远程接力）：`mirror setup --write` 往 shell 启动文件（`~/.zshrc`/`~/.bashrc`）写一段钩子——**默认只提醒不接入**：新终端里有活镜像时提示一行；把段里 `TOWSTRAP_MIRROR_AUTO=` 后面填上镜像名（或 `mirror setup work --write` 预填）才会自动接入它。`mirror setup` 不加 `--write` 只打印片段自己贴；临时跳过 `export TOWSTRAP_NO_MIRROR=1`，彻底去掉删掉 `# >>> towstrap mirror >>>` 那段即可
+- 想让工作「默认就在镜像里」（离开机器后随时远程接力）：`mirror setup --write` 往 shell 启动文件写一段钩子（Linux/macOS 是 `~/.zshrc`/`~/.bashrc`，Windows 写 PowerShell profile——cmd.exe 没有启动文件机制，手动 `mirror <名字>` 接入即可）——**默认只提醒不接入**：新终端里有活镜像时提示一行；把段里 `TOWSTRAP_MIRROR_AUTO=` 后面填上镜像名（或 `mirror setup work --write` 预填）才会自动接入它。`mirror setup` 不加 `--write` 只打印片段自己贴；临时跳过 `export TOWSTRAP_NO_MIRROR=1`（PowerShell 里 `$env:TOWSTRAP_NO_MIRROR=1`），彻底去掉删掉 `# >>> towstrap mirror >>>` 那段即可
 - `mirror ls -q` 是存在性探针：有活镜像退出 0，没有退出 1，不打印——rc 钩子和脚本用它判断「有没有可接的」
 - 多个接入方可以同时看同一个镜像（画面同步），谁敲键都进同一个终端；尺寸以最后接入/调整的一方为准
 - 套在 SSH 里接力：`ssh -t 机器 mirror work`（`ssh -t` 经 towstrap 服务器也行）——接力是给人用的功能：本机终端、普通 sshd、towstrap SSH 三种门进来，最后都是跑本机 `mirror` 命令
 - MCP 不参与：`terminal_open` 开的是会话级临时终端，接入不了镜像终端——AI 没有「接管人正在用的终端」的入口
-- 实现位置：`~/.towstrap/mirror.sock`（进程以 root 直接跑时 `/var/lib/towstrap/mirror.sock`；root 装的 launchd 守护项跑在 `_towstrap` 下，落在 `/var/lib/towstrap/.towstrap/mirror.sock`），0600，只有 agent 的系统用户能连——和「能在本机给这个用户开 shell」等价
+- 实现位置：Linux/macOS 是 `~/.towstrap/mirror.sock`（进程以 root 直接跑时 `/var/lib/towstrap/mirror.sock`；root 装的 launchd 守护项跑在 `_towstrap` 下，落在 `/var/lib/towstrap/.towstrap/mirror.sock`），0600，只有 agent 的系统用户能连——和「能在本机给这个用户开 shell」等价。Windows 是命名管道 `\\.\pipe\towstrap-mirror-<owner SID>`，ACL 只放 owner 本人、SYSTEM 和管理员；客户端连上后还会核对管道服务端进程的真实身份（防同名管道抢注骗按键）。**服务装法（SYSTEM）下本机接入要求管理员终端**——普通用户跑 `mirror` 会被 ACL 挡掉；经 towstrap SSH 进去的会话本身就是 SYSTEM 子进程，不受限
 - 闲置终结：镜像超过 **72 小时**没有任何输入/输出会被自动杀掉（接着但没动静也算；审计写 `MIRROR-KILL via=idle`）。阈值用 `mirror_idle` 配置或 `--mirror-idle` 旗标改，写 `0`/`off` 关掉
-- 边界：镜像只活在 agent 进程里——agent 重启镜像就没了（tmux 也一样）；Windows 上暂没有 `mirror` 命令，Windows 机器上没有镜像终端
+- 边界：镜像只活在 agent 进程里——agent 重启镜像就没了（tmux 也一样）。Windows 上镜像终端跑在 ConPTY 里（Win10 1809+/Server 2019+），脱离同样按 `Ctrl-\`；窗口尺寸变化靠轮询（没有 SIGWINCH），拉窗口最多滞后半秒
 
 ---
 
@@ -814,7 +814,7 @@ agent 侧（`audit.log`）另有 `START`/`END`（mode=mirror 的本机接入）�
 | `token refresh` 被 429 | 密码/TOTP 错太多次被锁，等锁过期（初始 1 分钟，翻倍封顶 1 小时） |
 | agent 频繁 `AGENT-REPLACE` | 同一台机器起了两个 agent 互顶，或 token 被拷到别处。查重复进程；怀疑泄露就换 token |
 | 连接数被打满 | 看 `max_conns`/`max_conns_per_ip` 的拒绝日志（`连接数达上限，拒绝新连接`），按需调大 |
-| `towstrap mirror` 连不上 socket | agent 没在跑，或 socket 被旧文件占着（日志会写 `mirror socket 已被占用`）。socket 在 `~/.towstrap/mirror.sock`（root 装法 `/var/lib/towstrap/`），可用 `--sock` 或 `TOWSTRAP_MIRROR_SOCK` 换位置 |
+| `towstrap mirror` 连不上通道 | agent 没在跑，或通道被占（日志会写 `mirror socket 已被占用`/`mirror 管道监听失败`）。unix socket 在 `~/.towstrap/mirror.sock`（root 装法 `/var/lib/towstrap/`）；Windows 是 `\\.\pipe\towstrap-mirror-<owner SID>`——服务装法下管道归 SYSTEM，本机接入要开**管理员**终端（普通用户会被 ACL 拒）。可用 `--sock` 或 `TOWSTRAP_MIRROR_SOCK` 换地址 |
 
 ---
 

@@ -23,7 +23,7 @@ import (
 func main() {
 	args := os.Args
 	// busybox 式别名：以 mirror（或 towstrap-mirror）的名字被调起 = towstrap mirror。
-	// install.sh 会建 PREFIX/mirror → towstrap 软链，让接入短成 `mirror work`。
+	// install.sh 建软链、install.ps1 写 mirror.cmd，让接入短成 `mirror work`。
 	switch mirrorProg() {
 	case "mirror", "towstrap-mirror":
 		args = append([]string{args[0], "mirror"}, args[1:]...)
@@ -97,7 +97,7 @@ func usage() {
   towstrap passwd [选项]              改账号的 SSH/登录密码（本机 token + 旧密码鉴权）
   towstrap ssh-key <gen|list|add|remove>  自助管理账号的 SSH 登录公钥（本机 token + 密码鉴权）
   towstrap mirror [ls|kill|<名字> [命令]]   本机的可接力终端（Ctrl-\ 脱离）
-                                       （install.sh 会把它软链成 mirror，直接敲 mirror work）
+                                       （安装脚本会建 mirror 别名，直接敲 mirror work）
   towstrap update [--version vX.Y.Z] [--check]   自升级：从官方 Release 拉新版，
                                        核 SHA256 后替换自身；服务托管的自动重启
   towstrap status [-q]               看这台机器上的 agent 跑没跑、连没连上

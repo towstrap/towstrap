@@ -1,5 +1,12 @@
 # Changelog
 
+## 未发布
+
+### 新增
+
+- **Windows 支持镜像终端（`towstrap mirror`）**：本机接入通道从 unix socket 换成命名管道 `\\.\pipe\towstrap-mirror-<owner SID>`，NDJSON 协议与 Unix 完全一致——`mirror ls`/`attach`/`kill`/`detach`、回放缓冲、多端同时接入、闲置回收、升级期间延迟等行为原样生效，镜像跑在 ConPTY 里（Win10 1809+）。管道 ACL 只放 owner、SYSTEM、管理员（等价于 unix 的 0600）；客户端连上后用 `GetNamedPipeServerProcessId` 核对服务端进程 token user 与管道名编码的 SID 一致，防同名管道抢注偷按键。服务装法（SYSTEM）下本机接入需管理员终端；经 towstrap SSH 进去的会话本身是 SYSTEM 子进程不受影响。窗口尺寸变化靠 500ms 轮询（Windows 没有 SIGWINCH）；`mirror setup --write` 写 PowerShell profile 钩子；`install.ps1` 安装 `mirror.cmd` 别名
+- **`status` 认 Windows 查询通道**：探测命名管道候选（自己 SID + SYSTEM 两条），不再误报「Windows 无 mirror.sock」；服务状态探测补上 SCM `sc query`
+
 ## v0.6.5（2026-09-28）
 
 ### 修复

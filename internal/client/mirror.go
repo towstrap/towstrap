@@ -18,7 +18,8 @@ import (
 // （SSH/MCP 会话）走，断开即杀；镜像终端的接入方断开只是「脱离」，进程
 // 继续跑，之后任何人都能用同一个名字重新接入。
 //
-// 接入只走本机 mirror.sock（towstrap mirror 命令）：远端要用的话，SSH 上这台
+// 接入只走本机通道（unix 是 mirror.sock，Windows 是命名管道——towstrap
+// mirror 命令）：远端要用的话，SSH 上这台
 // 机器（直连 sshd 或经 towstrap 都行）再跑 towstrap mirror <名字>。
 //
 // 生命周期边界：镜像只活在 agent 进程里——agent 重启镜像就没了（PTY 主端

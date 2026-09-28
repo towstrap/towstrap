@@ -3,49 +3,20 @@
 package client
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
-// mirror.sock：本机接入镜像终端的通道。towstrap mirror 子命令（以及任何
-// 登上这台机器的 shell——直连 sshd、控制台、towstrap SSH 都算）连上这个
-// unix socket 就能列/接入/新建/终结镜像，不依赖 agent 跟服务器的连接。
-//
-// 协议是 NDJSON（一行一个 JSON 对象，base64 装终端字节）：
-//   客户端 → {"op":"ls"} / {"op":"attach","name":..,"cmd":..,"cols":..,"rows":..}
-//            / {"op":"kill","name":..} / {"d":".."} / {"cols":..,"rows":..}
-//            / {"op":"detach"}
-//   服务端 → {"ok":true,"created":bool,"mirrors":[..]} / {"err":".."}
-//            / {"d":".."} / {"code":N}
+// Unix 上本机接入走 unix socket mirror.sock。towstrap mirror 子命令（以及
+// 任何登上这台机器的 shell——直连 sshd、控制台、towstrap SSH 都算）连上
+// 它就能列/接入/新建/终结镜像，不依赖 agent 跟服务器的连接。线缆格式见
+// mirrorsock.go。
 //
 // 安全边界：socket 文件 0600 + 目录 0700，只有跑 agent 的那个用户能连——
 // 和「能在本机给这个用户开 shell」等价，不扩大权限面。
-
-// mirrorSockMsg socket 上一来一回的消息。op 只在首行带；接入后客户端只发
-// d/cols/rows/detach，服务端只发 d/code。
-type mirrorSockMsg struct {
-	Op      string       `json:"op,omitempty"`
-	Name    string       `json:"name,omitempty"`
-	Cmd     string       `json:"cmd,omitempty"`
-	Cwd     string       `json:"cwd,omitempty"`
-	Cols    int          `json:"cols,omitempty"`
-	Rows    int          `json:"rows,omitempty"`
-	D       string       `json:"d,omitempty"`
-	Code    *int         `json:"code,omitempty"`
-	OK      bool         `json:"ok,omitempty"`
-	Created bool         `json:"created,omitempty"`
-	Err     string       `json:"err,omitempty"`
-	Mirrors []mirrorInfo `json:"mirrors,omitempty"`
-	Status  *StatusInfo  `json:"status,omitempty"`
-}
 
 // DefaultMirrorSockPath socket 默认位置：审计日志同目录（root 装法
 // /var/lib/towstrap/mirror.sock，普通用户 ~/.towstrap/mirror.sock）。
@@ -55,6 +26,19 @@ func DefaultMirrorSockPath() string {
 		return filepath.Join(filepath.Dir(d), "mirror.sock")
 	}
 	return ""
+}
+
+// defaultMirrorDialTargets unix 只有一个候选：socket 路径。
+func defaultMirrorDialTargets() []string {
+	if p := DefaultMirrorSockPath(); p != "" {
+		return []string{p}
+	}
+	return nil
+}
+
+// dialMirror unix 拨号就是 unix socket。
+func dialMirror(path string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout("unix", path, timeout)
 }
 
 // serveMirrorSock 起本机 socket 监听；起不来只告警不致命（远端接入不受影响）。
@@ -119,181 +103,4 @@ func serveMirrorSock(m *mirrorManager, p *presence, st *connState) {
 			go serveMirrorConn(c, m, p, st, restricted)
 		}
 	}()
-}
-
-var mirrorLocalSeq atomic.Int64
-
-// serveMirrorConn 处理一条本机连接：首行是操作，ls/kill/status 一答即走，
-// attach 进入双向流直到脱离/断连/镜像退出。restricted 连接（root 查别的
-// 用户起的 agent）只允许 status 只读操作。
-func serveMirrorConn(c net.Conn, m *mirrorManager, p *presence, st *connState, restricted bool) {
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-	dec := json.NewDecoder(c)
-	var first mirrorSockMsg
-	if err := dec.Decode(&first); err != nil {
-		return
-	}
-	enc := json.NewEncoder(c)
-	replyErr := func(format string, args ...any) {
-		_ = enc.Encode(mirrorSockMsg{Err: fmt.Sprintf(format, args...)})
-	}
-	if restricted && first.Op != "status" {
-		if p != nil {
-			p.audit.Log("MIRROR-DENY", "op", first.Op, "reason", "restricted")
-		}
-		replyErr("受限连接只允许 status 查询")
-		return
-	}
-
-	switch first.Op {
-	case "ls":
-		// 只读查询也留痕：status/ls 会泄露「机器上有哪些镜像、谁在
-		// 连着」，跨用户受限查询尤其要有账可查。
-		if p != nil {
-			p.audit.Log("MIRROR-LS", "restricted", fmt.Sprint(restricted))
-		}
-		_ = enc.Encode(mirrorSockMsg{OK: true, Mirrors: m.list()})
-		return
-	case "status":
-		if p != nil {
-			p.audit.Log("MIRROR-STATUS", "restricted", fmt.Sprint(restricted))
-		}
-		info := st.snapshot()
-		if p != nil {
-			info.Sessions = p.sessions()
-		}
-		for _, t := range m.list() {
-			if !t.Exited {
-				info.Mirrors++
-			}
-		}
-		_ = enc.Encode(mirrorSockMsg{OK: true, Status: &info})
-		return
-	case "kill":
-		if !m.kill(first.Name) {
-			replyErr("镜像 %q 不存在", first.Name)
-			return
-		}
-		if p != nil {
-			p.audit.Log("MIRROR-KILL", "name", first.Name, "via", "local")
-		}
-		_ = enc.Encode(mirrorSockMsg{OK: true})
-		return
-	case "attach":
-		// 下面继续
-	default:
-		replyErr("未知操作 %q", first.Op)
-		return
-	}
-
-	if first.Name == "" {
-		replyErr("attach 需要 name")
-		return
-	}
-	t, created, err := m.open(first.Name, first.Cmd, first.Cwd, first.Cols, first.Rows)
-	if err != nil {
-		replyErr("%v", err)
-		return
-	}
-	id := fmt.Sprintf("local-%d", mirrorLocalSeq.Add(1))
-	sink := &sockSink{enc: enc, c: c}
-	sessID := "sock-" + id
-	if p != nil {
-		p.sessionStart(sessID, "local@localhost", "mirror", "mirror:"+first.Name)
-	}
-	// ok 先走：attach 内部的重放/实时输出都排在它后面，客户端看到 ok
-	// 就知道进入流式状态。
-	_ = enc.Encode(mirrorSockMsg{OK: true, Name: first.Name, Created: created})
-	if err := t.attach(id, sink, first.Cols, first.Rows); err != nil {
-		// ok 已经发出，失败只能以 err 行收尾，客户端按退出处理
-		replyErr("%v", err)
-		if p != nil {
-			p.sessionEnd(sessID)
-		}
-		return
-	}
-	if created {
-		slog.Info("镜像已创建（本机接入）", "name", first.Name, "cmd", oneLine(first.Cmd, 160))
-	}
-	// 接入后双向都是长连接：握手期那个 30s deadline 是读写一起算的，
-	// 只清读会让写超时留着——接入超过 30 秒后输出全发不出去。
-	_ = c.SetDeadline(time.Time{})
-	defer func() {
-		t.detach(id)
-		if p != nil {
-			p.sessionEnd(sessID)
-		}
-	}()
-	for {
-		var m2 mirrorSockMsg
-		if err := dec.Decode(&m2); err != nil {
-			return
-		}
-		switch {
-		case m2.Op == "detach":
-			return
-		case m2.D != "":
-			b, err := base64.StdEncoding.DecodeString(m2.D)
-			if err == nil && len(b) > 0 {
-				_ = t.write(b)
-			}
-		case m2.Cols > 0 && m2.Rows > 0:
-			t.resize(id, uint32(m2.Cols), uint32(m2.Rows))
-		}
-	}
-}
-
-// sockSink 本机接入的输出出口：数据包成 {"d":b64}，退出包成 {"code":N}。
-// Drop 直接关连接：卡住的 Encode 随之返回，读循环出错收尾，客户端看到断开。
-type sockSink struct {
-	enc *json.Encoder
-	c   net.Conn
-	mu  sync.Mutex
-}
-
-func (s *sockSink) Drop(reason string) {
-	slog.Warn("本机镜像接入被断开", "reason", reason)
-	_ = s.c.Close()
-}
-
-func (s *sockSink) SendData(b []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.enc.Encode(mirrorSockMsg{D: base64.StdEncoding.EncodeToString(b)})
-}
-
-// SendExit 报完退出码就关连接：镜像没了，这条接入也没有存在的意义，
-// 不关的话服务端读循环会一直等一个不再说话的客户端。
-func (s *sockSink) SendExit(code int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_ = s.enc.Encode(mirrorSockMsg{Code: &code})
-	_ = s.c.Close()
-}
-
-// QueryStatus 向本机 mirror.sock 发 status 查询。三个返回值分三种情况：
-//
-//	info 非空    —— agent 在跑且应答了实时状态
-//	errReply 非空 —— socket 活着但 op 被拒（旧版本 agent 不认识 status，
-//	                或受限对端）——进程在跑，只是拿不到详情
-//	err 非空     —— 传输层失败（socket 不存在/连不上），agent 多半没在跑
-func QueryStatus(path string) (info *StatusInfo, errReply string, err error) {
-	c, err := net.DialTimeout("unix", path, 3*time.Second)
-	if err != nil {
-		return nil, "", err
-	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(c).Encode(mirrorSockMsg{Op: "status"}); err != nil {
-		return nil, "", err
-	}
-	var m mirrorSockMsg
-	if err := json.NewDecoder(c).Decode(&m); err != nil {
-		return nil, "", err
-	}
-	if m.Err != "" {
-		return nil, m.Err, nil
-	}
-	return m.Status, "", nil
 }

@@ -42,7 +42,7 @@ TowStrap 用于访问位于 NAT/防火墙之后、无公网 IP 的机器。被�
 
 - 内置持久终端，不依赖 tmux/screen；多端可同时接入同一会话
 - `Ctrl-\` 脱离且进程续跑；`mirror ls`/`mirror kill` 管理；`mirror_idle` 闲置自动回收（默认 72h）
-- 仅限人工使用：本机 0600 socket 加对端 uid 校验，MCP 不提供此能力
+- 仅限人工使用：unix 是 0600 socket+对端 uid 校验，Windows 是按 SID 命名的管道+ACL+服务端身份核对；MCP 不提供此能力
 
 **MCP（LLM 接入）**
 
@@ -158,7 +158,7 @@ claude             # 在其中运行任意 TUI 程序
 # Ctrl-\ 脱离，进程继续运行
 ```
 
-其他设备执行 `ssh -t -p 7822 alice@S 'mirror work'` 即可接入同一终端。`mirror setup --write` 可向 shell rc 写入钩子（默认提醒，填 `TOWSTRAP_MIRROR_AUTO=` 启用自动接入）。
+其他设备执行 `ssh -t -p 7822 alice@S 'mirror work'` 即可接入同一终端。`mirror setup --write` 可向 shell 启动文件写入钩子（默认提醒，填 `TOWSTRAP_MIRROR_AUTO=` 启用自动接入；Windows 写 PowerShell profile）。Windows 同样支持——`install.ps1` 会装 `mirror.cmd` 别名；服务装法（SYSTEM）下本机接入需管理员终端，经 towstrap SSH 进去的会话不受影响。
 
 ---
 

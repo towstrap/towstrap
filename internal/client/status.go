@@ -1,16 +1,12 @@
 package client
 
 import (
-	"errors"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/towstrap/towstrap/internal/version"
 )
-
-// ErrNoLocalSock 本机查询通道不存在（Windows 暂没有 mirror.sock）。
-var ErrNoLocalSock = errors.New("本机 mirror socket 不可用")
 
 // StatusInfo 是 mirror.sock status op 的应答，也是 towstrap status 展示的
 // 数据源。socket 能应答本身就证明 agent 进程活着——这是权威的在线信号，
