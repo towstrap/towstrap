@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布
+
+### 修复
+
+- **Windows ConPTY 修复 EINVAL——伪终端从「从没跑通过」变真能用**：`envBlock` 用 `windows.UTF16FromString` 编环境块，这个函数拒收内嵌 NUL 的字符串而环境块恰恰全是 NUL 分隔——每次 `startPty` 都挂在 `invalid argument`。改用 `utf16.Encode` 直编（不查 NUL），并把函数挪出 windows-tagged 文件补了单测。SSH 进 Windows 现在拿到真终端（提示符、回显、行编辑全有），不再掉进无回显的降级 exec
+
 ## v0.6.2（2026-09-28）
 
 ### 修复

@@ -4,7 +4,6 @@ package client
 
 import (
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,10 +88,7 @@ func startPtyEnv(shell, command, cwd string, cols, rows uint32, extraEnv []strin
 	if err != nil {
 		return fail(err)
 	}
-	envp, err := envBlock(append(childEnv(), extraEnv...))
-	if err != nil {
-		return fail(err)
-	}
+	envp := envBlock(append(childEnv(), extraEnv...))
 	var cwdPtr *uint16
 	if cwd != "" {
 		cwdPtr, err = windows.UTF16PtrFromString(expandHome(cwd))
@@ -173,29 +169,5 @@ func winCmdLine(shell, command string) string {
 	return q + " " + shellFlag(shell) + " " + command
 }
 
-// envBlock 把 KEY=VAL 列表编成 CreateProcess 要的 UTF-16 双 NUL
-// 结尾环境块；CREATE_UNICODE_ENVIRONMENT 要求按变量名排序。
-func envBlock(env []string) (*uint16, error) {
-	sorted := append([]string(nil), env...)
-	sort.Slice(sorted, func(i, j int) bool {
-		return strings.ToUpper(envKey(sorted[i])) < strings.ToUpper(envKey(sorted[j]))
-	})
-	var b strings.Builder
-	for _, kv := range sorted {
-		b.WriteString(kv)
-		b.WriteByte(0)
-	}
-	b.WriteByte(0)
-	u16, err := windows.UTF16FromString(b.String())
-	if err != nil {
-		return nil, err
-	}
-	return &u16[0], nil
-}
-
-func envKey(kv string) string {
-	if i := strings.IndexByte(kv, '='); i >= 0 {
-		return kv[:i]
-	}
-	return kv
-}
+// envBlock/envKey 挪到 envblock.go（无平台标记）——实现本身可移植，
+// 拆开是为了在非 Windows 机器上也能跑它的单测。
