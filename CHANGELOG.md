@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布
+
+### 新增
+
+- **agent 单实例锁「启动新的关闭旧的」**：`Run` 启动时抢 `~/.towstrap/agent-<tag>.lock`（Windows 是 `Local\TowStrap-<tag>` 命名 mutex，Unix 是 flock）；锁被占说明旧 agent 还活着，新实例读锁文件里的 pid 杀掉旧进程再接管——同名 agent 双跑（手动起的 + 计划任务/systemd 拉的）拿同一 token 在服务端反复顶号互蹬的问题根治。`status`/`ConnectOnce` 等一次性调用不持锁，不会误杀活着的 agent
+
 ## v0.6.3（2026-09-28）
 
 ### 修复

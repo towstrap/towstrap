@@ -186,6 +186,14 @@ func Run(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// 单实例：同名 agent 只能活一个——两个进程抢同一 token 会被服务端
+	// 反复顶号。锁被占时杀掉旧进程接管（「启动新的关闭旧的」），
+	// 升级/手动起新/计划任务顶上都走这条路。
+	unlock, err := acquireAgentLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	p := newPresence(cfg)
 	p.Startup(cfg.ID, cfg.Server, cfg.Shell, cfg.Insecure, cfg.Quiet, version.String())
 	//镜像终端登记处和本机 socket 都建在连接循环外：服务器断线期间
