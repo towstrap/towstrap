@@ -1,5 +1,11 @@
 # Changelog
 
+## 未发布
+
+### 修复
+
+- **Windows ConPTY 秒断真凶——PSEUDOCONSOLE 属性传错参数形式**：`UpdateProcThreadAttribute` 的 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 要求 `lpValue` 传 HPCON 句柄值本身，之前传的是 `&hpc`（句柄变量的地址）——内核把栈地址当成伪控制台句柄，`CreateProcess` 不校验放行，子进程起来拿不到有效控制台立刻退出。表现就是 SSH 一连上就断、审计里 `START`/`END` 同秒。v0.6.3 之前被 envBlock 的 EINVAL 挡着没暴露，修好环境块后它才浮出来
+
 ## v0.6.4（2026-09-28）
 
 ### 新增
