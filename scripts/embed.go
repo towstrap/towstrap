@@ -11,7 +11,7 @@ import (
 	"github.com/towstrap/towstrap/internal/version"
 )
 
-//go:embed install.sh install.ps1 install-server.sh
+//go:embed install.sh install.ps1 install-server.sh install-mcp.sh
 var FS embed.FS
 
 // marker 是脚本里服务器地址的占位符：下发时被替换成这台服务器的 ws(s)
@@ -82,4 +82,10 @@ func InstallPS1(serverURL, agentConf, sshPort string) []byte {
 // 官方服务器下发的和 GitHub raw 拉的是同一份字节。
 func InstallServerSH() []byte {
 	return mustRead("install-server.sh")
+}
+
+// InstallMCPSH 返回 MCP 客户端一键接入脚本：装 towstrap-mcp 并把接入
+// 写进各家 AI 助手配置。只需要服务器地址和版本两个占位符。
+func InstallMCPSH(serverURL string) []byte {
+	return render("install-mcp.sh", serverURL, "", "")
 }

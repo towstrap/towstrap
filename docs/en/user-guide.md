@@ -633,6 +633,22 @@ Clients (Claude Code etc.) only need URL + token (`mcp add` prints a ready-made 
 
 `tsm-` tokens are shown once; rotate with `mcp token NAME --regen` (the old one dies instantly).
 
+**One-command setup (recommended)**: on the machine running AI agents, a single command installs `towstrap-mcp` and writes the entry into every detected harness config (originals are backed up to `.bak`):
+
+```bash
+curl -fsSL https://<server>/install-mcp.sh | sh -s -- --token tsm-xxx
+```
+
+Covered harnesses: Claude Code, Codex, Grok Build, Cursor, Gemini CLI, OpenCode, GitHub Copilot CLI, Devin CLI, Pi — each with its own config format (JSON `mcpServers`/`mcp` merge, or TOML `[mcp_servers.towstrap]` section replace), always backed up first. Re-running with the same arguments is idempotent; re-running with a new token updates the entry in place. Options: `--harness claude,codex` to write only specific ones, `--no-skills` to skip the bundled skill install, `--check` for a dry run.
+
+If `towstrap-mcp` is already installed, the equivalent manual command is:
+
+```bash
+towstrap-mcp connect mcp --url https://<server>/mcp --token tsm-xxx
+```
+
+Config files that can't be parsed (e.g. containing comments) are never overwritten — a ready-to-paste snippet is printed instead. There's no one-line script for Windows; download `towstrap-mcp-windows-amd64.exe` from GitHub Releases and run `connect mcp` — same effect.
+
 ### 9.3 MCP client subcommands
 
 | Command | Purpose |
@@ -723,6 +739,16 @@ Supported: Claude Code, Codex, Grok Build, Cursor, Gemini CLI, OpenCode, GitHub 
 ### Manual copy
 
 Copy `skills/towstrap/` into any assistant's skills directory — same result.
+
+### connect mcp: write MCP entries into harness configs
+
+```bash
+towstrap-mcp connect mcp --url https://server:7880/mcp --token tsm-...
+towstrap-mcp connect mcp --stdio [--config mcp.yaml]
+towstrap-mcp connect mcp --harness claude,codex --url ... --token ...
+```
+
+Plug and play: every detected harness gets the entry (`--harness` narrows it), originals backed up to `.bak` first; JSON files get a `mcpServers`/`mcp` merge, TOML files a `[mcp_servers.towstrap]` section replace. Writable targets: Claude Code, Codex, Grok Build, Cursor, Gemini CLI, OpenCode, GitHub Copilot CLI, Devin CLI, Pi. Files that can't be parsed are never overwritten — a manual snippet is printed instead.
 
 ### print-mcp: print per-client config snippets
 

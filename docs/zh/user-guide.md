@@ -634,6 +634,22 @@ towstrap-server mcp add ops --machine alice --machine bob # 多个账号
 
 `tsm-` token 只显示一次；忘了用 `mcp token 名字 --regen` 换（旧的立刻作废）。
 
+**一键接入（推荐）**：跑 AI 助手的机器上一条命令——装 `towstrap-mcp` 并把接入写进检测到的各家助手配置（原文件自动备份 `.bak`）：
+
+```bash
+curl -fsSL https://<服务器>/install-mcp.sh | sh -s -- --token tsm-xxx
+```
+
+写入的 harness：Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI、Pi——各家配置文件格式不同（JSON 的 `mcpServers`/`mcp` 合并、TOML 的 `[mcp_servers.towstrap]` 节段替换），写之前原文件备份。已接入的同参重跑幂等，换 token 重跑自动更新。可选参数：`--harness claude,codex` 只写指定几家、`--no-skills` 不顺带装 skill、`--check` 干跑看解析结果。
+
+已经装了 `towstrap-mcp` 的等价手动命令：
+
+```bash
+towstrap-mcp connect mcp --url https://<服务器>/mcp --token tsm-xxx
+```
+
+解析不了的配置文件（比如带注释）不会被强写——会打印手工合并片段让你自己贴。Windows 机器没有一键脚本，从 GitHub Releases 下 `towstrap-mcp-windows-amd64.exe` 后跑 `connect mcp` 即可，效果相同。
+
 ### 9.3 MCP 客户端管理子命令
 
 | 命令 | 作用 |
@@ -724,6 +740,16 @@ towstrap-mcp connect --dry-run        # 演练，不写文件
 ### 手工拷贝
 
 把 `skills/towstrap/` 整个目录拷进任何一家认识的 skills 目录，效果一样。
+
+### connect mcp：把 MCP 接入直接写进各家配置
+
+```bash
+towstrap-mcp connect mcp --url https://服务器:7880/mcp --token tsm-...
+towstrap-mcp connect mcp --stdio [--config mcp.yaml]
+towstrap-mcp connect mcp --harness claude,codex --url ... --token ...
+```
+
+即插即用：检测到的 harness 全写（`--harness` 可点名），原文件先备份 `.bak`；JSON 走 `mcpServers`/`mcp` 合并、TOML 走节段替换。可写的 harness：Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI、Pi。解析不了的文件不强写，改打印手工片段。
 
 ### print-mcp：打印各家客户端的配置片段
 

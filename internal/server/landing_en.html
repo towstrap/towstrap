@@ -176,7 +176,18 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-no">03</span><h2>SSH clients</h2><span class="sec-sub">standard SSH — pick any client</span></div>
+    <div class="sec-head"><span class="sec-no">03</span><h2>MCP — for AI clients</h2><span class="sec-sub">let an LLM operate your machines</span></div>
+    <div class="card">
+      <div class="cmt"># An admin issues an MCP token on the server (scoped to specific machines)</div>
+      <div class="cmdrow"><pre class="cmdline">towstrap-server mcp add my-laptop --machine alice</pre><button class="copy" type="button">Copy</button></div>
+      <div class="cmt"># One command on the machine running AI agents: install towstrap-mcp and wire it into detected harnesses</div>
+      <div class="cmdrow"><pre class="cmdline">curl -fsSL <span class="hl">{{BASE}}/install-mcp.sh</span> | sh -s -- --token tsm-…</pre><button class="copy" type="button">Copy</button></div>
+      <p class="note">Writes the MCP entry into detected harnesses: Claude Code / Codex / Grok Build / Cursor / Gemini / OpenCode / Copilot / Devin / Pi — originals are backed up to <code>.bak</code>; use <code>--harness</code> to pick specific ones, and the towstrap skill is installed alongside (<code>--no-skills</code> to skip). On Windows, grab <code>towstrap-mcp-windows-amd64.exe</code> from GitHub Releases and run <code>towstrap-mcp connect mcp --url {{BASE}}/mcp --token tsm-…</code>. Operations needing human approval land in local pending: <code>towstrap-mcp pending / approve</code>.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">04</span><h2>SSH clients</h2><span class="sec-sub">standard SSH — pick any client</span></div>
     <div class="clients">
       <div class="card cli-group">
         <h3>Desktop</h3>
@@ -197,7 +208,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-no">04</span><h2>Capabilities</h2></div>
+    <div class="sec-head"><span class="sec-no">05</span><h2>Capabilities</h2></div>
     <div class="feats">
       <div class="feat"><svg viewBox="0 0 24 24"><path d="M4 12h16M4 12l4-4M4 12l4 4"/><path d="M20 5v14"/></svg><b>Reverse connect, zero inbound</b>The agent dials out over WebSocket — reachable behind NAT and firewalls, no ports to open on the controlled machine</div>
       <div class="feat"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><b>Standard SSH</b>Password + TOTP + public-key auth with login rate-limiting; one account across machines via <code>alice+box@</code></div>
@@ -209,7 +220,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-no">05</span><h2>Self-host</h2><span class="sec-sub">data stays on your own machines</span></div>
+    <div class="sec-head"><span class="sec-no">06</span><h2>Self-host</h2><span class="sec-sub">data stays on your own machines</span></div>
     <div class="card">
       <div class="cmt"># Server install (GitHub raw): binary + server.yaml + systemd service (Linux + root)</div>
       <div class="cmdrow"><pre class="cmdline">curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh</pre><button class="copy" type="button">Copy</button></div>

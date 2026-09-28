@@ -176,7 +176,18 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-no">03</span><h2>SSH 客户端推荐</h2><span class="sec-sub">标准 SSH 协议，客户端可任选</span></div>
+    <div class="sec-head"><span class="sec-no">03</span><h2>MCP —— 给 AI 客户端接入</h2><span class="sec-sub">让 LLM 操作被控机</span></div>
+    <div class="card">
+      <div class="cmt"># 管理员在服务器上签发 MCP token（指定授权哪台/哪些机器）</div>
+      <div class="cmdrow"><pre class="cmdline">towstrap-server mcp add my-laptop --machine alice</pre><button class="copy" type="button">复制</button></div>
+      <div class="cmt"># 跑 AI 助手的机器上一键接入：装 towstrap-mcp 并把配置写进检测到的各家助手</div>
+      <div class="cmdrow"><pre class="cmdline">curl -fsSL <span class="hl">{{BASE}}/install-mcp.sh</span> | sh -s -- --token tsm-…</pre><button class="copy" type="button">复制</button></div>
+      <p class="note">接入写入检测到的助手配置：Claude Code / Codex / Grok Build / Cursor / Gemini / OpenCode / Copilot / Devin / Pi——原文件自动备份 <code>.bak</code>，<code>--harness</code> 可只写指定几家，同时把 towstrap skill 装进各助手（<code>--no-skills</code> 跳过）。Windows 机器从 GitHub Releases 下 <code>towstrap-mcp-windows-amd64.exe</code>，跑 <code>towstrap-mcp connect mcp --url {{BASE}}/mcp --token tsm-…</code> 效果相同。需要人工批准的操作落在本机待批：<code>towstrap-mcp pending / approve</code>。</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="sec-no">04</span><h2>SSH 客户端推荐</h2><span class="sec-sub">标准 SSH 协议，客户端可任选</span></div>
     <div class="clients">
       <div class="card cli-group">
         <h3>桌面端</h3>
@@ -197,7 +208,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-no">04</span><h2>能力</h2></div>
+    <div class="sec-head"><span class="sec-no">05</span><h2>能力</h2></div>
     <div class="feats">
       <div class="feat"><svg viewBox="0 0 24 24"><path d="M4 12h16M4 12l4-4M4 12l4 4"/><path d="M20 5v14"/></svg><b>反向连接，零入站</b>agent 经 WebSocket 主动出站，位于 NAT/防火墙内侧亦可接入，被控机无需开放端口</div>
       <div class="feat"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="9" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><b>标准 SSH</b>密码 + TOTP + 公钥认证，登录限速；单账号多机，以 <code>alice+box@</code> 指名接入</div>
@@ -209,7 +220,7 @@
   </section>
 
   <section>
-    <div class="sec-head"><span class="sec-no">05</span><h2>自行部署</h2><span class="sec-sub">数据保存在自有机器</span></div>
+    <div class="sec-head"><span class="sec-no">06</span><h2>自行部署</h2><span class="sec-sub">数据保存在自有机器</span></div>
     <div class="card">
       <div class="cmt"># 服务端安装（GitHub raw）：二进制 + server.yaml + systemd 服务（Linux+root）</div>
       <div class="cmdrow"><pre class="cmdline">curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/install-server.sh | sudo sh</pre><button class="copy" type="button">复制</button></div>

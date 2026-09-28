@@ -1,5 +1,13 @@
 # Changelog
 
+## 未发布
+
+### 新增
+
+- **MCP 一键接入**：`curl .../install-mcp.sh | sh -s -- --token tsm-xxx` 一条命令装 `towstrap-mcp` 并把接入写进检测到的各家 AI 助手配置——即插即用，跑完重启客户端 LLM 就能操作被控机。脚本由服务器在 `/install-mcp.sh` 下发（地址版本自动填好），也可 GitHub raw 直拉
+- **`towstrap-mcp connect mcp`**：把 MCP 接入真正写进各家 harness 配置文件（之前 `print-mcp` 只打印不写）。覆盖 Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI、Pi——JSON 走 `mcpServers`/`mcp` 合并、Codex/Grok 的 TOML 走 `[mcp_servers.towstrap]` 节段替换；原文件先备份 `.bak`，同参幂等、换 token 自动更新，含 token 的新文件 0600。`--harness` 可点名只写哪几家，`--stdio` 写本机 stdio 接入；解析不了的文件不强写，打印手工合并片段
+- **主页加「MCP —— 给 AI 客户端接入」段**（中英双语）：token 签发命令 + 一键接入命令带复制按钮，后续章节顺延编号
+
 ## v0.6.11（2026-09-28）
 
 ### 新增

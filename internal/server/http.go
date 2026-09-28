@@ -82,6 +82,18 @@ func (s *Server) routes() http.Handler {
 		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 		_, _ = w.Write(scripts.InstallServerSH())
 	})
+	// /install-mcp.sh 下发 MCP 客户端一键接入脚本：装 towstrap-mcp 并把
+	// 接入写进各家 AI 助手配置——和 /install.sh 一样按请求推导服务器地址。
+	mux.HandleFunc("/install-mcp.sh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write(scripts.InstallMCPSH(s.installServerURL(r)))
+	})
 	// /register 是 agent 的自助建号口：server.yaml register: true 才受理，
 	// 关了也挂路由——返回的 403 文案比连接失败更能告诉用户怎么回事。
 	// /register/machine 是已有账号的登录加机口（等价 SSH @machine add），
