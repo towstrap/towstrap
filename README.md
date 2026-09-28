@@ -144,7 +144,7 @@ ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # 单次执�
 ssh -t -p 7822 alice@towstrap.vast-plan.com 'mirror work'           # 接入持久终端（Ctrl-\ 或 ~. 脱离）
 ```
 
-MCP 接入：`server.yaml` 置 `mcp.enabled: true` 并重启，执行 `towstrap-server mcp add laptop --machine alice` 签发 `tsm-` token，按输出的配置接入客户端。
+MCP 接入：`server.yaml` 置 `mcp.enabled: true` 并重启。token 两条路：账号本人 `ssh alice@S -p 7822 '@mcp add laptop'` 自签（授权锁本账号），或管理员 `towstrap-server mcp add laptop --machine alice` 签发；拿到 `tsm-` token 后 `curl -fsSL https://S/install-mcp.sh | sh -s -- --token tsm-…` 一条命令把接入写进各家 AI 助手配置。
 
 生产部署请启用 TLS（`--tls` 或 `tls: true`），详见[用户手册](docs/zh/user-guide.md)。
 

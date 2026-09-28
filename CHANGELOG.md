@@ -8,6 +8,7 @@
 - **`towstrap-mcp connect mcp`**：把 MCP 接入真正写进各家 harness 配置文件（之前 `print-mcp` 只打印不写）。覆盖 Claude Code、Codex、Grok Build、Cursor、Gemini CLI、OpenCode、GitHub Copilot CLI、Devin CLI、Pi——JSON 走 `mcpServers`/`mcp` 合并、Codex/Grok 的 TOML 走 `[mcp_servers.towstrap]` 节段替换；原文件先备份 `.bak`，同参幂等、换 token 自动更新，含 token 的新文件 0600。`--harness` 可点名只写哪几家，`--stdio` 写本机 stdio 接入；解析不了的文件不强写，打印手工合并片段
 - **主页加「MCP —— 给 AI 客户端接入」段**（中英双语）：token 签发命令 + 一键接入命令带复制按钮，后续章节顺延编号
 - **`@mcp` 自签 MCP token**：账号本人密码登进 SSH 后 `@mcp add <名字>` 即可签 `tsm-` token（默认授权本账号全部机器，`--machine` 只能指向自己的机器，裸 `*`/别人账号一律拒），并打印一键接入命令；`@mcp list / token [--regen] / remove` 管本账号自签客户端（库里按 `账号.名字` 归属，跨账号互不可见）。和其他 `@` 命令同样要求密码登录 + TOTP 重验，签/删/看 token 都记审计
+- **手册补各家客户端的 MCP 手工配置参考表**（中英双语 9.2 节）：Claude Code / Cursor / Gemini / OpenCode / Copilot / Devin / Pi 的 JSON 条目、Codex/Grok 的 TOML 节段逐一列出，含直连 `POST /mcp`（Streamable HTTP + Bearer）的说明；同步修掉手册/技术手册/skill 里「只能管理员签发 token」等过时表述
 
 ## v0.6.11（2026-09-28）
 

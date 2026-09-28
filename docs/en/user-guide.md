@@ -299,7 +299,7 @@ Unload: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.towstrap.agen
 
 `towstrap status` answers "is the agent actually running after install": process liveness (pid/uptime), server connection state (last handshake, dial count, last disconnect reason), active remote sessions and mirrors, whether `agent.yaml` and the token file are in place, and service-manager registration (systemd/launchd/Windows service/scheduled task). When it isn't running it prints how to start it. Exit codes for scripting: `0` running and connected, `3` running but not connected, `1` not running; `-q` suppresses output.
 
-The credentials section shows the agent token's effective source (flag/env/config/file path) and a masked value (head and tail only); add `--show-token` for the full value. Don't confuse the two token families: the **agent token (`tsa-`)** is what this machine uses to reach the server, while an **MCP token (`tsm-`)** is issued per AI client via `towstrap-server mcp add` on the server — the agent neither needs nor sees tsm- tokens.
+The credentials section shows the agent token's effective source (flag/env/config/file path) and a masked value (head and tail only); add `--show-token` for the full value. Don't confuse the two token families: the **agent token (`tsa-`)** is what this machine uses to reach the server, while an **MCP token (`tsm-`)** is issued per AI client — self-issued via `@mcp add` over a password SSH login, or by an admin via `towstrap-server mcp add`; the agent neither needs nor sees tsm- tokens.
 
 ### On-machine visibility
 
@@ -656,6 +656,22 @@ towstrap-mcp connect mcp --url https://<server>/mcp --token tsm-xxx
 ```
 
 Config files that can't be parsed (e.g. containing comments) are never overwritten — a ready-to-paste snippet is printed instead. There's no one-line script for Windows; download `towstrap-mcp-windows-amd64.exe` from GitHub Releases and run `connect mcp` — same effect.
+
+**Per-client manual config reference** (copy-paste when you don't want to run the script; `connect mcp` writes exactly these shapes — `url` is always `https://<server>/mcp`):
+
+| Client | Config file | `towstrap` entry (under `mcpServers`; under `mcp` for OpenCode) |
+| --- | --- | --- |
+| Claude Code | `~/.claude.json` | `{ "type": "http", "url": "…", "headers": { "Authorization": "Bearer tsm-…" } }` |
+| Cursor | `~/.cursor/mcp.json` | `{ "url": "…", "headers": { "Authorization": "Bearer tsm-…" } }` |
+| Gemini CLI | `~/.gemini/settings.json` | `{ "httpUrl": "…", "headers": { "Authorization": "Bearer tsm-…" } }` — note `httpUrl`, not `url` (the latter means the old SSE transport) |
+| OpenCode | `~/.config/opencode/opencode.json` | `{ "type": "remote", "url": "…", "headers": { "Authorization": "Bearer tsm-…" }, "enabled": true }` |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `{ "type": "http", "url": "…", "headers": { "Authorization": "Bearer tsm-…" }, "tools": ["*"] }` |
+| Devin CLI | `~/.config/devin/mcp_config.json` | `{ "url": "…", "headers": { "Authorization": "Bearer tsm-…" } }` |
+| Pi | `~/.pi/agent/mcp.json` | `{ "transport": "streamable-http", "url": "…", "headers": { "Authorization": "Bearer tsm-…" }, "lifecycle": "eager" }` — also needs `pi install npm:pi-mcp-extension` |
+| Codex | `~/.codex/config.toml` | `[mcp_servers.towstrap]` section: `url = "…"` + `http_headers = { "Authorization" = "Bearer tsm-…" }` |
+| Grok Build | `~/.grok/config.toml` | same, but the field is `headers` |
+
+Clients outside the list — or custom integrations — can also call the endpoint directly: `POST https://<server>/mcp`, Streamable HTTP transport, `Authorization: Bearer tsm-…` header, session continuity via the `Mcp-Session-Id` response header. Plain HTTP is only accepted from loopback; cross-machine access requires HTTPS (same certificate as the web port).
 
 ### 9.3 MCP client subcommands
 

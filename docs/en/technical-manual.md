@@ -28,7 +28,7 @@ For anyone integrating, auditing, or extending TowStrap. Everything below is wri
 
 Three processes:
 
-- **towstrap-server** (`cmd/towstrap-server`, `internal/server`): one process, two ports — an SSH port (gliderlabs/ssh) for humans, and an HTTP port serving the agent WebSocket (`/agent`), monitoring (`/health` `/status`), MCP (`/mcp`), token rotation (`/token/refresh`), the public skill (`/skill`), and the one-line installers (`/install.sh`, `/install.ps1`). The `Hub` is the core: a machine-ID → connected-agent map through which every session is established. Accounts live in SQLite (`internal/accounts`).
+- **towstrap-server** (`cmd/towstrap-server`, `internal/server`): one process, two ports — an SSH port (gliderlabs/ssh) for humans, and an HTTP port serving the agent WebSocket (`/agent`), monitoring (`/health` `/status`), MCP (`/mcp`), token rotation (`/token/refresh`), the public skill (`/skill`), and the one-line installers (`/install.sh`, `/install.ps1`, `/install-mcp.sh`). The `Hub` is the core: a machine-ID → connected-agent map through which every session is established. Accounts live in SQLite (`internal/accounts`).
 - **towstrap** (`cmd/towstrap`, `internal/client`): a daemon on the controlled machine. Dials out to `/agent`, spawns local processes on `open` (PTY or exec), pumps data both ways, handles `token` messages for remote rotation, holds the **named-mirror registry** (`internal/client/mirror.go`, see §7) and listens on the local `mirror.sock` (unix socket, NDJSON) for the `towstrap mirror` subcommand; keeps a local audit log + notifications.
 - **towstrap-mcp** (`cmd/towstrap-mcp`): a stdio MCP server. Hosts `mcpsrv.Server` whose execution backend is an SSH connection pool (`Pool`) — it acts as an SSH client to the server, same path as any `ssh` client.
 
@@ -176,6 +176,7 @@ Open parameters: `journal_mode=WAL`, `busy_timeout=5000`, single connection (SQL
 
 ```
 Issue:   user add / machine add / @machine add → accounts.NewAgentToken() (tsa-)
+         mcp add / SSH @mcp add → accounts.MCPAdd() → newMCPToken() (tsm-)
          plaintext appears once in command output; the DB holds the ciphertext
 Store:   machines.token_enc (deterministic AES-GCM, UNIQUE + index)
 Lookup:  X-Agent-Token → MachineByToken (ciphertext equality) → machine + account-enabled check
@@ -199,7 +200,7 @@ Rotate (two-phase):
 ## 7. SSH session handling
 
 - **Machine selection**: a `+machine` suffix names the machine; without it, a single-machine account lands on it, a multi-machine account errors with the list (incl. online status), zero machines errors. Missing/offline/stale-credential cases each get a specific message + `SESSION-DENY` (reason=no-machine/ambiguous/offline/credential)
-- **`@` prefix** routes to `handleMgmt` instead of the agent: public-key sessions are refused (reason=pubkey), TOTP accounts must supply a fresh code (3 attempts, failures count against the limiter); only `@machine list/add/remove/token/help` exist
+- **`@` prefix** routes to `handleMgmt` instead of the agent: public-key sessions are refused (reason=pubkey), TOTP accounts must supply a fresh code (3 attempts, failures count against the limiter). Commands: `@machine list/add/remove/token/help`, `@mcp add/list/token/remove` (self-issued MCP tokens — `--machine` pinned to the caller's account, clients namespaced as `account.name`), `@totp`/`@totp remove`, `@sshkey list/add/remove`
 - **PTY vs exec**: decided by `sess.Pty()`; PTY goes through a real pty (`creack/pty` on unix; on Windows a hand-rolled ConPTY wrapper over `x/sys/windows` — two pipes + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`; window size + `resize` relayed), exec runs `shell -c` with three pipes (stderr split via `s="e"`)
 - **stdin/EOF**: client stdin close → server sends `eof` → exec sessions forward it to the subprocess (`cat` finishes on EOF); PTY sessions ignore it (Ctrl-D is just a byte in the stream)
 - **Exit codes**: agent-side `exitCode()`: normal exit → ExitCode; signal kill → 128+signal; never-started → 255. Server-side `session.code` defaults to 255 and is only overwritten by the agent's `close.code` — a dropped agent never reads as 0. MCP `run_command` reports `timed_out=true` + `exit_code=-1` on SIGKILL timeout
@@ -386,7 +387,7 @@ Shared options (all management subcommands): `--config server.yaml` (reads users
 - `user totp NAME [--remove]`: enroll (prints otpauth URI + secret, confirms with a code)/unenroll
 - `machine add ACCOUNT NAME [--agent-allow-ip]... [--admin]`: owner confirmation
 - `machine list [ACCOUNT]` / `machine set ACCOUNT NAME [--agent-allow-ip]... [--clear-agent-allow]` / `machine remove ACCOUNT NAME` / `machine token ACCOUNT NAME [--regen] [--admin]`
-- `mcp add NAME --machine GRANT... [--allow-ip]...`: issues a tsm- token + prints client config + skill install commands; `--machine` forms `*`/`alice`/`alice+*`/`alice+office`
+- `mcp add NAME --machine GRANT... [--allow-ip]...`: issues a tsm- token + prints client config + skill install commands; `--machine` forms `*`/`alice`/`alice+*`/`alice+office`. Account owners without server shell access get the same via `@mcp add` after a password SSH login (see the @ commands above) — grants pinned to their own account
 - `mcp list` / `mcp set NAME [--machine]... [--allow-ip]... [--clear-allow] [--disable|--enable]` / `mcp remove` / `mcp token [--regen]`
 - `mcp pending` / `mcp approve <id>|--all` / `mcp deny <id>|--all`: `--approvals-dir` > yaml `mcp.approvals_dir` > `approvals/` next to the audit log
 
@@ -407,8 +408,8 @@ Flags: `--config --server --agent-token --agent-token-file --shell --insecure --
 ```
 towstrap-mcp [--config mcp.yaml]              run the stdio MCP server
 towstrap-mcp pending|approve <id>|--all|deny <id>|--all   approval fallback
-towstrap-mcp connect [list|uninstall|print-mcp] [--path] [--force] [--dry-run]
-                [--url URL --token tsm-...] | [--stdio]
+towstrap-mcp connect [list|uninstall|print-mcp|mcp] [--path] [--force] [--dry-run]
+                [--url URL --token tsm-...] | [--stdio] [--harness a,b] [--no-skills]
 ```
 
 ## 12. HTTP endpoint reference
@@ -423,6 +424,7 @@ towstrap-mcp connect [list|uninstall|print-mcp] [--path] [--force] [--dry-run]
 | `/skill` | GET/HEAD | none (public document) | `text/markdown; charset=utf-8`, `Cache-Control: public, max-age=3600`; other methods 405 |
 | `/install.sh` | GET/HEAD | none (public document) | unix one-line install script; `__TOWSTRAP_DEFAULT_SERVER__` replaced with `public_url` (or derived from request Host + TLS), `Cache-Control: no-cache` |
 | `/install.ps1` | GET/HEAD | none (public document) | Windows PowerShell version, same substitution |
+| `/install-mcp.sh` | GET/HEAD | none (public document) | MCP one-line installer: installs towstrap-mcp + writes detected harness configs; same placeholder substitution |
 
 Fixed HTTP server parameters: `ReadHeaderTimeout 10s`, `IdleTimeout 2m`, `MaxHeaderBytes 16KB`; TLS minimum version 1.2.
 
@@ -447,6 +449,8 @@ Format: `<RFC3339 time> <event> k=v`; `cmd` truncated past 512 bytes; control ch
 | `SESSION-DENY` | user from reason | session refused |
 | `MGMT-DENY` | user from reason(pubkey/locked/totp) | `@` command refused |
 | `MACHINE-ADD` `MACHINE-REMOVE` `MACHINE-TOKEN` | user machine from | SSH self-service |
+| `MCP-ADD` `MCP-REMOVE` `MCP-TOKEN` | user client [machines\|op] from | SSH `@mcp` self-issuance (add carries machines, token carries op=show/regen) |
+| `TOTP-ENROLL` `TOTP-REMOVE` `SSHKEY-ADD` `SSHKEY-REMOVE` | user from [fp\|key] | `@totp`/`@sshkey` self-service |
 | `MACHINE-ADD-ADMIN` `MACHINE-TOKEN-ADMIN` `MACHINE-TOKEN-REGEN-ADMIN` | user machine | CLI `--admin` skipped owner confirmation (written by the CLI process) |
 | `TOKEN-REFRESH` | user machine from(agent:caller@ip) status | one line per rotated machine |
 | `TOKEN-REFRESH-DENY` | [user] ip reason | rotation refused |

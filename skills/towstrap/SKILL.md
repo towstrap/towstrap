@@ -66,6 +66,7 @@ description: 通过 towstrap 在用户的远程机器（跑着 towstrap 的被�
 
 ## 用户问「怎么把 LLM 接上 towstrap」时
 
-- 服务器内嵌 MCP（推荐，客户端不用装东西）：在客户端的 MCP 配置里加 HTTP 服务器 `https://<服务器>:<端口>/mcp`，请求头 `Authorization: Bearer tsm-…`（token 由服务器管理员 `towstrap-server mcp add` 签发）。
+- 服务器内嵌 MCP（推荐，客户端不用装东西）：在客户端的 MCP 配置里加 HTTP 服务器 `https://<服务器>:<端口>/mcp`，请求头 `Authorization: Bearer tsm-…`。token 两条路：账号本人 SSH 密码登录后 `@mcp add <名字>` 自签（授权锁本账号），或管理员 `towstrap-server mcp add` 签发。
+- 一键接入：跑 AI 助手的机器上 `curl -fsSL https://<服务器>/install-mcp.sh | sh -s -- --token tsm-…`——装 towstrap-mcp、写各家配置、装本 skill 一次完成；已装 towstrap-mcp 的话 `towstrap-mcp connect mcp --url … --token tsm-…` 等价。各家手工配置写法见用户手册 MCP 章节的配置参考表。
 - 本机 stdio：装 `towstrap-mcp`，配 `mcp.yaml`（服务器地址、私钥、机器列表），客户端以命令方式启动它。
-- `towstrap-mcp connect print-mcp` 会打印各家客户端（Claude Code、Codex、Grok、Cursor、Gemini CLI、OpenCode）的配置片段；`towstrap-mcp connect` 把本 skill 装进本机检测到的客户端。
+- `towstrap-mcp connect print-mcp` 会打印各家客户端的配置片段；`towstrap-mcp connect` 把本 skill 装进本机检测到的客户端。

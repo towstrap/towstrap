@@ -28,7 +28,7 @@
 
 三个进程：
 
-- **towstrap-server**（`cmd/towstrap-server`，`internal/server`）：一个进程两个端口——SSH 口（gliderlabs/ssh）面向人，HTTP 口面向 agent（`/agent` 的 WebSocket）、监控（`/health` `/status`）、MCP（`/mcp`）、token 换发（`/token/refresh`）、公开 skill（`/skill`）和一键安装脚本（`/install.sh`、`/install.ps1`）。`Hub` 是核心：机器 ID → 已连接 agent 的映射，所有会话都经它建立。账号库是 SQLite（`internal/accounts`）。
+- **towstrap-server**（`cmd/towstrap-server`，`internal/server`）：一个进程两个端口——SSH 口（gliderlabs/ssh）面向人，HTTP 口面向 agent（`/agent` 的 WebSocket）、监控（`/health` `/status`）、MCP（`/mcp`）、token 换发（`/token/refresh`）、公开 skill（`/skill`）和一键安装脚本（`/install.sh`、`/install.ps1`、`/install-mcp.sh`）。`Hub` 是核心：机器 ID → 已连接 agent 的映射，所有会话都经它建立。账号库是 SQLite（`internal/accounts`）。
 - **towstrap**（`cmd/towstrap`，`internal/client`）：被控机上的常驻进程。主动 WebSocket 连出到 `/agent`，收 `open` 消息起本地进程（PTY 或 exec），双向搬运数据；处理 `token` 消息做远程换发；持有**镜像终端 登记处**（`internal/client/mirror.go`，见 §7）并监听本机 `mirror.sock`（unix socket，NDJSON 协议）给 `towstrap mirror` 子命令用；本地写审计、弹通知。
 - **towstrap-mcp**（`cmd/towstrap-mcp`）：stdio MCP server。内部起 `mcpsrv.Server`，执行后端是 SSH 连接池（`Pool`）——它自己当 SSH 客户端登到服务器，走和普通 `ssh` 客户端一样的路。
 
@@ -176,6 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 
 ```
 签发:  user add / machine add / @machine add → accounts.NewAgentToken() (tsa-)
+       mcp add / SSH @mcp add → accounts.MCPAdd() → newMCPToken() (tsm-)
        明文只在命令输出出现一次；库里是 encToken 后的密文
 存储:  machines.token_enc（AES-GCM 确定性，UNIQUE + 索引）
 查找:  X-Agent-Token → MachineByToken(token_enc 等值查询) → 机器 + 账号未停用检查
@@ -199,7 +200,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 ## 7. SSH 会话处理
 
 - **选机器**：登录名带 `+机器名` 指名；不带时账号恰有一台机器落它，多台报错列出名单（含在线状态），零台报错。机器不存在/不在线/凭据失效都有明确报错 + `SESSION-DENY`（reason=no-machine/ambiguous/offline/credential）
-- **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速），目前只有 `@machine list/add/remove/token/help`
+- **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速）。命令有 `@machine list/add/remove/token/help`、`@mcp add/list/token/remove`（自签 MCP token，`--machine` 锁死本账号，客户端按 `账号.名字` 前缀归属）、`@totp`/`@totp remove`、`@sshkey list/add/remove`
 - **PTY vs exec**：`sess.Pty()` 判定；PTY 走伪终端（unix 用 `creack/pty`，Windows 用 `x/sys/windows` 直写的 ConPTY——两条管道 + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`，窗口尺寸透传 + `resize`），exec 走 `shell -c` + 三根管道（stdout/stderr 分流用 `s="e"` 标记）
 - **stdin/EOF**：客户端关 stdin → 服务器发 `eof` → exec 会话把它传给子进程（`cat` 靠 EOF 收尾）；PTY 会话忽略（Ctrl-D 本来就是数据流里的字符）
 - **退出码**：agent 侧 `exitCode()`：正常退出取 ExitCode；信号杀取 128+信号；进程没起来等错误取 255。服务器侧 `session.code` 默认 255，收到 agent 的 `close.code` 才覆盖——agent 掉线不会被记成 0。MCP 侧 `run_command` 超时被 SIGKILL 时 `timed_out=true` 且 `exit_code=-1`
@@ -386,7 +387,7 @@ towstrap-server version                                  版本
 - `user totp 名字 [--remove]`：绑定（打印 otpauth URI + 秘钥，输码确认）/解绑
 - `machine add 账号 机器名 [--agent-allow-ip]... [--admin]`：本人确认
 - `machine list [账号]` / `machine set 账号 机器名 [--agent-allow-ip]... [--clear-agent-allow]` / `machine remove 账号 机器名` / `machine token 账号 机器名 [--regen] [--admin]`
-- `mcp add 名字 --machine 授权... [--allow-ip]...`：签发 tsm- token + 打印客户端配置 + skill 安装命令；`--machine` 四写法 `*`/`alice`/`alice+*`/`alice+office`
+- `mcp add 名字 --machine 授权... [--allow-ip]...`：签发 tsm- token + 打印客户端配置 + skill 安装命令；`--machine` 四写法 `*`/`alice`/`alice+*`/`alice+office`。账号本人不碰服务器命令行也有签发入口：SSH 密码登录后 `@mcp add`（见上文 @ 命令段），授权范围锁死本账号
 - `mcp list` / `mcp set 名字 [--machine]... [--allow-ip]... [--clear-allow] [--disable|--enable]` / `mcp remove` / `mcp token [--regen]`
 - `mcp pending` / `mcp approve <id>|--all` / `mcp deny <id>|--all`：`--approvals-dir` > yaml `mcp.approvals_dir` > 审计目录旁 `approvals/`
 
@@ -407,8 +408,8 @@ towstrap mirror [ls | kill 名字 | 名字 [命令]] [--sock 路径]   镜像终
 ```
 towstrap-mcp [--config mcp.yaml]              跑 stdio MCP server
 towstrap-mcp pending|approve <id>|--all|deny <id>|--all   批准兜底
-towstrap-mcp connect [list|uninstall|print-mcp] [--path] [--force] [--dry-run]
-                [--url URL --token tsm-...] | [--stdio]
+towstrap-mcp connect [list|uninstall|print-mcp|mcp] [--path] [--force] [--dry-run]
+                [--url URL --token tsm-...] | [--stdio] [--harness a,b] [--no-skills]
 ```
 
 ## 12. HTTP 端点参考
@@ -423,6 +424,7 @@ towstrap-mcp connect [list|uninstall|print-mcp] [--path] [--force] [--dry-run]
 | `/skill` | GET/HEAD | 无（公开文档） | `text/markdown; charset=utf-8`，`Cache-Control: public, max-age=3600`；其他方法 405 |
 | `/install.sh` | GET/HEAD | 无（公开文档） | unix 一键安装脚本；`__TOWSTRAP_DEFAULT_SERVER__` 换成 `public_url`（没配则按请求 Host + TLS 推导），`Cache-Control: no-cache` |
 | `/install.ps1` | GET/HEAD | 无（公开文档） | Windows PowerShell 版，同上 |
+| `/install-mcp.sh` | GET/HEAD | 无（公开文档） | MCP 一键接入脚本：装 towstrap-mcp + 写各家助手配置；同占位符替换 |
 
 HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBytes 16KB`；TLS 最低 1.2。
 
@@ -447,6 +449,8 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 | `SESSION-DENY` | user from reason | 会话被拒 |
 | `MGMT-DENY` | user from reason(pubkey/locked/totp) | `@` 命令被拒 |
 | `MACHINE-ADD` `MACHINE-REMOVE` `MACHINE-TOKEN` | user machine from | SSH 自助管理 |
+| `MCP-ADD` `MCP-REMOVE` `MCP-TOKEN` | user client [machines\|op] from | SSH `@mcp` 自签管理（add 带 machines、token 带 op=show/regen） |
+| `TOTP-ENROLL` `TOTP-REMOVE` `SSHKEY-ADD` `SSHKEY-REMOVE` | user from [fp\|key] | `@totp`/`@sshkey` 自助 |
 | `MACHINE-ADD-ADMIN` `MACHINE-TOKEN-ADMIN` `MACHINE-TOKEN-REGEN-ADMIN` | user machine | CLI `--admin` 跳过本人确认（由 CLI 进程写） |
 | `TOKEN-REFRESH` | user machine from(agent:调用者@ip) status | 每台一条换发结果 |
 | `TOKEN-REFRESH-DENY` | [user] ip reason | 换发被拒 |

@@ -298,7 +298,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 `towstrap status` 一条命令回答「装完了到底跑没跑」：进程存活（pid/启动时长）、与服务器连接状态（握手时间、拨号次数、上次断开原因）、活跃远程会话与镜像终端数、agent.yaml 与 token 文件就位情况、系统服务（systemd/launchd/Windows 服务/计划任务）注册状态。没在跑时直接给出启动指引。退出码三档可进脚本：`0` 在跑且已连上、`3` 在跑未连上、`1` 没在跑；`-q` 静默只给退出码。
 
-凭据一栏显示 agent token 的实际来源（旗标/环境变量/配置项/文件路径）和遮中段后的值（留头尾够认是哪个），要看完整值加 `--show-token`。注意别把两套 token 弄混：**agent token（`tsa-`）**是这台机器连服务器用的，**MCP token（`tsm-`）**是 AI 客户端走 MCP 用的，由服务器上 `towstrap-server mcp add` 签发——agent 不需要、也接触不到 tsm-。
+凭据一栏显示 agent token 的实际来源（旗标/环境变量/配置项/文件路径）和遮中段后的值（留头尾够认是哪个），要看完整值加 `--show-token`。注意别把两套 token 弄混：**agent token（`tsa-`）**是这台机器连服务器用的，**MCP token（`tsm-`）**是 AI 客户端走 MCP 用的——账号本人 SSH 登录后 `@mcp add` 自签，或管理员在服务器上 `towstrap-server mcp add` 签发；agent 不需要、也接触不到 tsm-。
 
 ### 被控端感知
 
@@ -657,6 +657,22 @@ towstrap-mcp connect mcp --url https://<服务器>/mcp --token tsm-xxx
 ```
 
 解析不了的配置文件（比如带注释）不会被强写——会打印手工合并片段让你自己贴。Windows 机器没有一键脚本，从 GitHub Releases 下 `towstrap-mcp-windows-amd64.exe` 后跑 `connect mcp` 即可，效果相同。
+
+**各家客户端手工配置参考**（不想跑脚本时照抄；`connect mcp` 写的就是下面这些形状，`url` 一律填 `https://<服务器>/mcp`）：
+
+| 客户端 | 配置文件 | `towstrap` 条目（挂在 `mcpServers` 下，OpenCode 挂 `mcp` 下） |
+| --- | --- | --- |
+| Claude Code | `~/.claude.json` | `{ "type": "http", "url": "…", "headers": { "Authorization": "Bearer tsm-…" } }` |
+| Cursor | `~/.cursor/mcp.json` | `{ "url": "…", "headers": { "Authorization": "Bearer tsm-…" } }` |
+| Gemini CLI | `~/.gemini/settings.json` | `{ "httpUrl": "…", "headers": { "Authorization": "Bearer tsm-…" } }`——注意是 `httpUrl`，`url` 在那家指旧的 SSE 传输 |
+| OpenCode | `~/.config/opencode/opencode.json` | `{ "type": "remote", "url": "…", "headers": { "Authorization": "Bearer tsm-…" }, "enabled": true }` |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `{ "type": "http", "url": "…", "headers": { "Authorization": "Bearer tsm-…" }, "tools": ["*"] }` |
+| Devin CLI | `~/.config/devin/mcp_config.json` | `{ "url": "…", "headers": { "Authorization": "Bearer tsm-…" } }` |
+| Pi | `~/.pi/agent/mcp.json` | `{ "transport": "streamable-http", "url": "…", "headers": { "Authorization": "Bearer tsm-…" }, "lifecycle": "eager" }`——还需 `pi install npm:pi-mcp-extension` |
+| Codex | `~/.codex/config.toml` | `[mcp_servers.towstrap]` 节：`url = "…"` + `http_headers = { "Authorization" = "Bearer tsm-…" }` |
+| Grok Build | `~/.grok/config.toml` | 同上但字段名叫 `headers` |
+
+不在名单上的客户端或自写集成也可以直连：`POST https://<服务器>/mcp`，Streamable HTTP 传输，`Authorization: Bearer tsm-…` 头，会话用 `Mcp-Session-Id` 响应头续；明文 HTTP 只对回环地址放行（跨机器必须 HTTPS，证书和网页口一致）。
 
 ### 9.3 MCP 客户端管理子命令
 

@@ -145,7 +145,7 @@ ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # one-shot c
 ssh -t -p 7822 alice@towstrap.vast-plan.com 'mirror work'           # attach to a persistent terminal (Ctrl-\ or ~. detaches)
 ```
 
-MCP: set `mcp.enabled: true` in `server.yaml`, restart, then run `towstrap-server mcp add laptop --machine alice` to issue a `tsm-` token and configure the client with the printed block.
+MCP: set `mcp.enabled: true` in `server.yaml` and restart. Two ways to a token: self-issue via `ssh alice@S -p 7822 '@mcp add laptop'` (grants pinned to your account), or admin-issued via `towstrap-server mcp add laptop --machine alice`. Then `curl -fsSL https://S/install-mcp.sh | sh -s -- --token tsm-…` wires the connection into detected AI assistants in one shot.
 
 Enable TLS in production (`--tls` or `tls: true`); see the [User Guide](docs/en/user-guide.md).
 
