@@ -25,3 +25,24 @@ func TestScriptsOfficialServer(t *testing.T) {
 		t.Fatal("install.ps1 没了 SHA256SUMS 的 byte[]→UTF8 解码")
 	}
 }
+
+// Windows 常驻靠计划任务，XML 里三个开关是常驻 agent 的命门，少了哪个
+// 都会翻车：没有 RestartOnFailure 进程死了没人拉；ExecutionTimeLimit
+// 不设回 PT0S 会被默认 3 天强杀；不经 wscript 启动器直接跑 exe 会把
+// 控制台窗口钉在用户桌面（关窗口=杀 agent）。钉住这套定义。
+func TestInstallPS1TaskDefinition(t *testing.T) {
+	ps := string(mustRead("install.ps1"))
+	for _, want := range []string{
+		"schtasks /create /tn towstrap /xml",
+		"<RestartOnFailure>",
+		"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+		"wscript.exe</Command>",
+		"towstrap-run.vbs",
+		"<UserId>",
+		"StopExisting",
+	} {
+		if !strings.Contains(ps, want) {
+			t.Errorf("install.ps1 任务定义缺 %q", want)
+		}
+	}
+}

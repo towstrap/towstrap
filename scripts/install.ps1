@@ -117,6 +117,10 @@ if (Get-Process towstrap -ErrorAction SilentlyContinue) {
     try { schtasks /query /tn towstrap 2>$null | Out-Null; $hasTask = ($LASTEXITCODE -eq 0) } catch {}
     if ($hasTask) {
         schtasks /end /tn towstrap 2>$null | Out-Null
+        # 任务动作是 wscript 启动器：/end 只收启动器，被拉起的 agent 会成
+        # 孤儿继续占着 exe——补一刀，不然下面的 Move-Item 撞文件锁。
+        Start-Sleep -Milliseconds 300
+        Get-Process towstrap -ErrorAction SilentlyContinue | Stop-Process -Force
         $wasTask = $true
         Write-Host ">> 计划任务 towstrap 已停（升级覆盖用）"
     } else {
@@ -127,6 +131,16 @@ if (Get-Process towstrap -ErrorAction SilentlyContinue) {
 }
 Move-Item -Force $tmpExe $exe
 Write-Host ">> 已装到 $exe"
+
+# 加进用户 PATH（新终端生效；当前会话也顺手补上）——不然装完第一件事
+# 「towstrap status」都找不到命令。
+$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+if (-not $userPath) { $userPath = '' }
+if (($userPath -split ';') -notcontains $Prefix) {
+    [Environment]::SetEnvironmentVariable('PATH', ($userPath.TrimEnd(';') + ';' + $Prefix), 'User')
+    Write-Host ">> $Prefix 已写进用户 PATH（新开的终端生效）"
+}
+if (($env:PATH -split ';') -notcontains $Prefix) { $env:PATH += ";$Prefix" }
 
 $tokenfile = Join-Path $Prefix "agent-token"
 if (-not (Test-Path $tokenfile)) {
@@ -167,19 +181,76 @@ if ($wasManual) {
 }
 
 # 常驻默认开：注册「登录自起」的计划任务（-NoService 退出）。
-# 已存在的不动（wasTask 分支已经把升级重启做了）；新建的现在有凭据就拉起，
-# 没凭据等 register 写完 token 后下次登录自然生效。
+# 任务定义用 XML 走 schtasks /xml——普通 /tr 开不了 RestartOnFailure
+# （崩溃 30 秒自拉起），也关不掉默认 3 天的 ExecutionTimeLimit；动作是
+# wscript 跑隐藏 vbs 启动器，不然控制台窗口会钉在用户桌面上，输出重进
+# ~/.towstrap/towstrap.log。已存在的任务也照写一遍（/f 覆盖）——旧装
+# 的 /tr 任务借此升级定义。
 if (-not $NoService) {
     $taskExists = $false
-    try { schtasks /query /tn towstrap 2>$null | Out-Null; $taskExists = ($LASTEXITCODE -eq 0) } catch {}
-    if (-not $taskExists) {
-        schtasks /create /tn towstrap /sc onlogon /rl limited /f /tr "`"$exe`" --config `"$agentyaml`"" | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            $taskExists = $true
-            Write-Host ">> 计划任务 towstrap 已注册（每次登录自起）"
-        } else {
-            Write-Host ">> 计划任务注册失败；手动补：schtasks /create /tn towstrap /sc onlogon /rl limited /tr `"`"$exe`" --config `"`"$agentyaml`"`""
-        }
+    $confdir = Join-Path $env:USERPROFILE ".towstrap"
+    New-Item -ItemType Directory -Force $confdir | Out-Null
+    $vbs = Join-Path $confdir "towstrap-run.vbs"
+    $logf = Join-Path $confdir "towstrap.log"
+    $runline = 'cmd /c ""' + $exe + '" "--config" "' + $agentyaml + '" >> "' + $logf + '" 2>&1"'
+    $vbsBody = @(
+        "' TowStrap agent 计划任务隐藏启动器（与 internal/service/taskxml.go 同逻辑）",
+        "Set sh = CreateObject(`"WScript.Shell`")",
+        "WScript.Quit sh.Run(`"" + ($runline -replace '"', '""') + "`", 0, True)"
+    ) -join "`r`n"
+    [IO.File]::WriteAllText($vbs, $vbsBody, (New-Object System.Text.UnicodeEncoding($false, $true)))
+    $who = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>$([System.Security.SecurityElement]::Escape($who))</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT30S</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Windows\System32\wscript.exe</Command>
+      <Arguments>"$([System.Security.SecurityElement]::Escape($vbs))"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+    $xmlFile = Join-Path $env:TEMP ("towstrap-task-" + [guid]::NewGuid().ToString("N") + ".xml")
+    [IO.File]::WriteAllText($xmlFile, $taskXml, (New-Object System.Text.UnicodeEncoding($false, $true)))
+    schtasks /create /tn towstrap /xml $xmlFile /f | Out-Null
+    $taskExists = ($LASTEXITCODE -eq 0)
+    Remove-Item $xmlFile -Force -ErrorAction SilentlyContinue
+    if ($taskExists) {
+        Write-Host ">> 计划任务 towstrap 已注册（登录自起、崩溃 30 秒自拉起，日志 $logf）"
+    } else {
+        Write-Host ">> 计划任务注册失败——可用 towstrap service install 补装，或手动跑：& `"$exe`" --config `"$agentyaml`""
     }
     if ($taskExists -and -not $wasTask -and ($haveToken -or (Test-Path $tokenfile))) {
         schtasks /run /tn towstrap 2>$null | Out-Null

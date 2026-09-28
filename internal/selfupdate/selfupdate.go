@@ -307,9 +307,12 @@ func restartManaged(product string, out io.Writer) {
 		}
 		fmt.Fprintf(out, ">> 若 %s 以服务在跑，重启服务后新版本生效\n", product)
 	case "windows":
-		// install.ps1 建议的自启形态是名为 towstrap 的计划任务。
+		// install.ps1 建议的自启形态是名为 towstrap 的计划任务。任务是
+		// wscript 启动器跑的：/end 只收启动器，agent 本体要 taskkill 补刀，
+		// 不然旧进程成了孤儿还跟新进程顶号。
 		if exec.Command("schtasks", "/query", "/tn", product).Run() == nil {
 			_ = exec.Command("schtasks", "/end", "/tn", product).Run()
+			_ = exec.Command("taskkill", "/f", "/im", product+".exe").Run()
 			if err := exec.Command("schtasks", "/run", "/tn", product).Run(); err == nil {
 				fmt.Fprintf(out, ">> 计划任务 %s 已重启，新版本生效\n", product)
 				return
