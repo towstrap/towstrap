@@ -470,19 +470,25 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build'            # 加�
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10.0.0.5'
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # 删机器，在线 agent 立刻断开
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # 看这台的 token
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine set build --agent-allow-ip 10.0.0.5'  # 改 agent 白名单（不动 token，机器不用重装）
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine set build --clear-agent-allow'        # 清空白名单回不限来源
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # 用法说明
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop'               # 自签 MCP token：默认授权本账号全部机器，打印 tsm- token 和一键接入命令
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop --machine office' # 只授权本账号的一台（office = alice+office）
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp list'                     # 列本账号自签的 MCP 客户端
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp set laptop --machine office'   # 改授权范围；--allow-ip / --clear-allow / --disable / --enable 同法
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp pending'                  # 列本账号机器上等批准的 MCP 请求
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp approve <编号> --remember' # 批准并让发起会话记住（deny 同法拒绝）
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp token laptop --regen'     # 换发 token（旧的立刻作废）
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp remove laptop'            # 删客户端，token 作废
 ssh -t alice@towstrap.vast-plan.com -p 7822 '@totp'                      # 自助绑/换绑 TOTP（出二维码输码确认）
 ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # 解绑 TOTP
+ssh alice@towstrap.vast-plan.com -p 7822 '@passwd'                       # 改自己的登录密码（旧密码再验一遍）
 ```
 
 TOTP 也可以直接在被管的机器上管——SSH 进机器后在 shell 里敲 `towstrap totp`（绑/换绑）或 `towstrap totp remove`（解绑）。效果和 `@totp` 完全一样，鉴权是本机 agent token + 账号密码（已绑的换绑/解绑还要当前动态码），对已经登进机器的人来说少记一种写法；`@totp` 留给手边没这台机器的场合（比如机器不在身边、从别的设备上收）。
 
-改密码同理：`towstrap passwd` 在机器上就能改（旧密码 + 绑了要动态码），不用管理员经手。
+改密码同理：`towstrap passwd` 在机器上就能改（旧密码 + 绑了要动态码），`@passwd` 留给手边没在线机器的场合——两条路都会顺手吊销没过期的一次性登录凭据（OAuth grant）。
 
 限制：
 
@@ -490,6 +496,7 @@ TOTP 也可以直接在被管的机器上管——SSH 进机器后在 shell 里�
 - **绑了 TOTP 的账号要再输一个新验证码**（登录时用过的那个不能重放）；连错 3 次断开，每次错记 `MGMT-DENY reason=totp` 并计入登录限速
 - 登录名带 `+机器名` 也行，按账号部分处理
 - `@mcp` 的授权范围锁死在本账号：`--machine` 写别人账号或 `'*'` 直接拒——这人本来就能 SSH 上自己的机器拿完整 shell，MCP token 只过策略引擎，不算放权。客户端在库里按 `账号.名字` 归属，跨账号互不可见
+- `@mcp pending`/`approve`/`deny` 也只看本账号机器的待批：`--all` 只处理自己的，不会批到别人头上
 - 换 token 不在这里——在 agent 机器上跑 `towstrap token refresh`（见下节）
 
 ---

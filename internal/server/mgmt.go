@@ -1,11 +1,13 @@
 package server
 
 // @ 开头的命令是服务器自己的管理命令，不转发给 agent：账号本人用密码
-// 登录（公钥不行）后，可以自助管理自己账号下的机器。目前只有 @machine。
+// 登录（公钥不行）后，可以自助管理自己账号下的机器、MCP 凭据、二因素、
+// 登录公钥和密码。目前有 @machine / @mcp / @totp / @sshkey / @passwd。
 
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -13,7 +15,9 @@ import (
 	glssh "github.com/gliderlabs/ssh"
 
 	"github.com/towstrap/towstrap/internal/accounts"
+	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/config"
+	"github.com/towstrap/towstrap/internal/mcpsrv"
 	"github.com/towstrap/towstrap/internal/qrcode"
 	"github.com/towstrap/towstrap/internal/totp"
 )
@@ -21,19 +25,27 @@ import (
 const mgmtUsage = `服务器管理命令（@ 开头的命令只由服务器执行，不发给 agent）：
   @machine list                                     列出账号下的机器（不含 token）
   @machine add <名字> [--agent-allow-ip 地址]...    加一台机器并打印 agent token
+  @machine set <名字> [--agent-allow-ip 地址]...    改这台机器的 agent 来源白名单
+                 [--clear-agent-allow]                （不清 token，机器不用重装）
   @machine remove <名字>                            删一台机器，在线 agent 立刻断开
   @machine token <名字>                             看这台机器的 token
                                                     （换 token 在 agent 机器上跑 towstrap token refresh）
   @machine help                                     本说明
   @mcp add <名字> [--machine 机器名]...               签一个 MCP token，默认授权本账号全部机器
   @mcp list                                         列本账号自签的 MCP 客户端
+  @mcp set <名字> [--machine 机器名]... [--allow-ip 地址]...
+           [--clear-allow] [--disable|--enable]       改自签客户端的授权/白名单/停启用
   @mcp token <名字> [--regen]                        看 / 换发这个客户端的 token
   @mcp remove <名字>                                 删客户端（token 作废）
+  @mcp pending                                      列本账号机器上等批准的 MCP 请求
+  @mcp approve <编号>|--all [--remember]              批准（--remember 发起会话内不再问）
+  @mcp deny <编号>|--all                             拒绝
   @totp                                             绑定/换绑 TOTP 二因素（出二维码，输码确认）
   @totp remove                                      解绑 TOTP
   @sshkey list                                      列已登记的登录公钥（SHA256 指纹 + 注释）
   @sshkey add [公钥行]                               登记一把登录公钥；不带参数则提示粘贴一行
   @sshkey remove <指纹|公钥行>                       删一把登录公钥
+  @passwd                                           改自己的 SSH 登录密码
 `
 
 // stringFlags 是可重复的字符串旗标（--agent-allow-ip 可以写多次）。
@@ -76,7 +88,7 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 	}
 
 	fields := strings.Fields(rawCmd)
-	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@mcp" && fields[0] != "@totp" && fields[0] != "@sshkey") {
+	if len(fields) == 0 || (fields[0] != "@machine" && fields[0] != "@mcp" && fields[0] != "@totp" && fields[0] != "@sshkey" && fields[0] != "@passwd") {
 		_, _ = fmt.Fprintln(sess.Stderr(), "未知管理命令，可用：@machine help")
 		_ = sess.Exit(2)
 		return
@@ -88,6 +100,8 @@ func (s *Server) handleMgmt(sess glssh.Session, account, rawCmd string) {
 		s.mgmtMCP(sess, account, fields[1:], from)
 	case "@sshkey":
 		s.mgmtSSHKey(sess, account, fields[1:], from)
+	case "@passwd":
+		s.mgmtPasswd(sess, account, from)
 	default:
 		s.mgmtMachine(sess, account, fields[1:], from)
 	}
@@ -330,6 +344,45 @@ func (s *Server) mgmtMachine(sess glssh.Session, account string, args []string, 
 		s.revokeStaleAgents() // 在线的那台马上断开，不等 30 秒巡检
 		_, _ = fmt.Fprintf(sess, "机器 %s 已删除\n", id)
 		_ = sess.Exit(0)
+	case "set":
+		fs := flag.NewFlagSet("@machine set", flag.ContinueOnError)
+		fs.SetOutput(sess.Stderr())
+		var allowIPs stringFlags
+		fs.Var(&allowIPs, "agent-allow-ip", "这台机器的 agent 只允许这些来源 IP 接入（可重复）")
+		clearAgentAllow := fs.Bool("clear-agent-allow", false, "清空 agent 来源白名单（回到不限来源）")
+		pos, err := mgmtArgs(fs, args[1:])
+		if err != nil {
+			_ = sess.Exit(2)
+			return
+		}
+		if len(pos) != 1 {
+			usage(2)
+			return
+		}
+		if *clearAgentAllow && len(allowIPs) > 0 {
+			fail(fmt.Errorf("--agent-allow-ip 和 --clear-agent-allow 二选一"))
+			return
+		}
+		if !*clearAgentAllow && len(allowIPs) == 0 {
+			fail(fmt.Errorf("没给要改的内容（--agent-allow-ip / --clear-agent-allow）"))
+			return
+		}
+		id := account + "+" + pos[0]
+		if _, ok := s.cfg.Users.GetMachine(account, pos[0]); !ok {
+			fail(fmt.Errorf("机器 %s 不存在（@machine list 看现有的）", id))
+			return
+		}
+		if err := s.cfg.Users.SetMachineAgentAllow(account, pos[0], allowIPs); err != nil {
+			fail(err)
+			return
+		}
+		s.audit.Log("MACHINE-SET", "user", sess.User(), "machine", id, "agent-allow-ip", strings.Join(allowIPs, ","), "from", from)
+		if *clearAgentAllow {
+			_, _ = fmt.Fprintf(sess, "机器 %s 的 agent 来源白名单已清空（不限来源）\n", id)
+		} else {
+			_, _ = fmt.Fprintf(sess, "机器 %s 的 agent 来源白名单已更新：%s\n", id, strings.Join(allowIPs, ", "))
+		}
+		_ = sess.Exit(0)
 	case "token":
 		fs := flag.NewFlagSet("@machine token", flag.ContinueOnError)
 		fs.SetOutput(sess.Stderr())
@@ -523,7 +576,275 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 		s.audit.Log("MCP-REMOVE", "user", sess.User(), "client", full, "from", from)
 		_, _ = fmt.Fprintf(sess, "MCP 客户端 %s 已删除，token 作废\n", full)
 		_ = sess.Exit(0)
+	case "set":
+		fs := flag.NewFlagSet("@mcp set", flag.ContinueOnError)
+		fs.SetOutput(sess.Stderr())
+		var machines, allowIPs stringFlags
+		fs.Var(&machines, "machine", "授权哪台机器（可重复）；给了就是整体替换授权列表")
+		fs.Var(&allowIPs, "allow-ip", "这个 token 只允许这些来源 IP 使用（可重复）")
+		clearAllow := fs.Bool("clear-allow", false, "清空来源白名单（回到不限来源）")
+		disable := fs.Bool("disable", false, "停用（token 立刻不能用，配置保留）")
+		enable := fs.Bool("enable", false, "重新启用")
+		pos, err := mgmtArgs(fs, args[1:])
+		if err != nil {
+			_ = sess.Exit(2)
+			return
+		}
+		if len(pos) != 1 {
+			usage(2)
+			return
+		}
+		if *clearAllow && len(allowIPs) > 0 {
+			fail(fmt.Errorf("--allow-ip 和 --clear-allow 二选一"))
+			return
+		}
+		if *disable && *enable {
+			fail(fmt.Errorf("--disable 和 --enable 二选一"))
+			return
+		}
+		full := mcpSelfName(account, pos[0])
+		if _, ok := get(pos[0]); !ok {
+			fail(fmt.Errorf("MCP 客户端 %s 不存在（@mcp list 看现有的）", full))
+			return
+		}
+		var machinesP *[]string
+		if len(machines) > 0 {
+			grants, err := s.mcpSelfMachines(account, machines)
+			if err != nil {
+				fail(err)
+				return
+			}
+			machinesP = &grants
+		}
+		var allowP *[]string
+		switch {
+		case *clearAllow:
+			empty := []string{}
+			allowP = &empty
+		case len(allowIPs) > 0:
+			ips := []string(allowIPs)
+			allowP = &ips
+		}
+		var disP *bool
+		if *disable || *enable {
+			v := *disable
+			disP = &v
+		}
+		if machinesP == nil && allowP == nil && disP == nil {
+			fail(fmt.Errorf("没给要改的内容（--machine / --allow-ip / --clear-allow / --disable / --enable）"))
+			return
+		}
+		if err := s.cfg.Users.MCPSet(full, machinesP, allowP, disP); err != nil {
+			fail(err)
+			return
+		}
+		s.audit.Log("MCP-SET", "user", sess.User(), "client", full, "from", from)
+		_, _ = fmt.Fprintf(sess, "MCP 客户端 %s 已更新\n", full)
+		_ = sess.Exit(0)
+	case "pending", "approve", "deny":
+		s.mgmtMCPApprove(sess, account, args[0], args[1:], from)
 	default:
 		usage(2)
 	}
+}
+
+// mcpApprovalsDir 是服务器端 MCP 批准目录；MCP 没开或目录没配好返回空串。
+func (s *Server) mcpApprovalsDir() string {
+	if s.cfg.MCP == nil {
+		return ""
+	}
+	return s.cfg.MCP.ApprovalsDir
+}
+
+// ownPending 列出批准目录里属于本账号机器的请求（pf.Machine 的账号部分
+// 和登录账号相等才算——别人的待批连看都看不见，也就批不着）。
+func (s *Server) ownPending(account, dir string) ([]mcpsrv.PendingFile, error) {
+	list, err := mcpsrv.Pending(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []mcpsrv.PendingFile
+	for _, p := range list {
+		if u, _ := accounts.SplitMachineID(p.Machine); u == account {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// mgmtMCPApprove 是 SSH 里的 MCP 待批自助：批准本该由这台机器的主人做，
+// 不该事事找管理员。范围锁死在本账号待批项上——approve --all 也只批
+// 自己机器的，不会顺手批了别人的请求。
+func (s *Server) mgmtMCPApprove(sess glssh.Session, account, verb string, args []string, from string) {
+	fail := func(err error) {
+		_, _ = fmt.Fprintln(sess.Stderr(), err)
+		_ = sess.Exit(1)
+	}
+	dir := s.mcpApprovalsDir()
+	if dir == "" {
+		fail(fmt.Errorf("服务器没开 MCP（server.yaml 的 mcp.enabled），没有批准目录"))
+		return
+	}
+	if verb == "pending" {
+		list, err := s.ownPending(account, dir)
+		if err != nil {
+			fail(fmt.Errorf("读批准目录失败: %w", err))
+			return
+		}
+		if len(list) == 0 {
+			_, _ = fmt.Fprintln(sess, "本账号没有等待批准的 MCP 请求")
+			_ = sess.Exit(0)
+			return
+		}
+		for _, p := range list {
+			// Machine/Kind/Detail/Preview 是 LLM 给的原文——打进终端前
+			// 过一遍清洗，不然一条带转义序列的「命令」能画假提示清屏。
+			_, _ = fmt.Fprintf(sess, "%s  %s  %-8s  %s  （等了 %s）\n",
+				p.ID, auditlog.Clean(p.Machine), auditlog.Clean(p.Kind), auditlog.Clean(p.Detail),
+				time.Since(p.Created).Round(time.Second))
+			if p.Preview != "" {
+				_, _ = fmt.Fprintf(sess, "    ↳ %s\n", auditlog.Clean(p.Preview))
+			}
+		}
+		_, _ = fmt.Fprintln(sess, "\n批准：@mcp approve [--remember] <编号>|--all；拒绝：@mcp deny <编号>|--all")
+		_ = sess.Exit(0)
+		return
+	}
+	fs := flag.NewFlagSet("@mcp "+verb, flag.ContinueOnError)
+	fs.SetOutput(sess.Stderr())
+	all := fs.Bool("all", false, "处理本账号的全部待批请求")
+	rem := fs.Bool("remember", false, "批准后让发起会话记住这条命令（本会话内不再问）")
+	pos, err := mgmtArgs(fs, args)
+	if err != nil {
+		_ = sess.Exit(2)
+		return
+	}
+	if *all && len(pos) > 0 || !*all && len(pos) != 1 {
+		_, _ = fmt.Fprintf(sess.Stderr(), "用法：@mcp %s <编号>|--all\n", verb)
+		_ = sess.Exit(2)
+		return
+	}
+	list, err := s.ownPending(account, dir)
+	if err != nil {
+		fail(fmt.Errorf("读批准目录失败: %w", err))
+		return
+	}
+	ownIDs := map[string]bool{}
+	for _, p := range list {
+		ownIDs[p.ID] = true
+	}
+	var ids []string
+	if *all {
+		for _, p := range list {
+			ids = append(ids, p.ID)
+		}
+		if len(ids) == 0 {
+			_, _ = fmt.Fprintln(sess, "本账号没有等待批准的 MCP 请求")
+			_ = sess.Exit(0)
+			return
+		}
+	} else {
+		if !ownIDs[pos[0]] {
+			fail(fmt.Errorf("待批请求 %s 不存在或不属于本账号（@mcp pending 看现有的）", pos[0]))
+			return
+		}
+		ids = []string{pos[0]}
+	}
+	// 逐 id 落批准文件——不用 settle 的 all=true：那会把目录里别人账号
+	// 的待批也一起批了，越界。
+	for _, id := range ids {
+		var err error
+		if verb == "approve" {
+			_, err = mcpsrv.ApprovePending(dir, id, false, *rem)
+		} else {
+			_, err = mcpsrv.DenyPending(dir, id, false)
+		}
+		if err != nil {
+			fail(fmt.Errorf("处理 %s 失败: %w", id, err))
+			return
+		}
+	}
+	ev := "MCP-DENY"
+	if verb == "approve" {
+		ev = "MCP-APPROVE"
+	}
+	s.audit.Log(ev, "user", sess.User(), "ids", strings.Join(ids, ","), "from", from)
+	verbCN := "已拒绝"
+	if verb == "approve" {
+		verbCN = "已批准"
+	}
+	_, _ = fmt.Fprintf(sess, "%s %d 条\n", verbCN, len(ids))
+	_ = sess.Exit(0)
+}
+
+// mgmtPasswd 是 SSH 里的自助改密码：手里没在线 agent 机器（比如只有
+// 手机登着）也能改。会话本身是密码+TOTP 登进来的，但密码再验一遍旧值
+// ——防止别人趁你不在摸进开着的终端改密。验证走登录同一个限速器。
+func (s *Server) mgmtPasswd(sess glssh.Session, account, from string) {
+	fail := func(err error) {
+		_, _ = fmt.Fprintln(sess.Stderr(), err)
+		_ = sess.Exit(1)
+	}
+	ip := hostOnly(sess.RemoteAddr().String())
+	if !s.guard.allowed(account, ip) {
+		s.audit.Log("MGMT-DENY", "user", sess.User(), "from", from, "reason", "locked")
+		_, _ = fmt.Fprintln(sess.Stderr(), "失败次数过多，暂时锁定，稍后再试")
+		_ = sess.Exit(1)
+		return
+	}
+	_, _ = fmt.Fprint(sess, "当前密码: ")
+	oldOK := false
+	for i := 0; i < 3; i++ {
+		line, err := readLine(sess)
+		if err != nil {
+			_ = sess.Exit(1)
+			return
+		}
+		if s.cfg.Users.Verify(account, strings.TrimSpace(line)) {
+			s.guard.pass(account, ip)
+			oldOK = true
+			break
+		}
+		s.guard.fail(account, ip)
+		s.audit.Log("MGMT-DENY", "user", sess.User(), "from", from, "reason", "passwd-oldpw")
+		if i < 2 {
+			_, _ = fmt.Fprint(sess, "\n密码不对，再试: ")
+		} else {
+			_, _ = fmt.Fprint(sess, "\n")
+		}
+	}
+	if !oldOK {
+		_, _ = fmt.Fprintln(sess.Stderr(), "密码错误次数过多")
+		_ = sess.Exit(1)
+		return
+	}
+	_, _ = fmt.Fprint(sess, "新密码: ")
+	p1, err := readLine(sess)
+	if err != nil {
+		_ = sess.Exit(1)
+		return
+	}
+	_, _ = fmt.Fprint(sess, "再输一次新密码: ")
+	p2, err := readLine(sess)
+	if err != nil {
+		_ = sess.Exit(1)
+		return
+	}
+	p1, p2 = strings.TrimSpace(p1), strings.TrimSpace(p2)
+	if p1 != p2 {
+		fail(fmt.Errorf("两次输入不一致"))
+		return
+	}
+	if err := s.cfg.Users.SetPassword(account, p1); err != nil {
+		fail(err)
+		return
+	}
+	// 和 /passwd 一样的收尾：旧密码可能已经被拿去换过 OAuth grant，
+	// 改密码顺手把没过期的一次性凭据全吊销。
+	if err := s.cfg.Users.RevokeSSHGrants(account); err != nil {
+		slog.Warn("吊销 SSH 凭据失败", "account", account, "err", err)
+	}
+	s.audit.Log("PASSWD", "account", account, "via", "ssh", "from", from)
+	_, _ = fmt.Fprintln(sess, "密码已更新——没过期的一次性登录凭据也已吊销")
+	_ = sess.Exit(0)
 }

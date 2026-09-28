@@ -246,7 +246,7 @@ Fingerprint boundaries, honestly: the raw hardware ID only ever participates in 
 towstrap passwd          # prompts once for the old password, twice for the new; TOTP-bound accounts also need a current 6-digit code
 ```
 
-Auth is the machine's agent token + the old password (the token proves this machine is enrolled, the old password proves it's you) — the same chain as the `totp` subcommand, so agent IP allowlists, lockout, and `oauth_only` all apply. The change is account-wide: SSH logins to every machine under the account use the new password. In scripted mode `--password-stdin` reads two stdin lines (old, new) and `--totp` supplies the current code. If the old password is lost, only an admin can reset it: `towstrap-server user set NAME --password NEW`.
+Auth is the machine's agent token + the old password (the token proves this machine is enrolled, the old password proves it's you) — the same chain as the `totp` subcommand, so agent IP allowlists, lockout, and `oauth_only` all apply. The change is account-wide: SSH logins to every machine under the account use the new password. In scripted mode `--password-stdin` reads two stdin lines (old, new) and `--totp` supplies the current code. With no agent machine at hand there's also `@passwd` over SSH (section 7). Both paths revoke unexpired one-time login grants (OAuth grants). If the old password is lost, only an admin can reset it: `towstrap-server user set NAME --password NEW`.
 
 ### Four ways to supply the token (in order of preference)
 
@@ -471,14 +471,20 @@ ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build'            # add a
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine add build --agent-allow-ip 10.0.0.5'
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine remove build'         # delete; a connected agent drops immediately
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine token build'          # show this machine's token
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine set build --agent-allow-ip 10.0.0.5'  # update the agent allowlist (token untouched, no reinstall)
+ssh alice@towstrap.vast-plan.com -p 7822 '@machine set build --clear-agent-allow'        # clear it back to unrestricted
 ssh alice@towstrap.vast-plan.com -p 7822 '@machine help'                 # usage
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop'               # self-issue an MCP token: grants all of your machines by default, prints tsm- token + one-line install
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp add laptop --machine office' # grant one machine only (office = alice+office)
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp list'                     # list your self-issued MCP clients
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp set laptop --machine office'   # change grants; --allow-ip / --clear-allow / --disable / --enable work the same way
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp pending'                  # list MCP requests awaiting approval on your machines
+ssh alice@towstrap.vast-plan.com -p 7822 '@mcp approve <id> --remember'  # approve and remember for the session (deny rejects the same way)
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp token laptop --regen'     # rotate the token (old one dies immediately)
 ssh alice@towstrap.vast-plan.com -p 7822 '@mcp remove laptop'            # delete client, revoking its token
 ssh -t alice@towstrap.vast-plan.com -p 7822 '@totp'                      # bind/rebind TOTP yourself (QR + code confirm)
 ssh alice@towstrap.vast-plan.com -p 7822 '@totp remove'                  # unbind TOTP
+ssh alice@towstrap.vast-plan.com -p 7822 '@passwd'                       # change your own login password (re-verifies the old one)
 ```
 
 TOTP can also be managed right on the machine — after SSHing in, run `towstrap totp` (bind/rebind) or `towstrap totp remove` (unbind) in the shell. Same effect as `@totp`, authenticated with the local agent token + account password (rebind/remove on a bound account also asks for the current code). `@totp` is for when the machine isn't at hand.
@@ -489,6 +495,7 @@ Restrictions:
 - **TOTP-bound accounts must enter a fresh code** (the one used at login can't be replayed); 3 wrong codes disconnect, each logged as `MGMT-DENY reason=totp` and counted by the login rate limiter
 - A `+machine` suffix in the login name is fine — it's handled by the account part
 - `@mcp` grants are pinned to your own account: `--machine` rejects other accounts and `'*'` — you can already SSH into your machines for a full shell, and an MCP token only goes through the policy engine, so this isn't a privilege grant. Clients are namespaced as `account.name`, invisible across accounts
+- `@mcp pending`/`approve`/`deny` only see pending requests targeting your own machines — `--all` settles yours alone, never other accounts'
 - Token rotation doesn't live here — run `towstrap token refresh` on the machine (next section)
 
 ---

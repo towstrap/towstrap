@@ -1,6 +1,8 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -100,5 +102,38 @@ func TestMCPSelfName(t *testing.T) {
 	}
 	if _, ok := store.MCPGet(mcpSelfName("alice", "bob.laptop")); ok {
 		t.Fatal("alice.bob.laptop 不该存在")
+	}
+}
+
+// ownPending 只回本账号机器的待批请求——approve --all 也只批这些，别人
+// 账号的待批从用户视角不存在。
+func TestOwnPending(t *testing.T) {
+	dir := t.TempDir()
+	write := func(id, machine string) {
+		body := `{"id":"` + id + `","machine":"` + machine + `","kind":"command","detail":"ls","created":"2026-01-01T00:00:00Z"}`
+		if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("p1", "alice+office")
+	write("p2", "bob+laptop")
+	write("p3", "alice+build")
+	write("p4", "alice") // 账号级写法也算本账号
+
+	s := &Server{cfg: Config{Users: testStore(t)}}
+	got, err := s.ownPending("alice", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	want := []string{"p1", "p3", "p4"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ownPending(alice) = %v, want %v", ids, want)
+	}
+	if list, _ := s.ownPending("carol", dir); len(list) != 0 {
+		t.Fatalf("ownPending(carol) 应为空, got %v", list)
 	}
 }

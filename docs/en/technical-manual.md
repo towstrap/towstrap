@@ -200,7 +200,7 @@ Rotate (two-phase):
 ## 7. SSH session handling
 
 - **Machine selection**: a `+machine` suffix names the machine; without it, a single-machine account lands on it, a multi-machine account errors with the list (incl. online status), zero machines errors. Missing/offline/stale-credential cases each get a specific message + `SESSION-DENY` (reason=no-machine/ambiguous/offline/credential)
-- **`@` prefix** routes to `handleMgmt` instead of the agent: public-key sessions are refused (reason=pubkey), TOTP accounts must supply a fresh code (3 attempts, failures count against the limiter). Commands: `@machine list/add/remove/token/help`, `@mcp add/list/token/remove` (self-issued MCP tokens — `--machine` pinned to the caller's account, clients namespaced as `account.name`), `@totp`/`@totp remove`, `@sshkey list/add/remove`
+- **`@` prefix** routes to `handleMgmt` instead of the agent: public-key sessions are refused (reason=pubkey), TOTP accounts must supply a fresh code (3 attempts, failures count against the limiter). Commands: `@machine list/add/set/remove/token/help` (set edits the agent allowlist without touching the token), `@mcp add/list/set/token/remove/pending/approve/deny` (self-issued MCP tokens — `--machine` pinned to the caller's account, clients namespaced as `account.name`; pending/approve/deny only touch pendings on own-account machines), `@totp`/`@totp remove`, `@sshkey list/add/remove`, `@passwd` (change own password — old password re-verified, unexpired OAuth grants revoked)
 - **PTY vs exec**: decided by `sess.Pty()`; PTY goes through a real pty (`creack/pty` on unix; on Windows a hand-rolled ConPTY wrapper over `x/sys/windows` — two pipes + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`; window size + `resize` relayed), exec runs `shell -c` with three pipes (stderr split via `s="e"`)
 - **stdin/EOF**: client stdin close → server sends `eof` → exec sessions forward it to the subprocess (`cat` finishes on EOF); PTY sessions ignore it (Ctrl-D is just a byte in the stream)
 - **Exit codes**: agent-side `exitCode()`: normal exit → ExitCode; signal kill → 128+signal; never-started → 255. Server-side `session.code` defaults to 255 and is only overwritten by the agent's `close.code` — a dropped agent never reads as 0. MCP `run_command` reports `timed_out=true` + `exit_code=-1` on SIGKILL timeout
@@ -448,8 +448,10 @@ Format: `<RFC3339 time> <event> k=v`; `cmd` truncated past 512 bytes; control ch
 | `SESSION-END` | user from id code | session closed (exit code) |
 | `SESSION-DENY` | user from reason | session refused |
 | `MGMT-DENY` | user from reason(pubkey/locked/totp) | `@` command refused |
-| `MACHINE-ADD` `MACHINE-REMOVE` `MACHINE-TOKEN` | user machine from | SSH self-service |
-| `MCP-ADD` `MCP-REMOVE` `MCP-TOKEN` | user client [machines\|op] from | SSH `@mcp` self-issuance (add carries machines, token carries op=show/regen) |
+| `MACHINE-ADD` `MACHINE-REMOVE` `MACHINE-TOKEN` `MACHINE-SET` | user machine [agent-allow-ip] from | SSH self-service |
+| `MCP-ADD` `MCP-REMOVE` `MCP-TOKEN` `MCP-SET` | user client [machines\|op] from | SSH `@mcp` self-issuance (add carries machines, token carries op=show/regen) |
+| `MCP-APPROVE` `MCP-DENY` | user ids from | SSH `@mcp approve/deny` (own-account pendings only) |
+| `PASSWD` | account [machine\|via=ssh] from/ip | password change (SSH `@passwd` or `/passwd` endpoint) |
 | `TOTP-ENROLL` `TOTP-REMOVE` `SSHKEY-ADD` `SSHKEY-REMOVE` | user from [fp\|key] | `@totp`/`@sshkey` self-service |
 | `MACHINE-ADD-ADMIN` `MACHINE-TOKEN-ADMIN` `MACHINE-TOKEN-REGEN-ADMIN` | user machine | CLI `--admin` skipped owner confirmation (written by the CLI process) |
 | `TOKEN-REFRESH` | user machine from(agent:caller@ip) status | one line per rotated machine |

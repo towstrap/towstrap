@@ -200,7 +200,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 ## 7. SSH 会话处理
 
 - **选机器**：登录名带 `+机器名` 指名；不带时账号恰有一台机器落它，多台报错列出名单（含在线状态），零台报错。机器不存在/不在线/凭据失效都有明确报错 + `SESSION-DENY`（reason=no-machine/ambiguous/offline/credential）
-- **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速）。命令有 `@machine list/add/remove/token/help`、`@mcp add/list/token/remove`（自签 MCP token，`--machine` 锁死本账号，客户端按 `账号.名字` 前缀归属）、`@totp`/`@totp remove`、`@sshkey list/add/remove`
+- **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速）。命令有 `@machine list/add/set/remove/token/help`（set 改 agent 白名单不动 token）、`@mcp add/list/set/token/remove/pending/approve/deny`（自签 MCP token，`--machine` 锁死本账号，客户端按 `账号.名字` 前缀归属；pending/approve/deny 只碰本账号机器的待批）、`@totp`/`@totp remove`、`@sshkey list/add/remove`、`@passwd`（改自己密码，旧密码重验 + 吊销未过期 OAuth grant）
 - **PTY vs exec**：`sess.Pty()` 判定；PTY 走伪终端（unix 用 `creack/pty`，Windows 用 `x/sys/windows` 直写的 ConPTY——两条管道 + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`，窗口尺寸透传 + `resize`），exec 走 `shell -c` + 三根管道（stdout/stderr 分流用 `s="e"` 标记）
 - **stdin/EOF**：客户端关 stdin → 服务器发 `eof` → exec 会话把它传给子进程（`cat` 靠 EOF 收尾）；PTY 会话忽略（Ctrl-D 本来就是数据流里的字符）
 - **退出码**：agent 侧 `exitCode()`：正常退出取 ExitCode；信号杀取 128+信号；进程没起来等错误取 255。服务器侧 `session.code` 默认 255，收到 agent 的 `close.code` 才覆盖——agent 掉线不会被记成 0。MCP 侧 `run_command` 超时被 SIGKILL 时 `timed_out=true` 且 `exit_code=-1`
@@ -448,8 +448,10 @@ HTTP 口固定参数：`ReadHeaderTimeout 10s`、`IdleTimeout 2m`、`MaxHeaderBy
 | `SESSION-END` | user from id code | 会话结束（退出码） |
 | `SESSION-DENY` | user from reason | 会话被拒 |
 | `MGMT-DENY` | user from reason(pubkey/locked/totp) | `@` 命令被拒 |
-| `MACHINE-ADD` `MACHINE-REMOVE` `MACHINE-TOKEN` | user machine from | SSH 自助管理 |
-| `MCP-ADD` `MCP-REMOVE` `MCP-TOKEN` | user client [machines\|op] from | SSH `@mcp` 自签管理（add 带 machines、token 带 op=show/regen） |
+| `MACHINE-ADD` `MACHINE-REMOVE` `MACHINE-TOKEN` `MACHINE-SET` | user machine [agent-allow-ip] from | SSH 自助管理 |
+| `MCP-ADD` `MCP-REMOVE` `MCP-TOKEN` `MCP-SET` | user client [machines\|op] from | SSH `@mcp` 自签管理（add 带 machines、token 带 op=show/regen） |
+| `MCP-APPROVE` `MCP-DENY` | user ids from | SSH `@mcp approve/deny`（只本账号机器的待批） |
+| `PASSWD` | account [machine\|via=ssh] from/ip | 改密码（SSH `@passwd` 或 `/passwd` 接口） |
 | `TOTP-ENROLL` `TOTP-REMOVE` `SSHKEY-ADD` `SSHKEY-REMOVE` | user from [fp\|key] | `@totp`/`@sshkey` 自助 |
 | `MACHINE-ADD-ADMIN` `MACHINE-TOKEN-ADMIN` `MACHINE-TOKEN-REGEN-ADMIN` | user machine | CLI `--admin` 跳过本人确认（由 CLI 进程写） |
 | `TOKEN-REFRESH` | user machine from(agent:调用者@ip) status | 每台一条换发结果 |
