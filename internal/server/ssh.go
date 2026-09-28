@@ -492,6 +492,17 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		_ = sess.Exit(1)
 		return
 	}
+	// 等 agent 回握手：它起不来（ConPTY 不可用、shell 路径坏之类）会回
+	// TypeErr，以前这里不等——err 只落进 s.err 没人写到终端，用户就对着
+	// 一片空白的会话猜。失败也要补 close：ok 可能只是迟到，不杀会变孤儿。
+	if err := waitReady(sh, 15*time.Second); err != nil {
+		s.audit.Log("SESSION-DENY", "user", username, "from", from, "reason", "ready")
+		_, _ = sess.Write([]byte("接入机器失败: " + err.Error() + "\n"))
+		_ = sess.Exit(1)
+		_ = agent.send(proto.Msg{T: proto.TypeClose, ID: sh.id})
+		agent.removeSession(sh.id)
+		return
+	}
 	s.audit.Log("SESSION-START", "user", username, "from", from, "id", sh.id, "mode", mode,
 		"machine", machineID, "cmd", auditCmd(cmd))
 	defer func() {

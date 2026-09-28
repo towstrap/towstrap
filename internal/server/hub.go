@@ -342,6 +342,11 @@ func waitReady(s *session, d time.Duration) error {
 	case err := <-s.ready:
 		return err
 	case <-s.closed:
+		// TypeErr 先入 ready 再 removeSession：两边都就绪时 select 随机
+		// 选，兜底读 errText 拿回真正原因。
+		if e := s.errText(); e != "" {
+			return fmt.Errorf("%s", e)
+		}
 		return fmt.Errorf("会话已关闭")
 	case <-time.After(d):
 		return fmt.Errorf("等待 agent 接通超时")

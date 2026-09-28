@@ -634,11 +634,20 @@ func (a *agent) openShell(msg proto.Msg) {
 }
 
 // openPty PTY 模式：交互终端，或客户端带命令的 PTY 会话（ssh -t host cmd）。
-// 输入输出走伪终端，退出码随 close 带回。
+// 输入输出走伪终端，退出码随 close 带回。老 Windows（<Win10 1809）没有
+// ConPTY、或者伪终端起不来时降级成 exec——命令照跑没有提示符，给终端
+// 先打一行说明，不然对着空白会话没法排查。
 func (a *agent) openPty(msg proto.Msg) {
 	p, err := startPty(a.cfg.Shell, msg.Cmd, msg.Cwd, uint32(msg.Cols), uint32(msg.Rows))
 	if err != nil {
-		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+		slog.Warn("伪终端起不来，降级成无终端会话", "err", err)
+		if a.presence != nil {
+			a.presence.audit.Log("PTY-FALLBACK", "id", msg.ID, "err", err.Error())
+		}
+		a.openExec(msg)
+		_ = a.send(proto.EncodeData(msg.ID, []byte(
+			"[towstrap] 这台机器起不了伪终端（"+err.Error()+
+				"），已降级为无终端模式——命令照跑，但没有提示符和行编辑\r\n")))
 		return
 	}
 	e := &sessionEntry{proc: p, w: p, pty: true, in: make(chan inputItem, sessionInputLen), done: make(chan struct{})}
@@ -723,13 +732,19 @@ func (a *agent) openExec(msg proto.Msg) {
 	}
 	cmd.Stdout = &streamWriter{a: a, id: msg.ID}
 	cmd.Stderr = &streamWriter{a: a, id: msg.ID, stream: "e"}
+	openFail := func(err error) {
+		if a.presence != nil {
+			a.presence.audit.Log("OPEN-FAIL", "id", msg.ID, "err", err.Error())
+		}
+		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+		openFail(err)
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		_ = a.send(proto.Msg{T: proto.TypeErr, ID: msg.ID, Err: err.Error()})
+		openFail(err)
 		return
 	}
 	e := &sessionEntry{proc: &execProc{cmd: cmd, stdin: stdin}, w: stdin, in: make(chan inputItem, sessionInputLen), done: make(chan struct{})}
