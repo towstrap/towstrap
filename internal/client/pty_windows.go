@@ -76,8 +76,12 @@ func startPtyEnv(shell, command, cwd string, cols, rows uint32, extraEnv []strin
 		return fail(err)
 	}
 	defer al.Delete()
+	// PSEUDOCONSOLE 属性的 lpValue 是 HPCON 句柄值本身，不是句柄的地址——
+	// 传 &hpc 内核会把这个栈地址当伪控制台句柄，CreateProcess 不校验放行，
+	// 子进程起来发现控制台无效立刻退出，表现就是会话秒开秒断。
+	hpcPtr := *(*unsafe.Pointer)(unsafe.Pointer(&hpc))
 	if err := al.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		unsafe.Pointer(&hpc), unsafe.Sizeof(hpc)); err != nil {
+		hpcPtr, unsafe.Sizeof(hpc)); err != nil {
 		return fail(err)
 	}
 	si := new(windows.StartupInfoEx)
