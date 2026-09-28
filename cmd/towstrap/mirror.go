@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -209,7 +208,7 @@ func runMirror(args []string) int {
 	} else {
 		fmt.Fprintf(os.Stderr, "[towstrap] 已接入镜像 %q（命令被忽略则属正常——镜像里跑的还是原来那个）\n", name)
 	}
-	fmt.Fprintf(os.Stderr, "[towstrap] Ctrl-\\ 脱离（进程继续跑）；镜像内程序退出即结束\n")
+	fmt.Fprintf(os.Stderr, "[towstrap] 脱离：Ctrl-\\ 或行首 ~.（进程继续跑）；镜像内程序退出即结束\n")
 
 	old, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
@@ -280,31 +279,67 @@ const (
 	relayLost                     // 连接断开或 agent 回了错误
 )
 
-// relayMirror 接入后的双向搬运：in 的按键送进镜像（扫到 Ctrl-\ 就脱离，
-// 它前面同一批的按键照样送出），镜像的输出写到 out 并喂给 alt 跟踪备用
-// 屏幕。返回退出码（relayExited 时有意义）、结束方式和断开原因。
+// relayMirror 接入后的双向搬运：in 的按键送进镜像，镜像的输出写到 out 并
+// 喂给 alt 跟踪备用屏幕。两种脱离：Ctrl-\（0x1c，任何位置）和 ssh 惯例的
+// 行首 ~.——后者是兜底的：Ctrl-\ 的字节可能被外层终端或 ConPTY 吃掉送不
+// 到，~. 是纯可打印字符谁也拦不住（~~ 在行首表示字面 ~，同 ssh）。
+// 返回退出码（relayExited 时有意义）、结束方式和断开原因。
 func relayMirror(dec *json.Decoder, send func(mirrorMsg) error, in io.Reader, out io.Writer, alt *client.AltScreen) (int, relayEnd, error) {
 	detached := make(chan struct{})
 	go func() {
+		detach := func() {
+			// 先标记再发：服务端收到 detach 就断连，读循环看到断开时
+			// 这边一定已经是「脱离」状态
+			close(detached)
+			_ = send(mirrorMsg{Op: "detach"})
+		}
 		buf := make([]byte, 4096)
+		run := make([]byte, 0, 4096) // 攒一攒一起发，少打几行
+		lineStart := true            // 行首：开局或上一个字节是回车/换行
+		tilde := false               // 行首 ~ 已见，等下一字节判 ~.
 		for {
-			n, err := in.Read(buf)
-			if i := bytes.IndexByte(buf[:n], detachKey); i >= 0 {
-				if i > 0 {
-					_ = send(mirrorMsg{D: base64.StdEncoding.EncodeToString(buf[:i])})
+			n, rerr := in.Read(buf)
+			for _, c := range buf[:n] {
+				if tilde {
+					tilde = false
+					if c == '.' { // ~.：脱离，~ 和 . 都不进镜像
+						if len(run) > 0 && send(mirrorMsg{D: base64.StdEncoding.EncodeToString(run)}) != nil {
+							return
+						}
+						detach()
+						return
+					}
+					if c == '~' { // ~~：行首发一个字面 ~
+						run = append(run, '~')
+						lineStart = false
+						continue
+					}
+					run = append(run, '~') // 挂起的 ~ 落回，按普通字节处理 c
 				}
-				// 先标记再发：服务端收到 detach 就断连，读循环看到断开时
-				// 这边一定已经是「脱离」状态
-				close(detached)
-				_ = send(mirrorMsg{Op: "detach"})
-				return
-			}
-			if n > 0 {
-				if send(mirrorMsg{D: base64.StdEncoding.EncodeToString(buf[:n])}) != nil {
+				if c == detachKey {
+					if len(run) > 0 && send(mirrorMsg{D: base64.StdEncoding.EncodeToString(run)}) != nil {
+						return
+					}
+					detach()
 					return
 				}
+				if lineStart && c == '~' {
+					tilde = true
+					continue
+				}
+				lineStart = c == '\r' || c == '\n'
+				run = append(run, c)
 			}
-			if err != nil {
+			if len(run) > 0 {
+				if send(mirrorMsg{D: base64.StdEncoding.EncodeToString(run)}) != nil {
+					return
+				}
+				run = run[:0]
+			}
+			if rerr != nil {
+				if tilde { // 输入收尾时挂起的 ~ 补发出去
+					_ = send(mirrorMsg{D: base64.StdEncoding.EncodeToString([]byte{'~'})})
+				}
 				return
 			}
 		}
@@ -367,8 +402,9 @@ func mirrorUsage() {
   %[1]s setup [名字]     打印/写入 shell 启动文件的「可接力」钩子
                        --write 写进 rc/profile；带名字则自动接入它，不带只提醒
 
-接入后按 Ctrl-\ 脱离，进程继续跑；之后从本机或 SSH 上来（直连 sshd
-或经 towstrap 都行）再跑同样命令就能接回。
+接入后按 Ctrl-\ 或行首 ~.（ssh 同款逃逸）脱离，进程继续跑；之后从
+本机或 SSH 上来（直连 sshd 或经 towstrap 都行）再跑同样命令就能接回。
+Windows 上 Ctrl-\ 可能被终端/管道吃掉，吃不掉的是 ~.。
 
   --sock 地址   覆盖通道地址（unix 默认 mirror.sock；Windows 默认
                 \\.\pipe\towstrap-mirror-<owner>；环境变量

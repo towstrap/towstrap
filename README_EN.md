@@ -41,7 +41,7 @@ Ships as three static binaries backed by SQLite — no Docker, no web UI, no ext
 **Relayable terminals (mirror)**
 
 - Built-in persistent terminals with no tmux/screen dependency; multiple devices may attach to the same session
-- `Ctrl-\` detaches while the process keeps running; `mirror ls`/`mirror kill` for management; `mirror_idle` reaps idle mirrors (default 72h)
+- `Ctrl-\` or `~.` at line start detaches while the process keeps running; `mirror ls`/`mirror kill` for management; `mirror_idle` reaps idle mirrors (default 72h)
 - Humans only: `0600` unix socket + peer-uid check; on Windows a SID-named pipe + ACL + server-identity check; not exposed over MCP
 
 **MCP (LLM access)**
@@ -142,7 +142,7 @@ towstrap register
 # Client:
 ssh -p 7822 alice@towstrap.vast-plan.com                            # interactive shell
 ssh -p 7822 alice@towstrap.vast-plan.com 'uname -a'                 # one-shot command
-ssh -t -p 7822 alice@towstrap.vast-plan.com 'mirror work'           # attach to a persistent terminal (Ctrl-\ detaches)
+ssh -t -p 7822 alice@towstrap.vast-plan.com 'mirror work'           # attach to a persistent terminal (Ctrl-\ or ~. detaches)
 ```
 
 MCP: set `mcp.enabled: true` in `server.yaml`, restart, then run `towstrap-server mcp add laptop --machine alice` to issue a `tsm-` token and configure the client with the printed block.
@@ -156,7 +156,7 @@ Enable TLS in production (`--tls` or `tls: true`); see the [User Guide](docs/en/
 ```bash
 mirror work        # create or attach to a persistent terminal named work
 claude             # run any TUI program inside
-# Ctrl-\ detaches; the process keeps running
+# Ctrl-\ or ~. at line start detaches; the process keeps running
 ```
 
 From another device, `ssh -t -p 7822 alice@S 'mirror work'` attaches to the same terminal. `mirror setup --write` can add a shell startup hook (reminder by default; set `TOWSTRAP_MIRROR_AUTO=` inside the block to auto-attach; writes the PowerShell profile on Windows). Windows is supported too — `install.ps1` installs a `mirror.cmd` alias; with the SCM-service install (SYSTEM) local attach needs an elevated terminal, while sessions arriving over towstrap SSH are unaffected.

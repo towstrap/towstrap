@@ -1,5 +1,3 @@
-//go:build !windows
-
 package main
 
 import (
@@ -125,5 +123,78 @@ func TestRelayLost(t *testing.T) {
 	_ = h.agent.Close()
 	if r := h.wait(t); r.end != relayLost || r.err == nil {
 		t.Fatalf("应判为连接断开，实际 %+v", r)
+	}
+}
+
+// 行首 ~. 脱离（ssh 同款逃逸）：Ctrl-\ 的字节在 Windows 上可能被终端或
+// ConPTY 吃掉送不到，~. 是纯可打印字符谁也拦不住。~ 和 . 都不进镜像。
+func TestRelayDetachTildeDot(t *testing.T) {
+	h := startRelay(t)
+	go func() { _, _ = h.keys.Write([]byte("echo ok\r~.")) }()
+	var got []mirrorMsg
+	for len(got) < 2 {
+		var m mirrorMsg
+		if err := h.agentDec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, m)
+	}
+	d, _ := base64.StdEncoding.DecodeString(got[0].D)
+	if string(d) != "echo ok\r" {
+		t.Fatalf("~. 之前的按键应原样送出，实际 %q", d)
+	}
+	if got[1].Op != "detach" {
+		t.Fatalf("第二条应是 detach，实际 %+v", got[1])
+	}
+	_ = h.agent.Close()
+	if r := h.wait(t); r.end != relayDetached {
+		t.Fatalf("应判为脱离，实际 %+v", r)
+	}
+}
+
+// 不在行首的 ~. 不是逃逸，原样进镜像；行首 ~~ 发一个字面 ~。
+func TestRelayTildeEscapes(t *testing.T) {
+	h := startRelay(t)
+	go func() {
+		_, _ = h.keys.Write([]byte("a~."))     // 非行首：原样
+		_, _ = h.keys.Write([]byte("\r~~.\r")) // ~~ → 字面 ~，后面的 . 普通
+	}()
+	want := "a~.\r~.\r"
+	var got string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(got) < len(want) {
+		var m mirrorMsg
+		if err := h.agentDec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		if m.D != "" {
+			d, _ := base64.StdEncoding.DecodeString(m.D)
+			got += string(d)
+		}
+	}
+	if got != want {
+		t.Fatalf("转义不对：got %q want %q", got, want)
+	}
+}
+
+// 行首 ~ 后接的不是 . 也不是 ~：~ 落回，俩都进镜像（~x 这类输入不能丢）。
+func TestRelayTildeFallback(t *testing.T) {
+	h := startRelay(t)
+	go func() { _, _ = h.keys.Write([]byte("~\r~x")) }() // 行首~后接 \r，又行首~后接 x
+	want := "~\r~x"
+	var got string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(got) < len(want) {
+		var m mirrorMsg
+		if err := h.agentDec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		if m.D != "" {
+			d, _ := base64.StdEncoding.DecodeString(m.D)
+			got += string(d)
+		}
+	}
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }
