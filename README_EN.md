@@ -230,3 +230,11 @@ Development: `make build` produces the three binaries under `bin/`; `make releas
 ## License
 
 [AGPL-3.0](LICENSE)
+
+TowStrap provides remote command execution — a connection can run arbitrary commands on a controlled machine as the agent's user, read and write files, and keep persistent terminals. Once wrapped into a closed-source product or hosted service, this kind of capability can easily be repurposed for hard-to-account uses (such as remote-control services offered to third parties). Out of a sense of responsibility, this project is licensed under AGPL-3.0:
+
+- **Offering it over a network counts as distribution** — any deployment that provides service to others (including SaaS and hosted platforms) must publish its complete source code; "we only run it, we don't ship binaries" is not a way out
+- **Modifications and derivative works must stay under the same license** — the functionality cannot be absorbed into a proprietary product and disappear from public view
+- **The source remains auditable** — for repackaged or modified versions, recipients can always obtain the source and verify what it actually does
+
+Personal use, internal deployments, and compliant derivative development carry no extra restrictions; contact the author if you need a commercial closed-source license.
