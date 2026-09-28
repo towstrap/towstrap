@@ -4,7 +4,11 @@
 
 ### 新增
 
-- **agent 单实例锁「启动新的关闭旧的」**：`Run` 启动时抢 `~/.towstrap/agent-<tag>.lock`（Windows 是 `Local\TowStrap-<tag>` 命名 mutex，Unix 是 flock）；锁被占说明旧 agent 还活着，新实例读锁文件里的 pid 杀掉旧进程再接管——同名 agent 双跑（手动起的 + 计划任务/systemd 拉的）拿同一 token 在服务端反复顶号互蹬的问题根治。`status`/`ConnectOnce` 等一次性调用不持锁，不会误杀活着的 agent
+- **Windows 常驻改走真·服务（SCM）**：管理员权限下 `service install`（和 `install.ps1` 的常驻注册段）把 agent 注册成 Windows 服务——开机自启不用等谁登录、崩溃由 SCM 恢复策略 3 秒拉起、不占用户桌面窗口、日志落 `C:\ProgramData\TowStrap\towstrap-svc.log`。agent 进程被 SCM 拉起时自动走 `svc.Run` 握手（报 Running/接 Stop/Shutdown）。服务以 SYSTEM 跑（标准做法，SSH 会话拿到的是 SYSTEM 终端）。非管理员装法退回原有「登录自起」计划任务。`service install` 幂等：已注册的老服务先停掉删掉再建；老计划任务顺手删掉（两套常驻会被单实例锁互顶）。`status`/`uninstall` 优先认服务再看任务；`register` 拿到 token 后服务/任务都能拉起；`install.ps1` 的注册段整体委托给 `service install`，不再内联任务 XML
+- **`towstrap service install --no-start`**：只写服务定义不启动——install 脚本在还没拿到 token 时先注册占位，`register` 拿到凭据后拉起；三平台一致（systemd 只 `enable` 不 `--now`，launchd 只写 plist 不 bootstrap，SCM 只注册不 start，任务只建不 run）
+- **升级「先停服务再起」**：`towstrap update` 的 Windows 重启路径按托管形态分发——服务托管时先 `sc stop` 等服务真停（轮询到 STOPPED，旧进程退完释放 exe 锁）再 `sc start`；agent 自己作为服务进程做升级时（服务器推送的自动升级）走非零退出码交给 SCM 恢复策略拉起新版；计划任务托管时非零退出触发 `RestartOnFailure`。手工跑的进程只提示不擅自杀
+- **taskkill 不再误杀自己**：`service uninstall`/升级重启路径里按镜像名 `towstrap.exe` 收旧进程时加 `/fi "PID ne <自己>"` 过滤——跑这些命令的 CLI 本体就是同名 exe，以前会把自己杀了导致后面的 delete/start 根本执行不到
+- **agent 单实例锁「启动新的关闭旧的」**：`Run` 启动时抢 `~/.towstrap/agent-<tag>.lock`（Windows 是 `Global\TowStrap-<tag>` 命名 mutex 跨会话可见、普通用户退 `Local\`，锁文件放 `%ProgramData%\TowStrap\` 让 SYSTEM 服务和桌面任务互相找得到；Unix 是 flock + pidfile）；锁被占说明旧 agent 还活着，新实例读锁文件里的 pid 杀掉旧进程再接管——同名 agent 双跑（手动起的 + 服务/计划任务/systemd 拉的）拿同一 token 在服务端反复顶号互蹬的问题根治。`status`/`ConnectOnce` 等一次性调用不持锁，不会误杀活着的 agent
 
 ## v0.6.3（2026-09-28）
 

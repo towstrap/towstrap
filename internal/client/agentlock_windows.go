@@ -19,11 +19,18 @@ func acquireAgentLock(cfg Config) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, err
 	}
-	name, err := windows.UTF16PtrFromString(`Local\TowStrap-` + agentTag(cfg))
+	// Global\ 跨会话（Session0 的服务和桌面任务互相看得见）；普通用户
+	// 建不了 Global 对象时退回 Local\——同上下文互相还挡得住，跨上下
+	// 文的接管只能靠 pidfile。
+	name, err := windows.UTF16PtrFromString(`Global\TowStrap-` + agentTag(cfg))
 	if err != nil {
 		return nil, err
 	}
 	h, err := windows.CreateMutex(nil, true, name)
+	if err == windows.ERROR_ACCESS_DENIED {
+		name, _ = windows.UTF16PtrFromString(`Local\TowStrap-` + agentTag(cfg))
+		h, err = windows.CreateMutex(nil, true, name)
+	}
 	if err != nil && err != windows.ERROR_ALREADY_EXISTS {
 		return nil, err
 	}
@@ -67,4 +74,17 @@ func killLockHolder(lockPath string) {
 	defer windows.CloseHandle(p)
 	_ = windows.TerminateProcess(p, 1)
 	_, _ = windows.WaitForSingleObject(p, 3000)
+}
+
+// agentLockPath：Windows 上锁文件放 %ProgramData%\TowStrap\——服务跑
+// SYSTEM（Session 0）、手动跑/任务跑在用户会话，用户目录互不相通，
+// ProgramData 谁都能读写，跨上下文接管才能找到对方的 pid。
+func agentLockPath(cfg Config) string {
+	if dir := os.Getenv("ProgramData"); dir != "" {
+		return filepath.Join(dir, "TowStrap", "agent-"+agentTag(cfg)+".lock")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".towstrap", "agent-"+agentTag(cfg)+".lock")
+	}
+	return filepath.Join(os.TempDir(), "towstrap-agent-"+agentTag(cfg)+".lock")
 }

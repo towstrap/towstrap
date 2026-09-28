@@ -21,6 +21,7 @@ func runService(args []string) int {
 	verb := args[0]
 	fs := flag.NewFlagSet("service", flag.ExitOnError)
 	configPath := fs.String("config", "", "")
+	noStart := fs.Bool("no-start", false, "只注册服务定义不启动（还没拿 token 时先占位）")
 	_ = fs.Parse(args[1:])
 	if fs.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "未知参数 %q\n", fs.Args())
@@ -47,13 +48,17 @@ func runService(args []string) int {
 		Exe:        exe,
 		ConfigPath: cfg,
 		SysUser:    "towstrap", // root 装法跑 towstrap/_towstrap 专用账号
+		NoStart:    *noStart,
 	}
 
 	switch verb {
 	case "install":
-		if err := checkAgentTokenPresent(cfg); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 2
+		// --no-start 是给「还没 token 先占位」用的，token 检查跳过。
+		if !*noStart {
+			if err := checkAgentTokenPresent(cfg); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 2
+			}
 		}
 		msg, err := service.Install(o)
 		if err != nil {
@@ -118,13 +123,15 @@ func checkAgentTokenPresent(cfgPath string) error {
 
 func usageService() {
 	fmt.Fprintf(os.Stderr, `用法:
-  towstrap service install [--config agent.yaml]   注册成常驻服务并启动
+  towstrap service install [--config agent.yaml] [--no-start]
+                                                 注册成常驻服务并启动（--no-start 只注册）
   towstrap service status                          查服务状态
   towstrap service uninstall                       停用并删掉服务
 
 装了之后 agent 开机自启、掉线自拉，不用 nohup 顶着——
 macOS 走 launchd（com.towstrap.agent），Linux 走 systemd（root→系统单元
-跑 towstrap 账号；普通用户→~/.config/systemd/user），Windows 注册
-「登录自起」计划任务。
+跑 towstrap 账号；普通用户→~/.config/systemd/user），Windows 管理员
+装法注册 SCM 服务（开机自启不用等登录），非管理员退回「登录自起」
+计划任务。
 `)
 }

@@ -309,7 +309,18 @@ func tryStartPendingService() {
 			fmt.Println(">> launchd 服务已加载启动")
 		}
 	case "windows":
-		// 计划任务只能「登录时」触发；装的时候已建好但进程没在跑的，现在拉一次。
+		// 管理员装法是 SCM 服务（优先查）；普通用户装法是计划任务。
+		// 装的时候已建好但没启的（当时没 token），凭据齐了现在拉一次。
+		if exec.Command("sc", "query", "towstrap").Run() == nil {
+			out, _ := exec.Command("sc", "query", "towstrap").Output()
+			if strings.Contains(string(out), "RUNNING") {
+				return
+			}
+			if exec.Command("sc", "start", "towstrap").Run() == nil {
+				fmt.Println(">> Windows 服务 towstrap 已启动")
+			}
+			return
+		}
 		if exec.Command("schtasks", "/query", "/tn", "towstrap").Run() != nil {
 			return
 		}

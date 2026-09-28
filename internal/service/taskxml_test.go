@@ -12,9 +12,9 @@ func TestTaskXML(t *testing.T) {
 	x := taskXML(o, vbs, `DESKTOP-1\李雷`)
 
 	for _, want := range []string{
-		"<UserId>DESKTOP-1\\李雷</UserId>",       // 只在本账号登录时触发
+		"<UserId>DESKTOP-1\\李雷</UserId>",                // 只在本账号登录时触发
 		"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", // 永不掐表（默认 3 天强杀）
-		"<RestartOnFailure>",                      // 崩溃自拉起
+		"<RestartOnFailure>",                            // 崩溃自拉起
 		"<Interval>PT30S</Interval>",
 		"<MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>",
 		"C:\\Windows\\System32\\wscript.exe", // 动作是 wscript 隐藏启动器

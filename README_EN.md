@@ -117,7 +117,7 @@ powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.co
 powershell -Command "& ([scriptblock]::Create((irm http://S:7880/install.ps1))) -Token tsa-…"   # self-hosted server
 ```
 
-A persistent service is registered by default: a systemd unit on Linux (when `systemctl` exists), a launchd item on macOS (root installs run under dedicated service accounts — `towstrap` on Linux, auto-created `_towstrap` on macOS), a "run at logon" scheduled task on Windows (`--no-service` / `-NoService` opts out). Options: `--token tsa-…` supplies the credential directly (or run `towstrap register` after install for self-service signup). A bare `towstrap` picks up `agent.yaml` from the default install location; `towstrap status` reports process and connection state.
+A persistent service is registered by default: a systemd unit on Linux (when `systemctl` exists), a launchd item on macOS (root installs run under dedicated service accounts — `towstrap` on Linux, auto-created `_towstrap` on macOS), a real SCM Windows service under admin installs (starts at boot, no logon needed), falling back to a "run at logon" scheduled task otherwise (`--no-service` / `-NoService` opts out). Options: `--token tsa-…` supplies the credential directly (or run `towstrap register` after install for self-service signup). A bare `towstrap` picks up `agent.yaml` from the default install location; `towstrap status` reports process and connection state.
 
 Server:
 
@@ -127,7 +127,7 @@ curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/inst
 
 On Linux as root, a systemd unit is installed and started automatically (`--no-systemd` installs the binary and config only; same path on macOS). Afterwards, run `sudo towstrap-server init` to complete setup (public URL, self-signup, first account).
 
-Upgrade: `towstrap update` / `sudo towstrap-server update` downloads the new release, verifies its minisign signature plus SHA256, and replaces itself; registered systemd/launchd services and scheduled tasks restart automatically (`--check` queries only, `--version vX.Y.Z` pins a release). Re-running the install script also works — the binary is replaced while config and tokens are preserved. The `/install.sh` served by a server installs the agent matching that server's version; admins can set `min_agent_version` in `server.yaml` to reject older agents.
+Upgrade: `towstrap update` / `sudo towstrap-server update` downloads the new release, verifies its minisign signature plus SHA256, and replaces itself; registered systemd/launchd/Windows services and scheduled tasks restart automatically (on Windows the service is stopped first and only restarted once the old process has exited) (`--check` queries only, `--version vX.Y.Z` pins a release). Re-running the install script also works — the binary is replaced while config and tokens are preserved. The `/install.sh` served by a server installs the agent matching that server's version; admins can set `min_agent_version` in `server.yaml` to reject older agents.
 
 On Windows, interactive agent sessions use ConPTY (Windows 10 1809+ required) — see the [User Guide](docs/en/user-guide.md).
 

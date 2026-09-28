@@ -96,7 +96,7 @@ curl -fsSL https://towstrap.vast-plan.com/install.sh | sh -s -- --token tsa-…
 powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.com/install.ps1))) -Token tsa-…"
 ```
 
-脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。**常驻是默认行为**：Linux 有 `systemctl` 就建 systemd 单元，macOS 建 launchd 项，Windows 注册「登录自起」计划任务；临时用/容器场景加 `--no-service`（`install.ps1` 用 `-NoService`）只放二进制和配置。**事后补票**：当时 `--no-service` 或手动/nohup 跑的机器，跑 `towstrap service install` 就能注册成常驻服务（macOS launchd / Linux systemd / Windows 计划任务，语义和安装脚本一致；`service status`、`service uninstall` 查和拆）。没发现 token 时拒绝安装——先 `towstrap register` 再装。服务端对应 `towstrap-server service`（`install` 要 `--config server.yaml`）。
+脚本做的事：按系统架构从 GitHub Releases 下载 `towstrap`、校验 `SHA256SUMS`、装到 `/usr/local/bin`（不可写则 `~/.local/bin`）、写 0600 的 token 文件和 `agent.yaml`（root 进 `/etc/towstrap`，普通用户进 `~/.config/towstrap`）。**从服务器下发的脚本默认装和这台服务器同版本的 agent**（`--version vX.Y.Z` 可覆盖）、并把服务器 `agent_defaults:` 里的预设工作配置（`shell`、`mirror_idle`、`mcp_policy` 等）一并写进 `agent.yaml`；GitHub 直拉的脚本默认 latest、不带预设。装完结尾会打印这台机器的 SSH 登录地址（主机取自 `--server`，端口是服务器配置的 SSH 口）。加 `--systemd` 会顺带装服务：root 跑建 `towstrap` 专用用户 + 系统单元并启动，普通用户写 `~/.config/systemd/user` 单元。**常驻是默认行为**：Linux 有 `systemctl` 就建 systemd 单元，macOS 建 launchd 项，Windows 管理员装法注册 SCM 服务（开机自启不用等登录），非管理员退回「登录自起」计划任务；临时用/容器场景加 `--no-service`（`install.ps1` 用 `-NoService`）只放二进制和配置。**事后补票**：当时 `--no-service` 或手动/nohup 跑的机器，跑 `towstrap service install` 就能注册成常驻服务（macOS launchd / Linux systemd / Windows 服务（非管理员退回计划任务），语义和安装脚本一致；`service status`、`service uninstall` 查和拆）。没发现 token 时拒绝安装——先 `towstrap register` 再装。服务端对应 `towstrap-server service`（`install` 要 `--config server.yaml`）。
 
 **装完自动接问「现在注册吗」**：有终端时（管道安装也算——提示走 /dev/tty）装完会问要不要就地跑 `register` 向导；没 token 时服务单元/plist 只写不启，`register` 拿到凭据后自己把它拉起上线——一条命令从装到在线。服务已装好但意外没起的，收尾会再问一次「拉起吗」；`--no-service` 装的会问要不要补装常驻服务。无人值守/CI 环境检测不到 tty 自动跳过，`--no-prompt`（ps1 是 `-NoPrompt`）可显式关掉。
 
@@ -296,7 +296,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 ### 状态查看
 
-`towstrap status` 一条命令回答「装完了到底跑没跑」：进程存活（pid/启动时长）、与服务器连接状态（握手时间、拨号次数、上次断开原因）、活跃远程会话与镜像终端数、agent.yaml 与 token 文件就位情况、系统服务（systemd/launchd/计划任务）注册状态。没在跑时直接给出启动指引。退出码三档可进脚本：`0` 在跑且已连上、`3` 在跑未连上、`1` 没在跑；`-q` 静默只给退出码。
+`towstrap status` 一条命令回答「装完了到底跑没跑」：进程存活（pid/启动时长）、与服务器连接状态（握手时间、拨号次数、上次断开原因）、活跃远程会话与镜像终端数、agent.yaml 与 token 文件就位情况、系统服务（systemd/launchd/Windows 服务/计划任务）注册状态。没在跑时直接给出启动指引。退出码三档可进脚本：`0` 在跑且已连上、`3` 在跑未连上、`1` 没在跑；`-q` 静默只给退出码。
 
 凭据一栏显示 agent token 的实际来源（旗标/环境变量/配置项/文件路径）和遮中段后的值（留头尾够认是哪个），要看完整值加 `--show-token`。注意别把两套 token 弄混：**agent token（`tsa-`）**是这台机器连服务器用的，**MCP token（`tsm-`）**是 AI 客户端走 MCP 用的，由服务器上 `towstrap-server mcp add` 签发——agent 不需要、也接触不到 tsm-。
 
@@ -820,7 +820,7 @@ agent 侧（`audit.log`）另有 `START`/`END`（mode=mirror 的本机接入）�
 
 ## 14. 升级说明
 
-- **自升级**：`towstrap update`（agent）/ `sudo towstrap-server update`（服务端）从官方 Release 拉本平台二进制，SHA256SUMS 校验后原子替换自身；`--check` 只查不装，`--version vX.Y.Z` 指定版本（含降级）。装成 systemd 服务或 Windows 计划任务的升级后自动重启生效；手工跑的进程要手工重启。重跑 install.sh/install-server.sh 同样能升级（配置、token 不动）
+- **自升级**：`towstrap update`（agent）/ `sudo towstrap-server update`（服务端）从官方 Release 拉本平台二进制，SHA256SUMS 校验后原子替换自身；`--check` 只查不装，`--version vX.Y.Z` 指定版本（含降级）。装成 systemd 服务或 Windows 服务/计划任务的升级后自动重启生效；手工跑的进程要手工重启。重跑 install.sh/install-server.sh 同样能升级（配置、token 不动）
 - **自动升级（升级自发现）**：服务器 `update_check`（默认 6h，`off` 关）定时扫官方最新 release 缓存 tag；发现新版本就把 tag 推给版本落后的在线 agent（agent 接入时若已落后也会立即补推）。agent 的 `auto_update` 默认开——收到提示后随机散开最多 60 秒，走 `towstrap update` 同一套验签下载+原子替换；装成服务的由服务管理器重启，手动/nohup 跑的（Unix）原地换映像重启生效。服务器只报版本号、从不传下载地址或二进制——信任根仍是 minisign 签名，服务器被攻破也塞不进伪造更新。`agent.yaml` 写 `auto_update: false` 关掉（只记日志，手工 `towstrap update` 升级）；服务端 `server.yaml` 写 `update_check: off` 关闭整个扫描推送
 - **老账号库自动迁移**：从「一个账号一个 token」的旧版本升级时，打开库就把每个账号的 token、agent 白名单、最近来源 IP 搬到一台名为 `default` 的机器上——老 token 不变，agent 不用动；之后登录名变成 `账号+default`（单机时写账号名仍可用）
 - **`users_key` 没配过**：默认用 `users_db` 去掉 `.db` 后缀 + `.key`（`/etc/towstrap/users.db` → `/etc/towstrap/users.key`），库和 key 要一起备份

@@ -79,12 +79,21 @@ func install(o Opts) (string, error) {
 	}
 	_ = sh(sysctl + " daemon-reload")
 	// 已启用 = 重装：enable --now 对运行中的服务是空操作，必须 restart
-	// 才让新二进制生效（install.sh 同款语义）。
+	// 才让新二进制生效（install.sh 同款语义）。NoStart 只写单元不碰进程。
 	if sh(sysctl+" is-enabled --quiet "+o.unitName()) == nil {
+		if o.NoStart {
+			return fmt.Sprintf("systemd 服务 %s 已注册（未启动）", o.unitName()), nil
+		}
 		if err := sh(sysctl + " restart " + o.unitName()); err != nil {
 			return "", fmt.Errorf("单元已装好但重启失败：%w（手工 %s restart %s）", err, sysctl, o.unitName())
 		}
 		return fmt.Sprintf("systemd 服务 %s 已重启，新二进制生效", o.unitName()), nil
+	}
+	if o.NoStart {
+		if err := sh(sysctl + " enable " + o.unitName()); err != nil {
+			return "", fmt.Errorf("单元写好（%s）但启用失败：%w", unit, err)
+		}
+		return fmt.Sprintf("systemd 服务 %s 已注册为开机自启（未启动）", o.unitName()), nil
 	}
 	if err := sh(sysctl + " enable --now " + o.unitName()); err != nil {
 		return "", fmt.Errorf("单元写好（%s）但启动失败：%w（手工 %s enable --now %s）", unit, err, sysctl, o.unitName())

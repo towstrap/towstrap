@@ -307,12 +307,35 @@ func restartManaged(product string, out io.Writer) {
 		}
 		fmt.Fprintf(out, ">> 若 %s 以服务在跑，重启服务后新版本生效\n", product)
 	case "windows":
-		// install.ps1 建议的自启形态是名为 towstrap 的计划任务。任务是
-		// wscript 启动器跑的：/end 只收启动器，agent 本体要 taskkill 补刀，
-		// 不然旧进程成了孤儿还跟新进程顶号。
+		// 自己就是服务进程：SCM 的 stop 会把自己先杀了——不归这里管，
+		// 上层 restartSelf 用非零退出交给服务恢复策略拉起。
+		if runningAsService() {
+			fmt.Fprintln(out, ">> 服务托管中——进程退出后由服务管理器拉起新版")
+			return
+		}
+		// 外部进程做的升级（管理员跑 towstrap update）。收旧进程时
+		// taskkill 必须排除自己——跑 update 的 CLI 跟 agent 是同一个
+		// exe 名，不排除的话把自己杀了，start/run 根本执行不到。
+		kill := func() {
+			_ = exec.Command("taskkill", "/f", "/im", product+".exe",
+				"/fi", fmt.Sprintf("PID ne %d", os.Getpid())).Run()
+		}
+		if exec.Command("sc", "query", product).Run() == nil {
+			// 「升级先停服务再启」：stop 只是发控制码，要等服务真停
+			// （旧进程退完、exe 锁释放）再 start，新版才上得来。
+			_ = exec.Command("sc", "stop", product).Run()
+			waitServiceStopped(product)
+			kill() // 老版本不响应 stop 的残留补一刀
+			if err := exec.Command("sc", "start", product).Run(); err == nil {
+				fmt.Fprintf(out, ">> 服务 %s 已重启，新版本生效\n", product)
+				return
+			}
+			fmt.Fprintf(out, ">> sc start %s 失败，手工重启服务生效\n", product)
+			return
+		}
 		if exec.Command("schtasks", "/query", "/tn", product).Run() == nil {
 			_ = exec.Command("schtasks", "/end", "/tn", product).Run()
-			_ = exec.Command("taskkill", "/f", "/im", product+".exe").Run()
+			kill() // wscript 启动器被 /end 收掉，agent 本体要补刀
 			if err := exec.Command("schtasks", "/run", "/tn", product).Run(); err == nil {
 				fmt.Fprintf(out, ">> 计划任务 %s 已重启，新版本生效\n", product)
 				return
@@ -343,6 +366,20 @@ func restartManaged(product string, out io.Writer) {
 		fmt.Fprintln(out, ">> 重启运行中的进程后新版本生效")
 	default:
 		fmt.Fprintln(out, ">> 重启运行中的进程后新版本生效")
+	}
+}
+
+// waitServiceStopped 轮询到 SCM 报服务 STOPPED——sc stop 只发控制码，
+// 服务进程走完清理才算真停；不等它就 start，会撞上「正在停止」或旧
+// 进程还没放掉 exe 锁。
+func waitServiceStopped(name string) {
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("sc", "query", name).Output()
+		if err != nil || strings.Contains(string(out), "STOPPED") {
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
 }
 

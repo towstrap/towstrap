@@ -216,7 +216,7 @@ func runAgent(args []string) int {
 	if cfg.AutoUpdate != nil {
 		autoUpdate = *cfg.AutoUpdate
 	}
-	if err := client.Run(client.Config{
+	acfg := client.Config{
 		Server:       cfg.Server,
 		AgentToken:   tok,
 		TokenFile:    tokFile,
@@ -229,7 +229,13 @@ func runAgent(args []string) int {
 		MirrorIdle:   mirrorIdle,
 		MCPPolicy:    cfg.MCPPolicy,
 		AutoUpdate:   autoUpdate,
-	}); err != nil {
+	}
+	// 被 Windows 服务管理器（SCM）拉起时必须走 svc.Run 握手——不然 SCM
+	// 等不到 Running 会判「启动失败」把进程杀了。
+	if client.IsWindowsService() {
+		return client.RunService(acfg)
+	}
+	if err := client.Run(acfg); err != nil {
 		slog.Error("agent", "err", err)
 		return 1
 	}

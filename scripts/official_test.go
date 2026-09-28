@@ -26,23 +26,22 @@ func TestScriptsOfficialServer(t *testing.T) {
 	}
 }
 
-// Windows 常驻靠计划任务，XML 里三个开关是常驻 agent 的命门，少了哪个
-// 都会翻车：没有 RestartOnFailure 进程死了没人拉；ExecutionTimeLimit
-// 不设回 PT0S 会被默认 3 天强杀；不经 wscript 启动器直接跑 exe 会把
-// 控制台窗口钉在用户桌面（关窗口=杀 agent）。钉住这套定义。
+// Windows 常驻委托给 towstrap service install：管理员权限走 SCM 服务，
+// 非管理员退回计划任务（XML 定义的细节由 internal/service 和
+// taskxml_test 钉住）。脚本侧要钉的是：① 确实调了 service install；
+// ② 没 token 时用 --no-start 只注册不启动；③ 升级覆盖前会把已注册
+// 的 SCM 服务停掉（不停 Move-Item 撞文件锁）。
 func TestInstallPS1TaskDefinition(t *testing.T) {
 	ps := string(mustRead("install.ps1"))
 	for _, want := range []string{
-		"schtasks /create /tn towstrap /xml",
-		"<RestartOnFailure>",
-		"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
-		"wscript.exe</Command>",
-		"towstrap-run.vbs",
-		"<UserId>",
-		"StopExisting",
+		"service install --config $agentyaml",
+		"service install --config $agentyaml --no-start",
+		"sc.exe stop towstrap",
+		"sc.exe start towstrap",
+		"schtasks /end /tn towstrap",
 	} {
 		if !strings.Contains(ps, want) {
-			t.Errorf("install.ps1 任务定义缺 %q", want)
+			t.Errorf("install.ps1 缺 %q", want)
 		}
 	}
 }

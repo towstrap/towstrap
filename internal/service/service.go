@@ -17,6 +17,9 @@ type Opts struct {
 	// ProtectHome 给 systemd 单元加 ProtectHome=true（server 用——
 	// 库文件之外的家目录对服务进程不可见）。
 	ProtectHome bool
+	// NoStart 只写服务定义不启动：install 脚本在还没拿到 token 时先
+	// 注册占位，register 拿到凭据后再拉起（tryStartPendingService）。
+	NoStart bool
 }
 
 // unitName 是 systemd 单元和计划任务名：agent→towstrap，server→towstrap-server。

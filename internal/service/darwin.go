@@ -146,6 +146,9 @@ func install(o Opts) (string, error) {
 			}
 		}
 	}
+	if o.NoStart {
+		return fmt.Sprintf("launchd 服务已写好 plist（未加载：%s；launchctl bootstrap %s 拉起）", plist, domain), nil
+	}
 	if exec.Command("launchctl", "print", domain+"/"+o.label()).Run() == nil {
 		if err := exec.Command("launchctl", "kickstart", "-k", domain+"/"+o.label()).Run(); err != nil {
 			return "", fmt.Errorf("plist 已写好但重启失败：%w（手工 launchctl kickstart -k %s/%s）", err, domain, o.label())

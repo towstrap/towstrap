@@ -116,7 +116,7 @@ powershell -Command "& ([scriptblock]::Create((irm https://towstrap.vast-plan.co
 powershell -Command "& ([scriptblock]::Create((irm http://S:7880/install.ps1))) -Token tsa-…"   # 自建服务器
 ```
 
-常驻服务默认注册：Linux 有 `systemctl` 建 systemd 单元（root 安装跑在专用 `towstrap` 账号下）、macOS 建 launchd 项（root 安装跑在自动创建的 `_towstrap` 系统账号下）、Windows 建「登录自起」计划任务（`--no-service` 退出，`-NoService` for PowerShell）。可选参数：`--token tsa-…` 直接提供凭据（亦可装后执行 `towstrap register` 自助建号）。装完直接 `towstrap` 即会按默认位置加载 `agent.yaml`；`towstrap status` 查看运行与连接状态。
+常驻服务默认注册：Linux 有 `systemctl` 建 systemd 单元（root 安装跑在专用 `towstrap` 账号下）、macOS 建 launchd 项（root 安装跑在自动创建的 `_towstrap` 系统账号下）、Windows 管理员装法注册 SCM 服务（开机自启不用等登录），非管理员退回「登录自起」计划任务（`--no-service` 退出，`-NoService` for PowerShell）。可选参数：`--token tsa-…` 直接提供凭据（亦可装后执行 `towstrap register` 自助建号）。装完直接 `towstrap` 即会按默认位置加载 `agent.yaml`；`towstrap status` 查看运行与连接状态。
 
 服务端：
 
@@ -126,7 +126,7 @@ curl -fsSL https://raw.githubusercontent.com/towstrap/towstrap/main/scripts/inst
 
 Linux+root 下自动注册并启动 systemd 服务（`--no-systemd` 仅安装二进制与配置，亦适用于 macOS）。安装后执行 `sudo towstrap-server init` 完成初始化（对外地址、自助注册、首个账号）。
 
-升级：`towstrap update` / `sudo towstrap-server update` 从官方 Release 下载新版，SHA256 校验后替换自身，已注册的 systemd 服务/计划任务自动重启生效（`--check` 只查不装，`--version vX.Y.Z` 指定版本）；也可重复执行安装脚本——二进制覆盖更新，配置与 token 保留。服务端下发的 `/install.sh` 默认安装与服务器同版本的 agent；管理员可在 `server.yaml` 设置 `min_agent_version` 拒绝过低版本接入。
+升级：`towstrap update` / `sudo towstrap-server update` 从官方 Release 下载新版，SHA256 校验后替换自身，已注册的 systemd/launchd/Windows 服务或计划任务自动重启生效（Windows 先停服务再启，等旧进程释放文件锁后才拉新版）（`--check` 只查不装，`--version vX.Y.Z` 指定版本）；也可重复执行安装脚本——二进制覆盖更新，配置与 token 保留。服务端下发的 `/install.sh` 默认安装与服务器同版本的 agent；管理员可在 `server.yaml` 设置 `min_agent_version` 拒绝过低版本接入。
 
 Windows 交互会话使用 ConPTY（要求 Windows 10 1809+），详见[用户手册](docs/zh/user-guide.md)。
 

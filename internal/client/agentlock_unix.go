@@ -12,6 +12,16 @@ import (
 	"time"
 )
 
+// agentLockPath：Unix 上锁文件放 ~/.towstrap/——agent 的用户身份统一
+// （没有 Windows 那种 Session0/桌面会话跨界问题）。
+func agentLockPath(cfg Config) string {
+	dir, err := os.UserHomeDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, ".towstrap", "agent-"+agentTag(cfg)+".lock")
+}
+
 // acquireAgentLock 抢锁文件的 flock 锁；拿不到说明旧 agent 还活着，读
 // 文件里的 pid 杀掉再抢（「启动新的关闭旧的」）。flock 随进程死自动
 // 释放，持锁进程退出后新实例一次就能抢到。返回解锁函数。

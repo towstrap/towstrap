@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -22,16 +21,6 @@ import (
 func agentTag(cfg Config) string {
 	sum := sha256.Sum256([]byte(cfg.Server + "|" + cfg.ID))
 	return hex.EncodeToString(sum[:])[:12]
-}
-
-// agentLockPath 返回锁/pidfile 落点：~/.towstrap/agent-<tag>.lock。
-// 家目录拿不到就退回 os.TempDir——宁可锁弱一点也别让 agent 起不来。
-func agentLockPath(cfg Config) string {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, ".towstrap", "agent-"+agentTag(cfg)+".lock")
 }
 
 func readPID(path string) int {

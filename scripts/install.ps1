@@ -108,14 +108,28 @@ if ($NoVerify) {
     if ($got -ne $want.Trim().ToLower()) { Remove-Item $tmpExe -Force; Die "SHA256 校验失败" }
     Write-Host ">> SHA256 校验通过"
 }
-# 升级重装时 exe 可能在跑（计划任务或手工启动）——Windows 锁运行中的
-# 可执行文件，直接覆盖会失败。先停下来装完再视情况拉回来。
+# 升级重装时 exe 可能在跑（SCM 服务/计划任务/手工启动）——Windows 锁运
+# 行中的可执行文件，直接覆盖会失败。先停下来装完再视情况拉回来。
+$wasSvc = $false
 $wasTask = $false
 $wasManual = $false
 if (Get-Process towstrap -ErrorAction SilentlyContinue) {
+    $hasSvc = $false
+    try { sc.exe query towstrap 2>$null | Out-Null; $hasSvc = ($LASTEXITCODE -eq 0) } catch {}
     $hasTask = $false
     try { schtasks /query /tn towstrap 2>$null | Out-Null; $hasTask = ($LASTEXITCODE -eq 0) } catch {}
-    if ($hasTask) {
+    if ($hasSvc) {
+        # SCM 服务：stop 只是发控制码，等服务真停（旧进程退完、exe 锁
+        # 释放）再动文件——下面 Move-Item 才撞不上锁。
+        sc.exe stop towstrap 2>$null | Out-Null
+        $deadline = (Get-Date).AddSeconds(15)
+        do { Start-Sleep -Milliseconds 300
+             $q = (sc.exe query towstrap 2>$null | Out-String) } while (
+             $q -notmatch 'STOPPED' -and (Get-Date) -lt $deadline)
+        Get-Process towstrap -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        $wasSvc = $true
+        Write-Host ">> Windows 服务 towstrap 已停（升级覆盖用）"
+    } elseif ($hasTask) {
         schtasks /end /tn towstrap 2>$null | Out-Null
         # 任务动作是 wscript 启动器：/end 只收启动器，被拉起的 agent 会成
         # 孤儿继续占着 exe——补一刀，不然下面的 Move-Item 撞文件锁。
@@ -171,6 +185,12 @@ if (-not (Test-Path $agentyaml)) {
 $sshhost = ([uri]$Server).Host
 
 $svcStarted = $false
+if ($wasSvc) {
+    # 服务形态升级：停的时候只停了没删定义，拉起来新版直接生效
+    sc.exe start towstrap 2>$null | Out-Null
+    $svcStarted = ($LASTEXITCODE -eq 0)
+    Write-Host ">> Windows 服务 towstrap 已拉起，新版本生效"
+}
 if ($wasTask) {
     schtasks /run /tn towstrap 2>$null | Out-Null
     $svcStarted = ($LASTEXITCODE -eq 0)
@@ -180,85 +200,27 @@ if ($wasManual) {
     Write-Host ">> 注意：之前手工跑的 towstrap 进程已停，用下面的命令重启它"
 }
 
-# 常驻默认开：注册「登录自起」的计划任务（-NoService 退出）。
-# 任务定义用 XML 走 schtasks /xml——普通 /tr 开不了 RestartOnFailure
-# （崩溃 30 秒自拉起），也关不掉默认 3 天的 ExecutionTimeLimit；动作是
-# wscript 跑隐藏 vbs 启动器，不然控制台窗口会钉在用户桌面上，输出重进
-# ~/.towstrap/towstrap.log。已存在的任务也照写一遍（/f 覆盖）——旧装
-# 的 /tr 任务借此升级定义。
+# 常驻默认开：交给 towstrap service install——管理员权限注册 SCM 服务
+# （开机自启不用等登录、崩溃由服务恢复策略拉起），非管理员退回「登录
+# 自起」计划任务（XML 定义带 RestartOnFailure + ExecutionTimeLimit
+# PT0S，wscript 隐藏启动器）。没 token 时 --no-start 只注册不启动，
+# register 拿到凭据后拉起。
+$svcRegistered = $false
 if (-not $NoService) {
-    $taskExists = $false
-    $confdir = Join-Path $env:USERPROFILE ".towstrap"
-    New-Item -ItemType Directory -Force $confdir | Out-Null
-    $vbs = Join-Path $confdir "towstrap-run.vbs"
-    $logf = Join-Path $confdir "towstrap.log"
-    $runline = 'cmd /c ""' + $exe + '" "--config" "' + $agentyaml + '" >> "' + $logf + '" 2>&1"'
-    $vbsBody = @(
-        "' TowStrap agent 计划任务隐藏启动器（与 internal/service/taskxml.go 同逻辑）",
-        "Set sh = CreateObject(`"WScript.Shell`")",
-        "WScript.Quit sh.Run(`"" + ($runline -replace '"', '""') + "`", 0, True)"
-    ) -join "`r`n"
-    [IO.File]::WriteAllText($vbs, $vbsBody, (New-Object System.Text.UnicodeEncoding($false, $true)))
-    $who = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $taskXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <UserId>$([System.Security.SecurityElement]::Escape($who))</UserId>
-    </LogonTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>LeastPrivilege</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>true</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
-    <RestartOnFailure>
-      <Interval>PT30S</Interval>
-      <Count>999</Count>
-    </RestartOnFailure>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>C:\Windows\System32\wscript.exe</Command>
-      <Arguments>"$([System.Security.SecurityElement]::Escape($vbs))"</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-    $xmlFile = Join-Path $env:TEMP ("towstrap-task-" + [guid]::NewGuid().ToString("N") + ".xml")
-    [IO.File]::WriteAllText($xmlFile, $taskXml, (New-Object System.Text.UnicodeEncoding($false, $true)))
-    schtasks /create /tn towstrap /xml $xmlFile /f | Out-Null
-    $taskExists = ($LASTEXITCODE -eq 0)
-    Remove-Item $xmlFile -Force -ErrorAction SilentlyContinue
-    if ($taskExists) {
-        Write-Host ">> 计划任务 towstrap 已注册（登录自起、崩溃 30 秒自拉起，日志 $logf）"
+    $hasCred = $haveToken -or ((Test-Path $tokenfile) -and ((Get-Item $tokenfile).Length -gt 0))
+    if ($hasCred) {
+        & $exe service install --config $agentyaml
+        $svcRegistered = ($LASTEXITCODE -eq 0)
+        $svcStarted = $svcRegistered -or $svcStarted
     } else {
-        Write-Host ">> 计划任务注册失败——可用 towstrap service install 补装，或手动跑：& `"$exe`" --config `"$agentyaml`""
+        & $exe service install --config $agentyaml --no-start
+        $svcRegistered = ($LASTEXITCODE -eq 0)
     }
-    if ($taskExists -and -not $wasTask -and ($haveToken -or (Test-Path $tokenfile))) {
-        schtasks /run /tn towstrap 2>$null | Out-Null
-        $svcStarted = ($LASTEXITCODE -eq 0)
-        Write-Host ">> 计划任务 towstrap 已拉起（查状态：& `"$exe`" status）"
+    if (-not $svcRegistered) {
+        Write-Host ">> 服务注册失败——可手工补：& `"$exe`" service install --config `"$agentyaml`"（管理员跑走服务，普通用户走计划任务）"
     }
 } else {
-    Write-Host ">> -NoService：没注册计划任务，手动跑：& `"$exe`" --config `"$agentyaml`""
+    Write-Host ">> -NoService：没注册常驻，手动跑：& `"$exe`" --config `"$agentyaml`""
 }
 
 # ---- 交互收尾：就地注册→拉起服务，一条命令直通在线 ----
@@ -274,22 +236,22 @@ if ($canPrompt) {
         Write-Host ""
         if (_AskYN "现在跑注册向导，把这台机器挂上账号（建号/登录都行）") {
             # --server 必带：register 不读 agent.yaml，不给会打去官方服务器。
-            # 注册成功后它自己会把已建未起的计划任务拉起。
+            # 注册成功后它自己会把已注册没起的服务/计划任务拉起。
             & $exe register --server $Server
         }
     }
     $haveTok = (Test-Path $tokenfile) -and ((Get-Item $tokenfile).Length -gt 0)
     if ($haveTok) {
-        # register 已经把任务拉起来的话别重复问——看进程在不在。
+        # register 已经把服务拉起来的话别重复问——看进程在不在。
         if (-not $svcStarted -and (Get-Process towstrap -ErrorAction SilentlyContinue)) { $svcStarted = $true }
         if ($NoService) {
-            if (_AskYN "把 towstrap 注册成「登录自起」常驻任务") {
+            if (_AskYN "把 towstrap 注册成常驻（管理员跑是 Windows 服务，普通用户是登录自起任务）") {
                 & $exe service install --config $agentyaml
             }
-        } elseif ($taskExists -and -not $svcStarted) {
-            # 任务建了但注册前没凭据没拉；register 的拉起兜底失败时这里接住
+        } elseif ($svcRegistered -and -not $svcStarted) {
+            # 服务/任务注册了但注册前没凭据没拉；register 的拉起兜底失败时这里接住
             if (_AskYN "凭据就位——现在拉起 towstrap 上线") {
-                schtasks /run /tn towstrap | Out-Null
+                & $exe service install --config $agentyaml
                 Write-Host ">> towstrap 已拉起（查状态：& `"$exe`" status）"
             }
         }
