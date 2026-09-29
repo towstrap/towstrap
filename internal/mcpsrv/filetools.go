@@ -216,7 +216,7 @@ func (s *Server) writeFile(ctx context.Context, req *mcp.CallToolRequest, in wri
 			r, e := errResult("用户拒绝了写入 %s。请向用户说明目的，由用户决定；或把目录加进机器的 roots。", resolved)
 			return r, writeOut{}, e
 		case Timeout:
-			r, e := errResult("等待批准超时（%s）", humanDur(s.cfg.Policy.AskTimeout))
+			r, e := errResult("等待批准超时（%s，批准编号 %s）：批准途径是在服务器跑 %s %s 或账号本人 SSH 里 @mcp approve %s。请向用户说明情况再决定是否重试。", humanDur(s.cfg.Policy.AskTimeout), aid, s.cfg.ApproveCmd, aid, aid)
 			return r, writeOut{}, e
 		default:
 			r, e := errResult("批准环节不可用：%v", err)

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/towstrap/towstrap/internal/auth"
 )
@@ -19,6 +20,13 @@ type StatusReport struct {
 	HTTP  string       `json:"http"`
 	SSH   string       `json:"ssh"`
 	Users []UserStatus `json:"users"`
+	// 以下仅 Snapshot（管理口令路径）填，机器 token 的窄视图不给这些全局量。
+	UptimeS        int64 `json:"uptime_s,omitempty"`
+	SessionsActive int64 `json:"sessions_active,omitempty"`
+	AuthOK         int64 `json:"auth_ok,omitempty"`
+	AuthFail       int64 `json:"auth_fail,omitempty"`
+	RelayToAgent   int64 `json:"relay_to_agent,omitempty"`
+	RelayFromAgent int64 `json:"relay_from_agent,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -84,5 +92,11 @@ func (s *Server) Snapshot() StatusReport {
 		rep.Users = append(rep.Users, UserStatus{User: b.Username, Machine: b.ID, Online: on, Disabled: b.Disabled})
 	}
 	rep.OK = online > 0
+	rep.UptimeS = int64(time.Since(s.started) / time.Second)
+	rep.SessionsActive = s.Hub.SessionCount()
+	rep.AuthOK = s.authOK.Load()
+	rep.AuthFail = s.authFail.Load()
+	rep.RelayToAgent = s.Hub.BytesToAgent()
+	rep.RelayFromAgent = s.Hub.BytesFromAgent()
 	return rep
 }

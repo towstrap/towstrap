@@ -179,6 +179,9 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
        mcp add / SSH @mcp add → accounts.MCPAdd() → newMCPToken() (tsm-)
        明文只在命令输出出现一次；库里是 encToken 后的密文
 存储:  machines.token_enc（AES-GCM 确定性，UNIQUE + 索引）
+归属:  mcp_clients.owner —— @mcp 自助面判「这个客户端是谁的」只看这一列
+       （不靠名字前缀：账号名可带点，前缀会撞到 alice.bob.* 这类别人的
+       客户端）。管理员 CLI 签发的留空，@mcp 碰不到
 查找:  X-Agent-Token → MachineByToken(token_enc 等值查询) → 机器 + 账号未停用检查
 换发（两阶段）:
   ①  agent 机器上 towstrap token refresh
@@ -200,7 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 ## 7. SSH 会话处理
 
 - **选机器**：登录名带 `+机器名` 指名；不带时账号恰有一台机器落它，多台报错列出名单（含在线状态），零台报错。机器不存在/不在线/凭据失效都有明确报错 + `SESSION-DENY`（reason=no-machine/ambiguous/offline/credential）
-- **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速）。命令有 `@machine list/add/set/remove/token/help`（set 改 agent 白名单不动 token）、`@mcp add/list/set/token/remove/pending/approve/deny`（自签 MCP token，`--machine` 锁死本账号，客户端按 `账号.名字` 前缀归属；pending/approve/deny 只碰本账号机器的待批）、`@totp`/`@totp remove`、`@sshkey list/add/remove`、`@passwd`（改自己密码，旧密码重验 + 吊销未过期 OAuth grant）
+- **`@` 前缀**是管理命令，进 `handleMgmt` 不发给 agent：公钥登录拒（reason=pubkey），TOTP 账号要新验证码（3 次机会，错计入限速）。命令有 `@machine list/add/set/remove/token/help`（set 改 agent 白名单不动 token）、`@mcp add/list/set/token/remove/pending/approve/deny`（自签 MCP token，`--machine` 锁死本账号，客户端按库里的 `owner` 列归属——不靠 `账号.名字` 名字前缀，账号名可带点时前缀会撞到别人账号的客户端；pending/approve/deny 只碰本账号机器的待批）、`@totp`/`@totp remove`、`@sshkey list/add/remove`、`@passwd`（改自己密码，旧密码重验 + 吊销未过期 OAuth grant）
 - **PTY vs exec**：`sess.Pty()` 判定；PTY 走伪终端（unix 用 `creack/pty`，Windows 用 `x/sys/windows` 直写的 ConPTY——两条管道 + `CreatePseudoConsole` + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`，窗口尺寸透传 + `resize`），exec 走 `shell -c` + 三根管道（stdout/stderr 分流用 `s="e"` 标记）
 - **stdin/EOF**：客户端关 stdin → 服务器发 `eof` → exec 会话把它传给子进程（`cat` 靠 EOF 收尾）；PTY 会话忽略（Ctrl-D 本来就是数据流里的字符）
 - **退出码**：agent 侧 `exitCode()`：正常退出取 ExitCode；信号杀取 128+信号；进程没起来等错误取 255。服务器侧 `session.code` 默认 255，收到 agent 的 `close.code` 才覆盖——agent 掉线不会被记成 0。MCP 侧 `run_command` 超时被 SIGKILL 时 `timed_out=true` 且 `exit_code=-1`
@@ -261,7 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 三条通道由 `policy.ask_via` 选；不写（auto）时按「客户端能力 + 部署形态」自动挑：客户端声明弹窗 → 弹窗；不支持时 stdio（本侧有值守真人）落本地文件，内嵌服务器（`Remote`——「本机」是没人值守的服务器）落会话内确认：
 
 1. **elicitation（弹窗）**：auto 且客户端 `initialize` 声明了 elicitation 能力 → handler 返回带 `InputRequests` 的 `CallToolResult`（go-sdk 的 MRTR/SEP-2322 模式，新旧协议都兼容，SDK 完成往返后把 handler 再调一次、答复在 `InputResponses["approval"]`）。schema 两个字段：`approve`（bool，必填）和 `remember`（bool，「本次会话内相同命令不再询问」）
-2. **本地文件**（`ask_via: local`，或 stdio 下 auto 且客户端不支持弹窗；**显式设置压过客户端能力**——有的客户端声明了弹窗能力却渲染不出来，用它绕开；内嵌模式 auto 不会走到这条）：`approvals_dir` 里落 `<id>.json`（`{id,machine,kind,detail,cwd,created,pid}`，0600）；待批挂上后立刻四处发提示——MCP logging 通知给调用方会话、stderr slog（stdio-over-SSH 时落在远端终端）、`LocalNotify` 开时（stdio 恒开，内嵌模式默认开、`mcp.local_notify: false` 关）`notify.Desktop` 横幅 + `notify.Wall` 广播到本机登录终端 + 能点的系统对话框 `notify.Confirm`（macOS osascript `display dialog`、Linux zenity），三个钮：拒绝/允许/「允许并不再问」，点了就写 `.approved`/`.denied`（第三钮多落一个 `.remember`）；内嵌模式另走 `OnPending` 钩子把提示行写进**同账号的活跃 towstrap SSH 终端**（`broadcastSSH`，exec 会话不写）；用户跑 `approve <id>` 写 `<id>.approved`（`--remember` 同写 `.remember`）、deny 写 `<id>.denied`，服务侧每 500ms 轮询直到 `ask_timeout`；`.remember` 随批准把「机器+命令」记进发起会话的名单，同命令再来直接放行（对应 `approval=remembered`）
+2. **本地文件**（`ask_via: local`，或 stdio 下 auto 且客户端不支持弹窗；**显式设置压过客户端能力**——有的客户端声明了弹窗能力却渲染不出来，用它绕开；内嵌模式 auto 不会走到这条）：`approvals_dir` 里落 `<id>.json`（`{id,machine,kind,detail,cwd,created,pid}`，0600）；待批挂上后立刻发提示——MCP logging 通知给调用方会话（尽力投递：客户端没发 `logging/setLevel` 或请求 `_meta` 没带 `logLevel` 时 SDK 静默丢弃，且该特性已随协议弃用；不带级别门的 `notifications/progress` 是给带 progressToken 的请求补的确定性通道）、stderr slog（stdio-over-SSH 时落在远端终端）、`LocalNotify` 开时（stdio 恒开，内嵌模式默认关、`mcp.local_notify: true` 显式开）`notify.Desktop` 横幅 + 能点的系统对话框 `notify.Confirm`（macOS osascript `display dialog`、Linux zenity），三个钮：拒绝/允许/「允许并不再问」，点了就写 `.approved`/`.denied`（第三钮多落一个 `.remember`）；**刻意不往终端写字节**——没有 wall 广播、不写 towstrap SSH 会话（会画花 vim/top 这类 TUI 的屏幕，而且审批对象是调用方不是服务器上登着的人）；用户跑 `approve <id>` 写 `<id>.approved`（`--remember` 同写 `.remember`）、deny 写 `<id>.denied`，服务侧每 500ms 轮询直到 `ask_timeout`；`.remember` 随批准把「机器+命令」记进发起会话的名单，同命令再来直接放行（对应 `approval=remembered`）
 3. **会话内确认**（`ask_via: llm`，或内嵌服务器 auto 且客户端不支持弹窗——内嵌侧「本机」没人值守，本地待批只会挂到超时，auto 兜底到这条）：工具入参带 `confirmed`/`remember` 两个 bool。第一次调用只 `markPending`（键 `rememberedKey`：sessionID + machine + kind + detail + cwd + session + digest）记一笔「已发起确认」，返回 `AwaitingLLM` → 调用方把一段操作指引当错误结果还给 LLM（机器、命令、cwd、常驻会话、风险预览、授权编号都在里面；说明命令、风险、请用户明确同意后用相同参数加 `confirmed=true` 重试）。重试时凭挂起标记放行：标记一次性、10 分钟过期（`llmConfirmTTL`）、`confirmed=true` 对没发起过确认的命令无效；llm 标记消费后留墓碑（`spent`）——窗口内同一条请求不再放行也不再挂起，回 `AskSpent` 实话文案（否则指引本身就能再走一圈，一次同意拆成无限次执行）；`remember=true` 时同时进 remembered 名单。注意 confirmed 只是 LLM 声称的同意——防误操作，不等于独立核实的真人批准，审计单列 `MCP-CONFIRMED`、墓碑命中单列 `MCP-ASK-SPENT`
 
 `remember` 按**客户端会话**记（`rememberedKey` 全上下文联绑，会话结束清理），记住的值是当初那次授权的编号。超时/用户取消 → `Timeout`；批准环节不可用 → `Unavailable`；墓碑命中 → `AskSpent`。进出批准环节记 `MCP-ASK`（via=elicit/local/llm，带 `auth=ap-…` 授权编号）和结果事件 `MCP-APPROVED`/`MCP-CONFIRMED`/`MCP-DENIED`/`MCP-ASK-TIMEOUT`/`MCP-ASK-SPENT`。
@@ -322,7 +325,7 @@ CREATE INDEX IF NOT EXISTS idx_mcp_token ON mcp_clients(token_enc);
 | `mcp.path` | string | `/mcp` | 挂载路径 |
 | `mcp.allow_plain_http` | bool | `false` | 明文+非回环放行开关 |
 | `mcp.approvals_dir` | string | 审计日志目录旁 `approvals/` | 待批文件目录 |
-| `mcp.local_notify` | bool | `true` | 待批请求的本机提醒：弹「允许/拒绝」系统对话框 + wall 广播 + 写提示到同账号 towstrap SSH 终端（无桌面自动静默退化；显式 `false` 关闭） |
+| `mcp.local_notify` | bool | `false` | 待批请求的本机提醒：弹「允许/拒绝」系统对话框 + 桌面横幅通知（无桌面自动静默退化；服务器本机默认没人值守所以默认关，专人值守时显式 `true` 开） |
 | `mcp.machines.<id>.description` / `.roots` | string / []string | — | MCP 侧元数据；键是完整机器 ID |
 | `mcp.policy` / `mcp.limits` | — | 内置默认 | 与 mcp.yaml 同格式 |
 

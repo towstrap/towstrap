@@ -92,7 +92,7 @@ func startPtyEnv(shell, command, cwd string, cols, rows uint32, extraEnv []strin
 	if err != nil {
 		return fail(err)
 	}
-	envp := envBlock(append(childEnv(), extraEnv...))
+	envp := &envBlock(append(childEnv(), extraEnv...))[0]
 	var cwdPtr *uint16
 	if cwd != "" {
 		cwdPtr, err = windows.UTF16PtrFromString(expandHome(cwd))

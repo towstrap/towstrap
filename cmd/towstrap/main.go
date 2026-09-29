@@ -115,7 +115,7 @@ func usage() {
   --insecure                   服务器用自签证书时跳过证书校验
   --audit-log 路径             会话审计日志（默认 root: /var/lib/towstrap/audit.log，
                                否则 ~/.towstrap/audit.log）
-  --quiet                      关掉会话开始/结束的桌面通知和 wall 广播
+  --quiet                      关掉会话开始/结束的桌面横幅通知
                                （审计日志不受影响，仍照写）
   --mirror-idle 时长           镜像终端闲置多久自动终结（默认 72h；0/off 不启用）
   --auto-update=false          关掉自动升级（默认开：服务器发现有新版时

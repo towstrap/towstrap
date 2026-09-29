@@ -40,7 +40,7 @@ type Config struct {
 	Insecure bool
 	// AllowPlain 允许明文 ws:// 连非回环服务器（token 会裸奔，须显式开）。
 	AllowPlain bool
-	// Quiet 关掉会话开始/结束的桌面通知和 wall 广播（审计日志不受影响）。
+	// Quiet 关掉会话开始/结束的桌面横幅通知（审计日志不受影响）。
 	Quiet bool
 	// AuditLog 审计日志路径；空 = DefaultAuditPath()。
 	AuditLog string

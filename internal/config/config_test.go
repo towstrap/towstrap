@@ -105,8 +105,9 @@ agent:
 	}
 }
 
-// TestMCPLocalNotifyTriState：local_notify 是三态——不写 = nil（上层默认
-// 开），显式 false 才是关。审批提醒默认开启依赖这个区分。
+// TestMCPLocalNotifyTriState：local_notify 是三态——不写 = nil，由上层
+// 决定默认（内嵌服务器没人值守翻成 false，stdio 恒 true），显式
+// true/false 才是写死的开关。
 func TestMCPLocalNotifyTriState(t *testing.T) {
 	def := write(t, "server:\n  mcp:\n    enabled: true\n")
 	s, err := LoadServer(def)
@@ -114,7 +115,7 @@ func TestMCPLocalNotifyTriState(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.MCP == nil || s.MCP.LocalNotify != nil {
-		t.Fatalf("不写 local_notify 应是 nil（默认开）: %#v", s.MCP)
+		t.Fatalf("不写 local_notify 应是 nil（上层定默认）: %#v", s.MCP)
 	}
 
 	off := write(t, "server:\n  mcp:\n    enabled: true\n    local_notify: false\n")
@@ -124,6 +125,15 @@ func TestMCPLocalNotifyTriState(t *testing.T) {
 	}
 	if s.MCP.LocalNotify == nil || *s.MCP.LocalNotify {
 		t.Fatalf("显式 false 应解析成 *false: %#v", s.MCP.LocalNotify)
+	}
+
+	on := write(t, "server:\n  mcp:\n    enabled: true\n    local_notify: true\n")
+	s, err = LoadServer(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MCP.LocalNotify == nil || !*s.MCP.LocalNotify {
+		t.Fatalf("显式 true 应解析成 *true: %#v", s.MCP.LocalNotify)
 	}
 }
 

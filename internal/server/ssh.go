@@ -20,7 +20,6 @@ import (
 
 	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/allow"
-	"github.com/towstrap/towstrap/internal/auditlog"
 	"github.com/towstrap/towstrap/internal/proto"
 )
 
@@ -509,13 +508,6 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		s.audit.Log("SESSION-END", "user", username, "from", from, "id", sh.id, "code", fmt.Sprintf("%d", sh.exitCode()))
 	}()
 
-	// 交互终端登记进广播表：之后 MCP 有待批请求时往这里写提示行——
-	// 人正登在服务器上时立刻看得见（exec 会话不登记，不污染脚本输出）。
-	if isPty {
-		s.registerSSH(sess, account)
-		defer s.unregisterSSH(sess)
-	}
-
 	if isPty {
 		go func() {
 			for win := range winCh {
@@ -559,69 +551,6 @@ func (s *Server) handleSSH(sess glssh.Session) {
 		_, _ = fmt.Fprintln(sess.Stderr(), "agent: "+m)
 	}
 	_ = sess.Exit(sh.exitCode())
-}
-
-// registerSSH/unregisterSSH 维护活跃交互 SSH 会话表；broadcastSSH 把
-// 「有 MCP 请求在等人批准」写进同账号的每个终端——人正登在服务器上时
-// 立刻看得见，不用猜调用为什么挂着。按账号过滤：命令内容不跨账号泄；
-// machine 解析不出账号（不该有）时发给所有会话兜底。
-//
-// 每个会话一条带缓冲的出队列（sshNoticeQueue 深）+ 专用写 goroutine：
-// 广播只在锁里做非阻塞投递，真正把「可能堵住的网络写」放在会话自己的
-// 协程里——一个挂着不读终端的客户端不会冻结别人的登录、清理或审批提示。
-type sshOutbox struct {
-	acct string
-	w    io.Writer
-	ch   chan string
-}
-
-// sshNoticeQueue 单会话待写提示的最大积压数。提示只是提醒（批准本身
-// 照常挂着等批），满了丢新的不丢旧的——人总会看到最近一条。
-const sshNoticeQueue = 8
-
-func (s *Server) registerSSH(sess glssh.Session, account string) {
-	ob := &sshOutbox{acct: account, w: sess, ch: make(chan string, sshNoticeQueue)}
-	s.sshMu.Lock()
-	if s.sshSess == nil {
-		s.sshSess = map[glssh.Session]*sshOutbox{}
-	}
-	s.sshSess[sess] = ob
-	s.sshMu.Unlock()
-	go func() {
-		for line := range ob.ch {
-			if _, err := io.WriteString(ob.w, line); err != nil {
-				return // 会话死了：登记处会在 unregister 时摘掉它
-			}
-		}
-	}()
-}
-
-func (s *Server) unregisterSSH(sess glssh.Session) {
-	s.sshMu.Lock()
-	ob := s.sshSess[sess]
-	delete(s.sshSess, sess)
-	s.sshMu.Unlock()
-	if ob != nil {
-		close(ob.ch) // 写 goroutine 排空后退出；卡在写里的由会话关闭兜底
-	}
-}
-
-func (s *Server) broadcastSSH(machine, text string) {
-	account, _ := accounts.SplitMachineID(machine)
-	// 文本来自 LLM 提交的命令内容，先剥掉控制字符再进终端——不然一条
-	// 恶意命令就能伪造提示、改标题甚至触发终端应答（应答会被当键盘输入
-	// 喂回 shell）。原始内容在待批文件和审计里照旧全留。
-	line := fmt.Sprintf("\r\n\x1b[1;33m[towstrap] %s\x1b[0m\r\n", auditlog.Clean(text))
-	s.sshMu.Lock()
-	defer s.sshMu.Unlock()
-	for _, ob := range s.sshSess {
-		if account == "" || ob.acct == account {
-			select {
-			case ob.ch <- line:
-			default: // 队列满就丢这条：绝不阻塞广播方和其他会话
-			}
-		}
-	}
 }
 
 // idleGate 包住 SSH 会话的输入流：距上次敲键超过 limit 后，新到的第一笔输入

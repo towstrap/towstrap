@@ -5,6 +5,7 @@ package client
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +25,24 @@ type ptyFile struct {
 	file *os.File
 	cmd  *exec.Cmd
 	dead atomic.Bool // Close 后泵的 poll 循环靠它退出
+	// inflight 是正在碰 fd 的调用数（Read/Write/control）。Close 先置 dead
+	// 挡住新调用，等存量出栈再 file.Close——不然关掉的 fd 号可能立刻被
+	// 别的文件复用，让 Poll/Read/ioctl 打到错误的对象上。
+	inflight atomic.Int32
 }
+
+// enter 登记一次 fd 使用；返回 false 表示已 Close，调用方直接 EOF。
+// 登记后再查 dead：先查后登会和 Close 的「dead→等 inflight」交错出窗。
+func (p *ptyFile) enter() bool {
+	p.inflight.Add(1)
+	if p.dead.Load() {
+		p.inflight.Add(-1)
+		return false
+	}
+	return true
+}
+
+func (p *ptyFile) leave() { p.inflight.Add(-1) }
 
 // startPty 起 PTY 会话：command 非空走「shell -c 命令」，空是交互 shell。
 // 交互 shell 用 argv[0] 加「-」前缀变登录 shell（sshd 同款做法，比 -l 旗标
@@ -66,6 +84,10 @@ func startPtyEnv(shell, command, cwd string, cols, rows uint32, extraEnv []strin
 // control 在主端 fd 上做 ioctl：走 SyscallConn 拿原始 fd（顺便一提，
 // startPty 里已经主动 Fd()+非阻塞了，这里只是统一入口）。
 func (p *ptyFile) control(fn func(fd int) error) error {
+	if !p.enter() {
+		return io.EOF
+	}
+	defer p.leave()
 	sc, err := p.file.SyscallConn()
 	if err != nil {
 		return err
@@ -78,9 +100,13 @@ func (p *ptyFile) control(fn func(fd int) error) error {
 }
 
 // Read 主端读：poll 等数据（100ms 颗粒），有数据走非阻塞 unix.Read。
-// Close 只置 dead——泵在下一轮 poll 超时内（≤100ms）自行退出，不依赖
-// Linux 上不成立的「close 打断阻塞 read」。
+// Close 先置 dead——泵在下一轮 poll 超时内（≤100ms）自行退出，不依赖
+// Linux 上不成立的「close 打断阻塞 read」——再经 inflight 等它出栈才关 fd。
 func (p *ptyFile) Read(b []byte) (int, error) {
+	if !p.enter() {
+		return 0, io.EOF
+	}
+	defer p.leave()
 	fd := int32(p.file.Fd())
 	for {
 		if p.dead.Load() {
@@ -119,7 +145,13 @@ func (p *ptyFile) Read(b []byte) (int, error) {
 	}
 }
 
-func (p *ptyFile) Write(b []byte) (int, error) { return p.file.Write(b) }
+func (p *ptyFile) Write(b []byte) (int, error) {
+	if !p.enter() {
+		return 0, io.EOF
+	}
+	defer p.leave()
+	return p.file.Write(b)
+}
 
 func (p *ptyFile) Close() error {
 	p.dead.Store(true)
@@ -132,6 +164,20 @@ func (p *ptyFile) Close() error {
 		_ = p.cmd.Process.Kill()
 	}
 	if p.file != nil {
+		// 等所有在用者出栈再关 fd（fd 复用是真实坑：关掉的号被新文件
+		// 拿走后，在飞的 Poll/Read/Write/ioctl 会打到它身上）。等待设
+		// 上限：Read 靠 100ms 的 poll 颗粒必退、control 的 ioctl 即时
+		// 返回，但 Write 走 os.File 的运行时 poller，从端被脱管进程持
+		// 有又不读时它能无限期挂着——到点强行 file.Close()，poller 的
+		// evict 会让挂住的写者拿错误退出，收摊路径不能被它拖死。
+		deadline := time.Now().Add(1500 * time.Millisecond)
+		for p.inflight.Load() != 0 {
+			if !time.Now().Before(deadline) {
+				slog.Warn("pty 关闭等不到在飞调用出栈，强制关 fd", "inflight", p.inflight.Load())
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
 		return p.file.Close()
 	}
 	return nil

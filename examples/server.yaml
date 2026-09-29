@@ -56,12 +56,14 @@ server:
   #   # 确认只在内网/隧道里跑才允许明文：
   #   # allow_plain_http: true
   #   # approvals_dir: /var/lib/towstrap/approvals  # 默认：审计日志目录旁的 approvals/
-  #   # 待批请求写在这（默认就有：客户端不支持批准弹窗时 auto 也走本地待批），
-  #   # 用 towstrap-server mcp pending / approve <id> / deny <id> 在服务器上处理。
-  #   # local_notify 默认开——待批时弹「允许/拒绝」系统对话框 + wall 广播 +
-  #   # 提示行写进同账号在登的 towstrap SSH 终端；headless 机器自动静默退化，
-  #   # 嫌吵可显式 local_notify: false 关掉。
-  #   # local_notify: false
+  #   # 待批请求写在这：policy.ask_via: local 显式打开时才走这个通道（内嵌
+  #   # 模式的 auto 默认是「会话内确认」——让 LLM 把命令讲给用户、同意后再
+  #   # 重试，不是落本地文件）；账号本人也能在 SSH 里 @mcp pending/approve。
+  #   # local_notify 默认关——审批对象是发起调用的用户（在 LLM 客户端/MCP
+  #   # 会话那头），服务器本机没人值守，弹给「服务器」的对话框只会白挂。
+  #   # 服务器有监控屏等专人值守时可显式开：待批时弹「允许/拒绝」系统对话框
+  #   # + 桌面横幅通知；headless 机器自动静默退化。
+  #   # local_notify: true
   #   # ——有的 MCP 客户端声称支持批准弹窗却渲染不出来，policy.ask_via: local
   #   # 是绕开它的现成办法（auto 下它会把调用挂到超时）。
   #   # machines 是 MCP 侧元数据（说明 + write_file 自动放行目录），

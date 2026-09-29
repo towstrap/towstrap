@@ -268,7 +268,7 @@ agent:
   # agent_token: tsa-...              # literal token (no remote rotation)
   # shell: /bin/bash                  # defaults to $SHELL, then /bin/bash
   # insecure: true                    # only for self-signed server certs
-  # quiet: true                       # mute desktop notifications/wall (audit still written)
+  # quiet: true                       # mute desktop notifications (audit still written)
   # audit_log: /path/audit.log        # default /var/lib/towstrap/audit.log (root) or ~/.towstrap/audit.log
 ```
 
@@ -305,7 +305,7 @@ The credentials section shows the agent token's effective source (flag/env/confi
 
 The agent keeps the machine's owner in the loop by default:
 
-- **Notifications**: a desktop notification (macOS Notification Center / Linux `notify-send`) plus a `wall` broadcast fire when the active-session count goes 0→1 and 1→0; per-source cooldown is 10 minutes (audit still records everything — it just doesn't spam)
+- **Notifications**: a desktop notification (macOS Notification Center / Linux `notify-send`) fires when the active-session count goes 0→1 and 1→0; per-source cooldown is 10 minutes (audit still records everything — it just doesn't spam). **Nothing is ever written into terminals** — `wall`-style broadcasts would corrupt the screen state of TUIs like vim/top, so they've been deliberately left out
 - **Audit**: every start logs `AGENT-START` (version, server, shell, insecure/quiet, uid); every session logs `START`/`END` (source `login@IP`, command, end)
 - `--quiet` / `quiet: true` mutes notifications only; audit is always written; failed notifications don't affect sessions
 - Running as root logs a warning: `agent is running as root: remote logins get a root shell`
@@ -494,7 +494,7 @@ Restrictions:
 - **Password-class logins only**: public-key sessions are rejected (`MGMT-DENY reason=pubkey`) — keys are for automation, not management
 - **TOTP-bound accounts must enter a fresh code** (the one used at login can't be replayed); 3 wrong codes disconnect, each logged as `MGMT-DENY reason=totp` and counted by the login rate limiter
 - A `+machine` suffix in the login name is fine — it's handled by the account part
-- `@mcp` grants are pinned to your own account: `--machine` rejects other accounts and `'*'` — you can already SSH into your machines for a full shell, and an MCP token only goes through the policy engine, so this isn't a privilege grant. Clients are namespaced as `account.name`, invisible across accounts
+- `@mcp` grants are pinned to your own account: `--machine` rejects other accounts and `'*'` — you can already SSH into your machines for a full shell, and an MCP token only goes through the policy engine, so this isn't a privilege grant. Clients carry an `owner` column (ownership is *not* decided by an `account.name` prefix — account names may contain dots, and a prefix would collide with another account's clients such as `alice.bob.*`); every `@mcp` lookup, listing, edit, delete and rotation filters on `owner = your account`, so accounts are mutually invisible. Admin-issued clients have an empty `owner` and no `@mcp` command can reach them; to hand a credential to an account, an admin runs `mcp set NAME --owner ACCOUNT` (auto-renames to `account.short`) and `--owner none` reclaims it
 - `@mcp pending`/`approve`/`deny` only see pending requests targeting your own machines — `--all` settles yours alone, never other accounts'
 - Token rotation doesn't live here — run `towstrap token refresh` on the machine (next section)
 
@@ -684,9 +684,9 @@ Clients outside the list — or custom integrations — can also call the endpoi
 
 | Command | Purpose |
 | --- | --- |
-| `mcp add NAME --machine GRANT... [--allow-ip A]...` | issue a client token (shown once); prints client config + skill install commands |
-| `mcp list` | list clients: machine grants, source allowlist, status, created |
-| `mcp set NAME [--machine]... [--allow-ip]... [--clear-allow] [--disable\|--enable]` | change grants/allowlist/enabled |
+| `mcp add NAME --machine GRANT... [--allow-ip A]... [--owner ACCOUNT]` | issue a client token (shown once); prints client config + skill install commands; `--owner` issues straight into an account's self-service space (same as their `@mcp add`), omitting it keeps it admin-owned |
+| `mcp list` | list clients: owner, machine grants, source allowlist, status, created |
+| `mcp set NAME [--machine]... [--allow-ip]... [--clear-allow] [--disable\|--enable] [--owner ACCOUNT\|none]` | change grants/allowlist/enabled/ownership — `--owner ACCOUNT` hands it to that account (renames to `account.short`), `--owner none` reclaims it to admin |
 | `mcp remove NAME` | delete; token dies |
 | `mcp token NAME [--regen]` | show/rotate token |
 | `mcp pending [--approvals-dir DIR] [--config server.yaml]` | list pending approvals |
@@ -720,10 +720,10 @@ The built-in lists live in `internal/mcpsrv/policy.go` (`DefaultAllow`/`DefaultA
 Which path an approval takes is decided by `policy.ask_via`; unset (auto) means: popup when the client supports it; when it can't pop, where the server runs decides — stdio (`towstrap-mcp` on your own machine) falls back to local pending files for a real person, while the embedded `towstrap-server` MCP (whose "local" side is an unattended server where pending files would just hang until timeout) falls back to in-conversation confirmation so the remote user in the chat can approve:
 
 1. **Popup** (auto + client supports elicitation): an "allow execution" prompt, with a "don't ask again for this command in this session" checkbox — the strongest path, the consent is a real person clicking
-2. **Local pending** (`ask_via: local`, or stdio auto when the client can't pop): the pending request lands in `approvals_dir`; a human runs `towstrap-mcp approve <id>` (stdio) or `towstrap-server mcp approve <id>` (embedded) — add `--remember` to stop re-asking for the same command within the session. A real clickable **system dialog** pops too — three buttons: deny / allow / "allow and don't ask again" (macOS system dialog, zenity on Linux, desktop notification + `wall` broadcast to all logged-in terminals if neither works); stdio always pops, embedded mode pops by default as well (`mcp.local_notify` defaults on; on headless servers the channels quietly degrade, set `local_notify: false` to silence them). **While waiting, the calling MCP client gets a log notification** (id, machine, command, how to approve); the embedded server also writes the notice straight into **same-account interactive towstrap SSH terminals** — if you're SSH'd into the server, a line `[towstrap] waiting for approval ap-xxxx (machine: command)…` appears right in your terminal instead of leaving you guessing why the call is stuck
+2. **Local pending** (`ask_via: local`, or stdio auto when the client can't pop): the pending request lands in `approvals_dir`; a human runs `towstrap-mcp approve <id>` (stdio) or `towstrap-server mcp approve <id>` (embedded) — add `--remember` to stop re-asking for the same command within the session. A real clickable **system dialog** pops too — three buttons: deny / allow / "allow and don't ask again" (macOS system dialog, zenity on Linux, desktop banner notification if neither works); stdio always pops, embedded mode doesn't pop by default (`mcp.local_notify` defaults off — the approver is the calling user, not someone at the server; set `local_notify: true` for attended servers; headless environments degrade silently; `TOWSTRAP_NO_NOTIFY=1` in the process environment disables desktop notifications and dialogs at once). **While waiting, the calling MCP client gets a log notification** (id, machine, command, how to approve). Note: **nothing is ever written into any terminal** — no `wall` broadcast, no notice lines injected into towstrap SSH sessions, so TUIs like vim/top are never corrupted
 3. **In-conversation confirmation** (`ask_via: llm`, or embedded-mode auto when the client can't pop): the first call **does not execute** — the tool returns instructions to the LLM carrying the machine, command, cwd, resident session, risk preview and the authorization id; the LLM relays the command and its risk to the user and retries with `confirmed=true` once the user agrees. Confirmations are tracked per "session + machine + command + cwd + resident session", are **one-time**, and expire after 10 minutes; `confirmed=true` cannot pre-authorize a command that was never asked about, and a consumed marker cannot re-arm within the window (the same command needs a fresh confirmation round after it expires). If the user says "always allow this", the LLM may add `remember=true` to skip re-asking within the session. Note this is only the LLM's claim of consent — weaker than the two paths above; stdio never selects it automatically, it is the embedded fallback for "nobody is sitting at the server"
 
-⚠️ An explicit `ask_via` **overrides client capability and deployment form**: some clients (certain Cursor versions) claim elicitation support but never render the prompt, so the call just hangs until timeout — set `policy.ask_via: local` (the local dialog pops right away; `local_notify` is on by default in embedded mode too — but note the embedded "local" is the **server** side, where a dialog nobody can see is useless) or `llm` to route around them.
+⚠️ An explicit `ask_via` **overrides client capability and deployment form**: some clients (certain Cursor versions) claim elicitation support but never render the prompt, so the call just hangs until timeout — set `policy.ask_via: local` (in embedded mode you also need `local_notify: true` for the dialog — but note the embedded "local" is the **server** side, where a dialog nobody can see is useless) or `llm` to route around them.
 
 Requests time out and are denied after `ask_timeout` (default 5 minutes); the 10-minute window for in-conversation confirmation is a separate deadline (waiting for the LLM's confirmed retry).
 
@@ -806,10 +806,13 @@ curl -H "X-Agent-Token: tsa-..."       https://server:7880/status   # a machine 
 `/status` returns:
 
 ```json
-{"ok":true,"http":":7880","ssh":":7822","users":[{"user":"alice","machine":"alice+default","online":true}]}
+{"ok":true,"http":":7880","ssh":":7822","users":[{"user":"alice","machine":"alice+default","online":true}],
+ "uptime_s":9000,"sessions_active":2,"auth_ok":230,"auth_fail":9,"relay_to_agent":1234567,"relay_from_agent":345678}
 ```
 
-The admin token lists every machine (`machine` is the full login name); a machine token sees only itself — ordinary users can't enumerate the fleet. With no machines online, `ok:false` and HTTP 503.
+The admin token lists every machine (`machine` is the full login name) plus global counters — uptime, active sessions, auth success/failure, relayed bytes; a machine token sees only itself — ordinary users can't enumerate the fleet. With no machines online, `ok:false` and HTTP 503.
+
+**Aggregate stats**: run `towstrap-server stats` on the server — registered users/machines/MCP clients (from the users DB), online machines, active sessions, uptime and relayed traffic (via the local `/status`, needs `admin_token`; shows `—` when the server isn't running), and usage computed from the audit log: SSH+MCP session count and completed duration, agent online total, auth tallies, top-5 by sessions/online time. `--since 24h|7d|30d|all` bounds the window (default all), `--json` emits machine-readable output, `--users-db`/`--audit-log`/`--config` pick the data sources.
 
 ---
 

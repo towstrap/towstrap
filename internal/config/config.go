@@ -100,9 +100,9 @@ type MCP struct {
 	Policy         mcpsrv.PolicyCfg           `yaml:"policy"`
 	Limits         mcpsrv.LimitsCfg           `yaml:"limits"`
 	// LocalNotify 待批请求的本机提醒：能弹「允许/拒绝」系统对话框就弹
-	// （弹不了退到桌面通知 + wall 广播到登录终端）。默认开——审批本来
-	// 就该让人看见；headless 机器上各通道自动静默退化，嫌吵可显式
-	// local_notify: false 关掉。
+	// （弹不了退到桌面横幅通知；不往终端写字节）。默认关——审批对象是
+	// 发起调用的用户，不在服务器跟前；有专人值守时可显式
+	// local_notify: true 开；headless 机器上各通道自动静默退化。
 	LocalNotify *bool `yaml:"local_notify"`
 }
 

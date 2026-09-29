@@ -746,7 +746,7 @@ func (s *Server) authorizeCommand(ctx context.Context, req *mcp.CallToolRequest,
 		r, _ := errResult("用户拒绝了这条命令。请向用户说明你想执行什么、为什么，由用户决定；也可以请用户把它加进 policy.allow 名单。")
 		return "", "", r
 	case Timeout:
-		r, _ := errResult("等待批准超时（%s）：用户在弹窗里没表态，也没在终端跑 %s。请向用户说明情况再决定是否重试。", humanDur(s.cfg.Policy.AskTimeout), s.cfg.ApproveCmd)
+		r, _ := errResult("等待批准超时（%s，批准编号 %s）：用户没表态。批准途径：在服务器跑 %s %s，或账号本人 SSH 里 @mcp approve %s。请向用户说明情况再决定是否重试。", humanDur(s.cfg.Policy.AskTimeout), authID, s.cfg.ApproveCmd, authID, authID)
 		return "", "", r
 	default:
 		r, _ := errResult("批准环节不可用：%v", err)

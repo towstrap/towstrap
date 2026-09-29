@@ -21,13 +21,20 @@ import (
 
 func usageMCP() {
 	fmt.Fprintf(os.Stderr, `用法:
-  towstrap-server mcp add    名字 --machine 授权... [--allow-ip 地址]... [通用选项]
+  towstrap-server mcp add    名字 --machine 授权... [--allow-ip 地址]...
+                           [--owner 账号] [通用选项]
                            签发一个 MCP 客户端 token（tsm-...，只显示一次）。
                            --machine 写法：'*' 全部机器；'alice' 或 'alice+*'
                            alice 名下全部；'alice+office' 指定一台。
+                           --owner 账号 = 签给该账号自管（名字自动收敛成
+                           「账号.名字」，本人 @mcp 能管）；不写 = 管理员名下。
   towstrap-server mcp list   [通用选项]                          列出客户端
   towstrap-server mcp set    名字 [--machine 授权]... [--allow-ip 地址]...
-                           [--clear-allow] [--disable|--enable] [通用选项]
+                           [--clear-allow] [--disable|--enable]
+                           [--owner 账号|none] [通用选项]
+                           --owner 账号 = 移交给该账号（名字自动改成
+                           「账号.短名」，本人 @mcp 接手）；--owner none =
+                           收回管理员名下
   towstrap-server mcp remove 名字 [通用选项]                     删除（token 作废）
   towstrap-server mcp token  名字 [--regen] [通用选项]           看/换 token
   towstrap-server mcp pending  [--approvals-dir 目录] [--config server.yaml]
@@ -157,6 +164,7 @@ func mcpAdd(args []string) int {
 	var machines, allowIPs config.StringList
 	fs.Var(&machines, "machine", "")
 	fs.Var(&allowIPs, "allow-ip", "")
+	owner := fs.String("owner", "", "")
 	rest := parseMix(fs, args)
 	name := firstArg(rest)
 	if name == "" {
@@ -166,6 +174,17 @@ func mcpAdd(args []string) int {
 	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
 	if !ok {
 		return 2
+	}
+	// --owner：签给该账号自管——名字收敛成「账号.名字」（自助面按全名
+	// 寻址），账号必须真实存在。
+	if *owner != "" {
+		if _, ok := env.store.Get(*owner); !ok {
+			slog.Error(fmt.Sprintf("账号 %q 不存在——归属必须指向真实账号", *owner))
+			return 2
+		}
+		if !strings.HasPrefix(name, *owner+".") {
+			name = *owner + "." + name
+		}
 	}
 	// 机器现在不存在不挡（可以先建凭据后建账号/机器），但提醒一声。
 	for _, m := range machines {
@@ -184,12 +203,18 @@ func mcpAdd(args []string) int {
 			}
 		}
 	}
-	c, token, err := env.store.MCPAdd(name, machines, allowIPs)
+	// 管理员签发：默认 owner 留空——这样的客户端 @mcp 自助面碰不到（自助
+	// 面只管 owner = 当前账号的），只能由管理员 CLI 管理；--owner 给了
+	// 账号就是直接签给本人（等价于对方跑了一遍 @mcp add）。
+	c, token, err := env.store.MCPAdd(name, *owner, machines, allowIPs)
 	if err != nil {
 		slog.Error(err.Error())
 		return 2
 	}
 	fmt.Printf("MCP 客户端 %q 已创建\n", c.Name)
+	if *owner != "" {
+		fmt.Printf("归属 %s——本人 @mcp 可以直接管理\n", *owner)
+	}
 	fmt.Printf("token: %s\n（只显示这一次；忘了就 mcp token %s --regen 换一个，旧的立刻作废）\n\n", token, c.Name)
 	fmt.Printf("支持 MCP 的客户端（如 Claude Code）这样配：\n")
 	fmt.Printf("  \"mcpServers\": {\"towstrap\": {\"type\": \"http\", \"url\": %q,\n"+
@@ -213,19 +238,23 @@ func mcpList(args []string) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "名字\t机器\t来源白名单\t状态\t创建于")
+	fmt.Fprintln(tw, "名字\t归属\t机器\t来源白名单\t状态\t创建于")
 	for _, c := range list {
 		state := "启用"
 		if c.Disabled {
 			state = "停用"
+		}
+		ow := c.Owner
+		if ow == "" {
+			ow = "-"
 		}
 		mach := strings.Join(c.Machines, ",")
 		ips := strings.Join(c.AllowIPs, ",")
 		if ips == "" {
 			ips = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			c.Name, mach, ips, state, c.CreatedAt.Format("2006-01-02 15:04"))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			c.Name, ow, mach, ips, state, c.CreatedAt.Format("2006-01-02 15:04"))
 	}
 	tw.Flush()
 	return 0
@@ -240,6 +269,7 @@ func mcpSet(args []string) int {
 	clearAllow := fs.Bool("clear-allow", false, "")
 	disable := fs.Bool("disable", false, "")
 	enable := fs.Bool("enable", false, "")
+	owner := fs.String("owner", "", "")
 	rest := parseMix(fs, args)
 	name := firstArg(rest)
 	if name == "" {
@@ -249,6 +279,34 @@ func mcpSet(args []string) int {
 	env, ok := loadUserEnv(*configPath, *usersDB, *usersKey, *serverURL)
 	if !ok {
 		return 2
+	}
+	// 区分「没给 --owner」和「--owner none」——前者不动归属，后者收回
+	// 管理员名下（owner 留空，@mcp 碰不到）。
+	var ownerP *string
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "owner" {
+			v := *owner
+			if v == "none" || v == "-" {
+				v = ""
+			}
+			ownerP = &v
+		}
+	})
+	if ownerP != nil {
+		newName, err := env.store.MCPSetOwner(name, *ownerP)
+		if err != nil {
+			slog.Error(err.Error())
+			return 2
+		}
+		if newName != name {
+			fmt.Printf("已改名 %q → %q\n", name, newName)
+			name = newName // 后续按新名继续改
+		}
+		if *ownerP == "" {
+			fmt.Println("已收回管理员名下（@mcp 不再能看到）")
+		} else {
+			fmt.Printf("已移交给 %s——本人 @mcp 可以直接管理\n", *ownerP)
+		}
 	}
 	var machinesP, allowIPsP *[]string
 	var disabledP *bool
@@ -267,8 +325,8 @@ func mcpSet(args []string) int {
 		b := false
 		disabledP = &b
 	}
-	if machinesP == nil && allowIPsP == nil && disabledP == nil {
-		slog.Error("没给要改的内容（--machine / --allow-ip / --clear-allow / --disable / --enable）")
+	if machinesP == nil && allowIPsP == nil && disabledP == nil && ownerP == nil {
+		slog.Error("没给要改的内容（--machine / --allow-ip / --clear-allow / --disable / --enable / --owner）")
 		return 2
 	}
 	if err := env.store.MCPSet(name, machinesP, allowIPsP, disabledP); err != nil {

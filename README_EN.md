@@ -64,7 +64,7 @@ Ships as three static binaries backed by SQLite — no Docker, no web UI, no ext
 - Rate limiting and lockout: counted on both account×IP and account dimensions with exponential backoff
 - Credential protection: token files at `0600`; `TOWSTRAP_AGENT_TOKEN` is removed from child environments; agent-reported credential paths are added to the MCP deny list automatically
 - Two-sided audit: server and agent each record connections/executions/approvals/rotations; approvals carry an authorization ID
-- Session visibility: session start/end triggers a desktop notification and a `wall` broadcast
+- Session visibility: session start/end triggers a desktop notification (never writes into terminals, so TUIs are never corrupted)
 
 ---
 

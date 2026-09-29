@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	glssh "github.com/gliderlabs/ssh"
-
 	"github.com/towstrap/towstrap/internal/accounts"
 	"github.com/towstrap/towstrap/internal/allow"
 	"github.com/towstrap/towstrap/internal/auditlog"
@@ -119,9 +117,6 @@ type Server struct {
 
 	mcpMu      sync.Mutex
 	mcpAuditAt map[string]time.Time // MCP-SESSION 审计去重窗口
-
-	sshMu   sync.Mutex
-	sshSess map[glssh.Session]*sshOutbox // 活跃交互 SSH 会话 → 出队列（待批提示广播用）
 
 	oauth *oauthFlow // nil = 未配置 OAuth
 

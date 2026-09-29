@@ -415,11 +415,34 @@ func (s *Server) mgmtMachine(sess glssh.Session, account string, args []string, 
 	}
 }
 
-// mcpSelfName 是账号自签 MCP 客户端在库里的归属写法：「账号.名字」。
-// 管理员用 mcp add 签的同名前缀客户端也归该账号管（管理员本来就是
-// 代签），@mcp list/remove 只碰这个前缀，越不到别人的名字空间。
+// mcpSelfName 是账号自签 MCP 客户端在库里的全名：「账号.名字」。它只负责
+// 起名字——**归属判定不靠这个名字**（账号名允许点号，前缀不是无歧义的
+// 名字空间），而是靠库里的 owner 列（见 MCPOwnedGet/OwnedList）。管理员
+// 代签的客户端 owner 留空，@mcp 任何子命令都碰不到。
 func mcpSelfName(account, name string) string {
 	return account + "." + strings.TrimPrefix(name, account+".")
+}
+
+// mcpSelfGet 是 @mcp 子命令取「本账号自签客户端」的唯一入口：库里按 owner
+// 列圈定归属，名字只是用户敲的短名。@mcp 的 token/set/remove 都先过它，
+// 拿不到就是不属于本账号——归属判错的后果是明文 token 外送或凭据被改废。
+func (s *Server) mcpSelfGet(account, name string) (accounts.MCPClient, bool) {
+	return s.cfg.Users.MCPOwnedGet(account, mcpSelfName(account, name))
+}
+
+// validMCPClientShort 校验自签客户端的短名。**短名里不许有点**：全名是
+// 「账号.短名」且拼在同一个全局唯一列里，账号名本身可带点，短名再带点
+// 就不是单射——账号 alice 的 "bob.laptop" 会拼出账号 alice.bob 的
+// "alice.bob.laptop"，抢注先把名字占死，对方就再也建不出自己的客户端。
+// 禁掉短名里的点之后，按最后一个点拆分是唯一的。
+func validMCPClientShort(name string) error {
+	if name == "" {
+		return fmt.Errorf("名字不能为空")
+	}
+	if strings.Contains(name, ".") {
+		return fmt.Errorf("名字 %q 里不能带点——名字是「账号.名字」拼出来的，带点会和别的账号撞名", name)
+	}
+	return nil
 }
 
 // mcpSelfMachines 把 --machine 参数收敛成「只能指向本账号」的授权列表：
@@ -464,10 +487,12 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 		_, _ = fmt.Fprintln(sess.Stderr(), err)
 		_ = sess.Exit(1)
 	}
-	// 本账号自签的客户端都挂在「账号.名字」下，操作前校验存在性，
-	// 也把管理员签的别的名字的客户端挡在外面。
+	// 本账号自签的客户端在库里挂在 owner 列上（本账号），操作前按 owner
+	// 取，不按名字前缀——账号名允许点号，前缀匹配会撞到别人账号名里带点
+	// 的客户端（账号 alice 能拼出 alice.bob.laptop 这种名字）。取不到就是
+	// 不属于本账号，管理员签的别的名字的客户端也一并挡在外面。
 	get := func(name string) (accounts.MCPClient, bool) {
-		return s.cfg.Users.MCPGet(mcpSelfName(account, name))
+		return s.mcpSelfGet(account, name)
 	}
 	if len(args) == 0 {
 		usage(2)
@@ -488,12 +513,16 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 			usage(2)
 			return
 		}
+		if err := validMCPClientShort(pos[0]); err != nil {
+			fail(err)
+			return
+		}
 		grants, err := s.mcpSelfMachines(account, machines)
 		if err != nil {
 			fail(err)
 			return
 		}
-		c, token, err := s.cfg.Users.MCPAdd(mcpSelfName(account, pos[0]), grants, nil)
+		c, token, err := s.cfg.Users.MCPAdd(mcpSelfName(account, pos[0]), account, grants, nil)
 		if err != nil {
 			fail(err)
 			return
@@ -506,14 +535,11 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 		_, _ = fmt.Fprintln(sess, "token 只在这里显示这一次——丢了用 @mcp token "+pos[0]+" --regen 换新的")
 		_ = sess.Exit(0)
 	case "list":
-		prefix := account + "."
 		tw := tabwriter.NewWriter(sess, 0, 2, 2, ' ', 0)
 		_, _ = fmt.Fprintln(tw, "名字\t授权\t状态\t创建时间")
 		n := 0
-		for _, c := range s.cfg.Users.MCPList() {
-			if !strings.HasPrefix(c.Name, prefix) {
-				continue
-			}
+		prefix := account + "."
+		for _, c := range s.cfg.Users.MCPOwnedList(account) {
 			state := "启用"
 			if c.Disabled {
 				state = "停用"
@@ -546,7 +572,7 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 			return
 		}
 		if *regen {
-			token, err := s.cfg.Users.MCPRegenToken(full)
+			token, err := s.cfg.Users.MCPOwnedRegenToken(account, full)
 			if err != nil {
 				fail(err)
 				return
@@ -569,7 +595,7 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 			fail(fmt.Errorf("MCP 客户端 %s 不存在（@mcp list 看现有的）", full))
 			return
 		}
-		if err := s.cfg.Users.MCPRemove(full); err != nil {
+		if err := s.cfg.Users.MCPOwnedRemove(account, full); err != nil {
 			fail(err)
 			return
 		}
@@ -634,7 +660,7 @@ func (s *Server) mgmtMCP(sess glssh.Session, account string, args []string, from
 			fail(fmt.Errorf("没给要改的内容（--machine / --allow-ip / --clear-allow / --disable / --enable）"))
 			return
 		}
-		if err := s.cfg.Users.MCPSet(full, machinesP, allowP, disP); err != nil {
+		if err := s.cfg.Users.MCPOwnedSet(account, full, machinesP, allowP, disP); err != nil {
 			fail(err)
 			return
 		}

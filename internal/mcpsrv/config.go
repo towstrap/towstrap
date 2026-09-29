@@ -31,17 +31,13 @@ type Config struct {
 	ApproveCmd string `yaml:"-"`
 	// LocalNotify 控制 ask_via=local 的待批请求要不要弹系统级提醒：能弹
 	// 「允许/拒绝」对话框就弹对话框（点了直接生效），弹不了退到桌面通知。
-	// stdio 模式恒为 true（进程跑在用户的电脑上）；服务器模式默认开
-	// （审批本来就该让人看见），mcp.local_notify: false 显式关掉。
+	// stdio 模式恒为 true（进程跑在用户的电脑上）；服务器模式默认关
+	// （审批对象是发起调用的用户，不在服务器跟前），专人值守的服务器
+	// 可用 mcp.local_notify: true 显式开。
 	LocalNotify bool `yaml:"-"`
 	// Audit 是审计回调：策略拒绝、批准进出、批准结果各记一条。nil 时用
 	// slog 写 stderr；服务器模式换成服务器自己的审计器。
 	Audit func(event string, kv ...string) `yaml:"-"`
-	// OnPending 有待批请求挂上（等人批准）时回调：内嵌服务器用它把
-	// 提示写进同账号的活跃 SSH 终端——人正登着就立刻看得见，不用猜
-	// 为什么调用挂着。machine 是待批机器 ID（账号+机器名），服务端按
-	// 账号只发给同账号的终端，命令内容不跨账号。stdio 模式留 nil。
-	OnPending func(machine, text string) `yaml:"-"`
 	// Remote 表示「本侧没有值守的真人」：内嵌服务器模式为 true——
 	// 远程客户端天然不在服务器跟前，auto 模式下客户端不支持弹窗时
 	// 审批落到会话内确认（llm），而不是本地待批文件+本机对话框

@@ -137,10 +137,10 @@ func TestMCPHTTPAuth(t *testing.T) {
 	waitAudit(t, audit, "MCP-AUTH-FAIL")
 
 	// 客户端自己的 allow_ips 不匹配也拒
-	if _, _, err := users.MCPAdd("vpn-only", []string{"bot"}, []string{"10.9.9.9"}); err != nil {
+	if _, _, err := users.MCPAdd("vpn-only", "", []string{"bot"}, []string{"10.9.9.9"}); err != nil {
 		t.Fatal(err)
 	}
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestMCPHTTPAuth(t *testing.T) {
 	}
 	_ = cs.Close()
 
-	c2, tok2, err := users.MCPAdd("locked", []string{"bot"}, []string{"10.9.9.9"})
+	c2, tok2, err := users.MCPAdd("locked", "", []string{"bot"}, []string{"10.9.9.9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestMCPHTTPAuth(t *testing.T) {
 
 func TestMCPHTTPTools(t *testing.T) {
 	_, httpPort, users, audit, _, rootsDir := startMCPHTTP(t)
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestMCPHTTPTools(t *testing.T) {
 
 func TestMCPHTTPDecline(t *testing.T) {
 	_, httpPort, users, _, _, _ := startMCPHTTP(t)
-	_, tok, _ := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, _ := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	opts := &mcp.ClientOptions{
 		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": false}}, nil
@@ -284,7 +284,7 @@ func TestMCPHTTPDecline(t *testing.T) {
 
 func TestMCPHTTPTimeout(t *testing.T) {
 	_, httpPort, users, _, _, _ := startMCPHTTP(t)
-	_, tok, _ := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, _ := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	opts := &mcp.ClientOptions{
 		ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
@@ -308,7 +308,7 @@ func TestMCPHTTPTimeout(t *testing.T) {
 // 落到 approvals_dir，由 towstrap-server mcp approve 兜底。
 func TestMCPHTTPCLIApproval(t *testing.T) {
 	_, httpPort, users, _, approvalsDir, _ := startMCPHTTPAskVia(t, nil, "/bin/bash", nil, "local")
-	_, tok, _ := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, _ := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	cs, err := mcpHTTPConnect(t, httpPort, tok, nil) // 无 elicitation 能力
 	if err != nil {
 		t.Fatal(err)
@@ -362,7 +362,7 @@ func TestMCPHTTPCLIApproval(t *testing.T) {
 // 用户确认」的指引报错；带 confirmed=true 重试才真正执行。
 func TestMCPHTTPLLMConfirm(t *testing.T) {
 	_, httpPort, users, audit, _, _ := startMCPHTTPAskVia(t, nil, "/bin/bash", nil, "llm")
-	_, tok, _ := users.MCPAdd("chat", []string{"bot"}, nil)
+	_, tok, _ := users.MCPAdd("chat", "", []string{"bot"}, nil)
 	cs, err := mcpHTTPConnect(t, httpPort, tok, nil) // 无 elicitation 能力
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +407,7 @@ func TestMCPHTTPLLMConfirm(t *testing.T) {
 // TestMCPHTTPScope machines 不含 bot 的客户端：看不到也碰不了。
 func TestMCPHTTPScope(t *testing.T) {
 	_, httpPort, users, _, _, _ := startMCPHTTP(t)
-	_, tok, _ := users.MCPAdd("narrow", []string{"other"}, nil)
+	_, tok, _ := users.MCPAdd("narrow", "", []string{"other"}, nil)
 	cs, err := mcpHTTPConnect(t, httpPort, tok, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -451,7 +451,7 @@ func TestMCPHTTPAgentProtect(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, httpPort, users, audit, _, rootsDir := startMCPHTTPProtect(t, []string{secret})
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestMCPHTTPAgentProtect(t *testing.T) {
 // 并标注 restarted。
 func TestMCPHTTPSession(t *testing.T) {
 	_, httpPort, users, audit, _, _ := startMCPHTTP(t)
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestMCPHTTPSessionZsh(t *testing.T) {
 		t.Skip("机器上没有 zsh")
 	}
 	_, httpPort, users, _, _, _ := startMCPHTTPShell(t, nil, zsh)
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +593,7 @@ func TestMCPHTTPTildeRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, httpPort, users, _, _, _ := startMCPHTTPRoots(t, nil, "/bin/bash", []string{"~/work"})
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestMCPHTTPTildeRoots(t *testing.T) {
 // 完整 PTY 链路；同时确认终端 ID 只在本 MCP 会话里有效。
 func TestMCPHTTPTerminalPTY(t *testing.T) {
 	_, httpPort, users, audit, _, _ := startMCPHTTP(t)
-	_, tok, err := users.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := users.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +680,7 @@ func TestMCPHTTPTerminalPTY(t *testing.T) {
 		t.Fatalf("terminal_resize: %s", resultText(res))
 	}
 
-	_, tok2, err := users.MCPAdd("other", []string{"bot"}, nil)
+	_, tok2, err := users.MCPAdd("other", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

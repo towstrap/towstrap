@@ -28,6 +28,13 @@ import (
 	"github.com/towstrap/towstrap/internal/version"
 )
 
+// e2e 在进程内起真 server/mcpsrv/agent——批准路径默认会往本机弹桌面
+// 通知和系统对话框。测试机不该收到这些，统一关掉。
+func TestMain(m *testing.M) {
+	_ = os.Setenv("TOWSTRAP_NO_NOTIFY", "1")
+	os.Exit(m.Run())
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -68,7 +68,7 @@ func (w *Writer) Log(event string, kv ...string) {
 
 // Clean 去掉控制字符（换行、终端转义等）。范围比「ASCII 控制符」宽一些：
 // C1（0x80–0x9f，终端上同样是转义序列起点）和 U+2028/2029（Unicode 行
-// 分隔符，不少查看器会当换行渲染）也剥——审计和终端广播共用这一份。
+// 分隔符，不少查看器会当换行渲染）也剥——审计和对外通知共用这一份。
 func Clean(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == 0x2028 || r == 0x2029 {

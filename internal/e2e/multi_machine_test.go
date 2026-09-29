@@ -270,7 +270,7 @@ func TestMultiMachineMCPGrants(t *testing.T) {
 	}
 
 	// alice+* → 两台
-	_, tokAll, err := users.MCPAdd("all-alice", []string{"alice+*"}, nil)
+	_, tokAll, err := users.MCPAdd("all-alice", "", []string{"alice+*"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestMultiMachineMCPGrants(t *testing.T) {
 	}
 
 	// alice+build → 只有一台
-	_, tokBuild, err := users.MCPAdd("only-build", []string{"alice+build"}, nil)
+	_, tokBuild, err := users.MCPAdd("only-build", "", []string{"alice+build"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

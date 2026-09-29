@@ -36,6 +36,8 @@ func main() {
 		os.Exit(runMachine(os.Args[2:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[2:]))
+	case "stats":
+		os.Exit(runStats(os.Args[2:]))
 	case "service":
 		os.Exit(runServiceCmd(os.Args[2:]))
 	case "update":
@@ -57,6 +59,8 @@ func usage() {
   towstrap-server user    add|list|set|remove|token|totp [选项] 用户名
   towstrap-server machine add|list|set|remove|token [选项] 账号 机器名
   towstrap-server mcp     add|list|set|remove|token|pending|approve|deny [选项]
+  towstrap-server stats [--config server.yaml] [--since 24h|7d|30d|all] [--json]
+                                                                统计：注册数/在线数/用量时长
   towstrap-server service install|status|uninstall [--config server.yaml]  注册成常驻服务
   towstrap-server update [--version vX.Y.Z] [--check]     自升级：拉新版替换自身，服务在跑则重启生效
   towstrap-server version
@@ -152,6 +156,13 @@ func usage() {
   mcp token  名字 [--regen]                                 看/换 token
   mcp pending|approve <id>|deny <id> [--all] [--approvals-dir 目录]
              处理等待人工批准的命令（LLM 客户端不支持弹窗时的兜底通道）
+
+统计（读账号库+审计日志；server 在跑且配了 admin_token 时还会调本机 /status
+补上在线机器数、活跃会话、运行时长、认证计数、转发流量）:
+  stats [--config 文件.yaml] [--users-db 库] [--audit-log 路径]
+        [--since 24h|7d|30d|all] [--json]
+        --since 默认 all；用量段是配对审计事件算出来的闭环时长
+        （SESSION-START/END 算会话时长，AGENT-CONNECT/DISCONNECT 算在线）
 
 安全提示：mcp 开在明文 HTTP 且监听非回环地址时会拒绝启动（Bearer token
 不能明文传输）；确认只在内网/隧道里用才设 mcp.allow_plain_http: true。
@@ -283,8 +294,11 @@ func runServer(args []string) int {
 	var mcpCfg *mcpsrv.Config
 	mcpPath, mcpState := "", "关闭"
 	if cfg.MCP != nil && cfg.MCP.Enabled {
-		// local_notify 默认开（审批就该让人看见）：yaml 显式 false 才关。
-		localNotify := true
+		// local_notify 默认关：审批落在发起调用的用户（LLM 会话/MCP 客户
+		// 端），服务器本机没人值守——弹给「服务器」的对话框和横幅通知只
+		// 会白挂到超时。stdio 的 towstrap-mcp 才默认开（跑在用户电脑上）。
+		// 服务器有监控屏等专人值守场景时可显式 mcp.local_notify: true。
+		localNotify := false
 		if cfg.MCP.LocalNotify != nil {
 			localNotify = *cfg.MCP.LocalNotify
 		}

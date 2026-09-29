@@ -267,7 +267,7 @@ agent:
   # agent_token: tsa-...            # 直写 token（不能远程换发）
   # shell: /bin/bash                # 不写用 $SHELL，都没有用 /bin/bash
   # insecure: true                  # 服务器自签证书时才开
-  # quiet: true                     # 关桌面通知/wall（审计仍写）
+  # quiet: true                     # 关桌面通知（审计仍写）
   # audit_log: /path/audit.log      # 默认 /var/lib/towstrap/audit.log（root）或 ~/.towstrap/audit.log
 ```
 
@@ -304,7 +304,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now towstrap
 
 agent 默认让机器主人能感知到远程访问：
 
-- **通知**：活跃会话数 0→1 和 1→0 时各弹一次桌面通知（macOS 通知中心 / Linux `notify-send`）+ `wall` 广播到所有登录终端；同一来源 10 分钟内最多弹一次（审计照记，只是不刷屏）
+- **通知**：活跃会话数 0→1 和 1→0 时各弹一次桌面通知（macOS 通知中心 / Linux `notify-send`）；同一来源 10 分钟内最多弹一次（审计照记，只是不刷屏）。**不往终端里写字节**——`wall` 这类广播会画花 vim/top 等 TUI 的屏幕，已刻意去掉
 - **审计**：每次启动记 `AGENT-START`（版本、连哪台服务器、shell、insecure/quiet、uid），每个会话记 `START`/`END`（来源 `登录账号@IP`、命令、结束）
 - `--quiet` / `quiet: true` 只关通知，审计照写；通知发不出去不影响会话
 - 以 root 跑会打警告：`agent 正以 root 运行：远程登录者将拿到 root shell`
@@ -495,7 +495,7 @@ TOTP 也可以直接在被管的机器上管——SSH 进机器后在 shell 里�
 - **只能密码类登录**跑：公钥登录会被拒（`MGMT-DENY reason=pubkey`）——公钥是给自动化的，不能管机器
 - **绑了 TOTP 的账号要再输一个新验证码**（登录时用过的那个不能重放）；连错 3 次断开，每次错记 `MGMT-DENY reason=totp` 并计入登录限速
 - 登录名带 `+机器名` 也行，按账号部分处理
-- `@mcp` 的授权范围锁死在本账号：`--machine` 写别人账号或 `'*'` 直接拒——这人本来就能 SSH 上自己的机器拿完整 shell，MCP token 只过策略引擎，不算放权。客户端在库里按 `账号.名字` 归属，跨账号互不可见
+- `@mcp` 的授权范围锁死在本账号：`--machine` 写别人账号或 `'*'` 直接拒——这人本来就能 SSH 上自己的机器拿完整 shell，MCP token 只过策略引擎，不算放权。客户端在库里按 `owner` 列归属（不靠名字前缀——账号名可以带点，前缀会撞到 `alice.bob.*` 这类别人的客户端），`@mcp` 的取/列/改/删/换发一律按 `owner = 当前账号` 过滤，跨账号互不可见；管理员 CLI 签的客户端 `owner` 留空，`@mcp` 碰不到；要把凭据交给某账号自管，管理员跑 `mcp set 名字 --owner 账号`（自动改名成「账号.短名」）收回用 `--owner none`
 - `@mcp pending`/`approve`/`deny` 也只看本账号机器的待批：`--all` 只处理自己的，不会批到别人头上
 - 换 token 不在这里——在 agent 机器上跑 `towstrap token refresh`（见下节）
 
@@ -685,9 +685,9 @@ towstrap-mcp connect mcp --url https://<服务器>/mcp --token tsm-xxx
 
 | 命令 | 作用 |
 | --- | --- |
-| `mcp add 名字 --machine 授权... [--allow-ip 地址]...` | 签发客户端 token（只显示一次），输出客户端配置和 skill 安装命令 |
-| `mcp list` | 列客户端：机器范围、来源白名单、状态、创建时间 |
-| `mcp set 名字 [--machine]... [--allow-ip]... [--clear-allow] [--disable\|--enable]` | 改授权/白名单/停启用 |
+| `mcp add 名字 --machine 授权... [--allow-ip 地址]... [--owner 账号]` | 签发客户端 token（只显示一次），输出客户端配置和 skill 安装命令；`--owner` 直接签给该账号自管（等价对方跑 `@mcp add`），不写就是管理员名下 |
+| `mcp list` | 列客户端：归属、机器范围、来源白名单、状态、创建时间 |
+| `mcp set 名字 [--machine]... [--allow-ip]... [--clear-allow] [--disable\|--enable] [--owner 账号\|none]` | 改授权/白名单/停启用/移交归属——`--owner 账号` 移交（名字自动改成「账号.短名」，本人 @mcp 接手），`--owner none` 收回管理员名下 |
 | `mcp remove 名字` | 删除，token 作废 |
 | `mcp token 名字 [--regen]` | 看/换 token |
 | `mcp pending [--approvals-dir 目录] [--config server.yaml]` | 列等待批准的请求 |
@@ -721,10 +721,10 @@ towstrap-mcp connect mcp --url https://<服务器>/mcp --token tsm-xxx
 需要批准的操作走哪条路由 `policy.ask_via` 决定；不写（auto）时客户端支持弹窗就弹窗；不支持弹窗再看服务跑在哪——stdio（`towstrap-mcp` 跑在你本机）落本地待批文件等真人批，内嵌的 `towstrap-server` MCP（「本机」是没人值守的服务器，待批文件只会挂到超时）走会话内确认，让对话这头的你点头：
 
 1. **弹窗**（auto + 客户端支持 elicitation）：弹「允许执行」确认框，可勾「本次会话内相同命令不再询问」——这是最强的一种，同意是真人点的
-2. **本地待批**（`ask_via: local`，或 stdio auto 时客户端不支持弹窗）：待批文件落到 `approvals_dir`，人去终端跑 `towstrap-mcp approve <id>`（stdio）或 `towstrap-server mcp approve <id>`（内嵌）；加 `--remember` 时本会话内相同命令不再问。同时会弹一个**能点的系统对话框**——三个钮：拒绝 / 允许 / 「允许并不再问」（macOS 用系统对话框、Linux 用 zenity，弹不了退到桌面通知 + `wall` 广播到本机所有登录终端）；stdio 恒弹，内嵌模式默认也弹（`mcp.local_notify` 默认开；无桌面的服务器自动静默退化，嫌吵显式 `local_notify: false` 关）。**等批准期间发起调用的 MCP 客户端会收到一条日志通知**（id、机器、命令、怎么批）；内嵌服务器还会把提示直接写进**同账号正在登着的 towstrap SSH 终端**——你 `ssh` 登在服务器上时，终端里会冒出一行 `[towstrap] 等待人工批准 ap-xxxx（机器: 命令）…`，不用猜调用为什么挂着
+2. **本地待批**（`ask_via: local`，或 stdio auto 时客户端不支持弹窗）：待批文件落到 `approvals_dir`，人去终端跑 `towstrap-mcp approve <id>`（stdio）或 `towstrap-server mcp approve <id>`（内嵌）；加 `--remember` 时本会话内相同命令不再问。同时会弹一个**能点的系统对话框**——三个钮：拒绝 / 允许 / 「允许并不再问」（macOS 用系统对话框、Linux 用 zenity，弹不了退到桌面横幅通知）；stdio 恒弹，内嵌模式默认不弹（`mcp.local_notify` 默认关——审批对象是发起调用的用户，不在服务器跟前；服务器有专人值守时可显式 `local_notify: true` 开；无桌面环境各通道自动静默退化；给进程设 `TOWSTRAP_NO_NOTIFY=1` 也能整体关掉桌面通知/对话框）。**等批准期间会尽量回告发起调用的客户端**：带 progressToken 的请求能收到一条进度通知（id、机器、命令摘要），客户端又收 MCP logging 时还会多一条日志消息——两条都是尽力投递，客户端不显示时批准途径就写在超时/拒绝的工具返回值里。注意整个流程**不往任何终端写字节**——不 `wall` 广播、不往 towstrap SSH 会话里塞提示行，vim/top 这类 TUI 不会被画花
 3. **会话内确认**（`ask_via: llm`，或内嵌模式 auto 且客户端不支持弹窗）：第一次调用**不执行**，工具给 LLM 返回一段指引（机器、命令、cwd、常驻会话、风险预览、授权编号都带上）；LLM 把命令和风险转述给用户、问过同意后带 `confirmed=true` 原样重试才真正执行。确认按「会话 + 机器 + 命令 + cwd + 常驻会话」记账，**一次性**、10 分钟有效；`confirmed=true` 不能预授权没发起过确认的命令，消费过的标记在窗口内也不会重新挂起（同一条命令想再跑要等窗口过后重新确认）。用户说「以后这类都允许」时 LLM 可加 `remember=true`，本会话内同命令不再问。注意这只是 LLM 声称的同意，比前两条弱——stdio 不写 `ask_via` 不会自动走这条，它是内嵌模式在「服务器那头没人」时的兜底
 
-⚠️ `ask_via` 写死了就**压过客户端能力和部署形态**：有的客户端（如某些版本的 Cursor）声称支持弹窗却渲染不出来，调用会一直挂着直到超时——这时把 `policy.ask_via: local`（本机弹对话框，内嵌模式 `local_notify` 默认开着——但注意内嵌的「本机」是服务器，那边没人值守时对话框点了也没人看）或 `llm` 写上就能绕开。
+⚠️ `ask_via` 写死了就**压过客户端能力和部署形态**：有的客户端（如某些版本的 Cursor）声称支持弹窗却渲染不出来，调用会一直挂着直到超时——这时把 `policy.ask_via: local`（内嵌模式得同时开 `local_notify: true` 才有对话框——但注意内嵌的「本机」是服务器，那边没人值守时对话框点了也没人看）或 `llm` 写上就能绕开。
 
 等到 `ask_timeout`（默认 5 分钟）没人理就超时拒绝；会话内确认的 10 分钟是另一个窗口（等 LLM 带 confirmed 回来）。
 
@@ -807,10 +807,13 @@ curl -H "X-Agent-Token: tsa-..."       https://服务器:7880/status   # 机器 
 `/status` 返回形如：
 
 ```json
-{"ok":true,"http":":7880","ssh":":7822","users":[{"user":"alice","machine":"alice+default","online":true}]}
+{"ok":true,"http":":7880","ssh":":7822","users":[{"user":"alice","machine":"alice+default","online":true}],
+ "uptime_s":9000,"sessions_active":2,"auth_ok":230,"auth_fail":9,"relay_to_agent":1234567,"relay_from_agent":345678}
 ```
 
-管理口令看全部机器（`machine` 是完整登录名），机器 token 只看得到自己那一台——普通用户没法枚举机群。没有在线机器时 `ok:false` 且 HTTP 状态 503。
+管理口令看全部机器（`machine` 是完整登录名），还多给运行时长、活跃会话数、认证成败计数、转发字节这些全局量；机器 token 只看得到自己那一台——普通用户没法枚举机群。没有在线机器时 `ok:false` 且 HTTP 状态 503。
+
+**汇总统计**：在服务器上跑 `towstrap-server stats`——注册用户/机器/MCP 客户端数（读账号库），在线机器、活跃会话、运行时长、转发流量（调本机 `/status`，要 `admin_token`；server 没在跑这段显示「—」），以及按审计日志算出来的用量：SSH+MCP 会话次数和闭环总时长、机器在线台次和总时长、认证成败计数、会话量/在线时长 top5。`--since 24h|7d|30d|all` 限定时间窗（默认 all），`--json` 出机器可读格式，`--users-db`/`--audit-log`/`--config` 指定数据源。
 
 ---
 

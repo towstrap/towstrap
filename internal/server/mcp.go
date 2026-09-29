@@ -136,16 +136,15 @@ func (s *Server) mcpHandler() http.Handler {
 		// 服务器终端跑——裸 approve 只会找默认目录，自定义位置下根本
 		// 找不到待批文件。
 		cfg.ApproveCmd = "towstrap-server mcp approve --approvals-dir " + cfg.ApprovalsDir
-		// cfg.LocalNotify 来自 mcp.local_notify：默认开（审批就该让人看见），
-		// yaml 里显式 false 才关；headless 机器上各通道自动静默退化。
+		// cfg.LocalNotify 来自 mcp.local_notify：默认关（服务器本机没人
+		// 值守），yaml 显式 true 才开；headless 机器上各通道自动静默退化。
 		ip := hostOnly(r.RemoteAddr)
 		cfg.Audit = func(ev string, kv ...string) {
 			s.audit.Log(ev, append([]string{"client", c.Name, "ip", ip}, kv...)...)
 		}
-		// 待批提示写进同账号的活跃 SSH 终端——人正登在服务器上时立刻
-		// 看得见哪个请求在等批准、怎么批。
-		cfg.OnPending = s.broadcastSSH
-
+		// 待批/确认提示只往 MCP 客户端递（tellNotice 走 MCP logging）——
+		// 批的是发起调用的那个用户。不往 SSH 终端写字节：会把 vim/top
+		// 这类 TUI 的屏幕画花，而且服务器上登着的人未必是调用方。
 		runner := &mcpRunner{s: s, client: c.Name, ip: ip}
 		srv, err := mcpsrv.New(&cfg, runner)
 		if err != nil {

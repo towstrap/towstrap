@@ -85,14 +85,12 @@ func TestPreviewOf(t *testing.T) {
 
 // TestAutoFallsBackToLocal：ask_via 不写（auto）且客户端没有弹窗能力时，
 // 批准必须落到本地待批文件——审批默认要真人，不能悄悄降格成 LLM 会话内
-// 确认；OnPending 钩子要把提示递出去（内嵌服务器接它写 SSH 终端）。
+// 确认。
 func TestAutoFallsBackToLocal(t *testing.T) {
 	op := &countingRunner{}
 	s := newTestServer(t, op, 4)
 	s.cfg.ApprovalsDir = t.TempDir()
 	s.cfg.Policy.AskTimeout = 5 * time.Second
-	pending := make(chan string, 1)
-	s.cfg.OnPending = func(machine, text string) { pending <- machine + "|" + text }
 
 	type res struct {
 		r   *mcp.CallToolResult
@@ -105,7 +103,7 @@ func TestAutoFallsBackToLocal(t *testing.T) {
 		done <- res{r, err}
 	}()
 
-	// auto + 无会话（= 无弹窗能力）：待批文件出现、OnPending 收到机器名
+	// auto + 无会话（= 无弹窗能力）：待批文件出现
 	var id string
 	deadline := time.Now().Add(3 * time.Second)
 	for id == "" && time.Now().Before(deadline) {
@@ -116,14 +114,6 @@ func TestAutoFallsBackToLocal(t *testing.T) {
 	}
 	if id == "" {
 		t.Fatal("auto 无弹窗能力时应落本地待批文件")
-	}
-	select {
-	case note := <-pending:
-		if !strings.HasPrefix(note, "m|") {
-			t.Fatalf("OnPending 应带机器名 m: %q", note)
-		}
-	default:
-		t.Fatal("待批挂上时 OnPending 没收到通知")
 	}
 	// 文件协议批准后真的执行
 	if _, err := ApprovePending(s.cfg.ApprovalsDir, id, false, false); err != nil {
@@ -150,8 +140,6 @@ func TestRemoteAutoGoesLLM(t *testing.T) {
 	s := newTestServer(t, op, 4)
 	s.cfg.Remote = true
 	s.cfg.ApprovalsDir = t.TempDir()
-	pending := make(chan string, 1)
-	s.cfg.OnPending = func(machine, text string) { pending <- machine + "|" + text }
 
 	// 无会话请求（= 客户端没声明弹窗能力）：Remote+auto 走 llm 确认
 	res, _, err := s.runCommand(context.Background(), &mcp.CallToolRequest{},
@@ -168,17 +156,9 @@ func TestRemoteAutoGoesLLM(t *testing.T) {
 	if op.count() != 0 {
 		t.Fatal("没确认就执行了")
 	}
-	// Remote 不落本地待批文件，但通知面（OnPending→SSH 终端）要收到
+	// Remote 不落本地待批文件
 	if pend, _ := Pending(s.cfg.ApprovalsDir); len(pend) != 0 {
 		t.Fatalf("Remote 不该落本地待批文件: %+v", pend)
-	}
-	select {
-	case note := <-pending:
-		if !strings.HasPrefix(note, "m|") || !strings.Contains(note, "会话内确认") {
-			t.Fatalf("OnPending 通知不对: %q", note)
-		}
-	default:
-		t.Fatal("llm 挂起时通知面没收到提示")
 	}
 
 	// confirmed 重试执行一次，墓碑挡第二轮

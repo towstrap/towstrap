@@ -8,8 +8,8 @@ agent:
   # 也可用环境变量 TOWSTRAP_AGENT_TOKEN（同样不能远程换发）
   # shell: /bin/bash  # 不写用 $SHELL；Windows 上默认 cmd.exe，可配 powershell
   # insecure: true    # 服务器用自签证书时才打开
-  # 被控端感知（默认开）：会话开始/结束弹桌面通知并 wall 广播给登录着的终端，
-  # 每个会话都写审计日志。
+  # 被控端感知（默认开）：会话开始/结束弹桌面通知（不往终端写字节——
+  # wall 类广播会画花 vim/top 的屏幕），每个会话都写审计日志。
   # quiet: true                          # 只关通知（审计日志仍写）
   # audit_log: /var/log/towstrap-audit.log # 审计日志路径（默认 /var/lib/towstrap/audit.log 或 ~/.towstrap/audit.log）
   # mirror_idle: 72h   # 镜像终端闲置多久自动终结（按最后一次输入/输出算；

@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -96,8 +98,10 @@ func previewOf(label, content string) string {
 	if content == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s：%d 字节，sha256 %s，开头 %q",
-		label, len(content), digestOf(content), clip(notify.Clean(content), 120))
+	// QuoteToGraphic 给单行预览加引号并转义残留控制字符（Clean 会留
+	// \n/\t，预览是一行的不能带真换行），又不像 %q 把中文转成 \uXXXX。
+	return fmt.Sprintf("%s：%d 字节，sha256 %s，开头 %s",
+		label, len(content), digestOf(content), strconv.QuoteToGraphic(clip(notify.Clean(content), 120)))
 }
 
 // sessID 容忍单测等没有真实会话的 nil。
@@ -146,14 +150,24 @@ func (s *Server) pendingAt(sess *mcp.ServerSession, req ApprovalRequest) (pendAs
 	return p, ok
 }
 
-func (s *Server) markPending(sess *mcp.ServerSession, req ApprovalRequest, p pendAsk) {
+// claimPending 在锁内「有活的复用、没活的挂新」：同会话同键已有未过期
+// 标记就复用它的授权编号（fresh=false），没有才登记新标记。pendingAt +
+// markPending 分两步时，并发同键调用会互相覆盖——先挂的那个 ap- 编号
+// 记了 MCP-ASK 却永远等不到对应的结果事件，审计链断一截。
+func (s *Server) claimPending(sess *mcp.ServerSession, req ApprovalRequest, via string) (id string, fresh bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id := sessID(sess)
-	if s.pending[id] == nil {
-		s.pending[id] = make(map[string]pendAsk)
+	sid := sessID(sess)
+	if s.pending[sid] == nil {
+		s.pending[sid] = make(map[string]pendAsk)
 	}
-	s.pending[id][rememberedKey(req)] = p
+	key := rememberedKey(req)
+	if p, ok := s.pending[sid][key]; ok && time.Since(p.at) <= llmConfirmTTL {
+		return p.id, false
+	}
+	id = newAuthID()
+	s.pending[sid][key] = pendAsk{id: id, via: via, at: time.Now()}
+	return id, true
 }
 
 func (s *Server) clearPending(sess *mcp.ServerSession, req ApprovalRequest) {
@@ -309,7 +323,7 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 			} else {
 				s.auditOutcome(out, ar, pp.id)
 			}
-			s.tellSettled(ctx, req.Session, ar.Machine, pp.id, out, rem)
+			s.tellSettled(ctx, req.Session, pp.id, out, rem)
 			return out, false, pp.id, nil
 		}
 		switch {
@@ -332,7 +346,7 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 			} else {
 				s.auditOutcome(ApprovedLLM, ar, pp.id)
 			}
-			s.tellSettled(ctx, req.Session, ar.Machine, pp.id, ApprovedLLM, remember)
+			s.tellSettled(ctx, req.Session, pp.id, ApprovedLLM, remember)
 			return ApprovedLLM, false, pp.id, nil
 		}
 	} else if ok {
@@ -353,10 +367,7 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 			return AskSpent, false, p.id, nil
 		}
 		o, id := s.askViaLLM(req, ar)
-		// 同步到通知面：MCP logging 到客户端、stderr、OnPending 钩子
-		// （内嵌模式会写进同账号的 SSH 终端）——登在服务器上的管理员
-		// 也看得见这笔会话内确认，不只是对话里的人。
-		s.tellNotice(ctx, req.Session, ar.Machine, fmt.Sprintf(
+		s.tellNotice(ctx, req.Session, fmt.Sprintf(
 			"确认请求 %s 已发往会话内确认（%s: %s）——等对话里的用户答复",
 			id, ar.Machine, clip(ar.Detail, 120)))
 		return o, false, id, nil
@@ -364,18 +375,23 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 	// auto（没写 ask_via）且客户端支持弹窗：走 elicitation——真人在客户端
 	// 里点确认框。显式 local 不走这里（它压过客户端能力）。
 	if s.cfg.Policy.AskVia == "" && supportsElicitation(req.Session) {
-		id := newAuthID()
-		s.markPending(req.Session, ar, pendAsk{id: id, via: "elicit", at: time.Now()})
-		s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "elicit", "auth", id)
-		s.tellNotice(ctx, req.Session, ar.Machine, fmt.Sprintf(
-			"确认请求 %s 已发往客户端弹窗（%s: %s）；客户端不支持渲染弹窗时会走会话内确认，也可配 policy.ask_via 强制通道",
-			id, ar.Machine, clip(ar.Detail, 120)))
+		id, fresh := s.claimPending(req.Session, ar, "elicit")
+		if fresh {
+			s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "elicit", "auth", id)
+			s.tellNotice(ctx, req.Session, fmt.Sprintf(
+				"确认请求 %s 已发往客户端弹窗（%s: %s）；客户端不支持渲染弹窗时会走会话内确认，也可配 policy.ask_via 强制通道",
+				id, ar.Machine, clip(ar.Detail, 120)))
+		}
+		// 并发同键调用共享同一个授权编号：各自发各自的弹窗，任一答复
+		// 落定后其余答复落空（标记已被消费），不会出现一次同意放行两次。
+		s.tellProgress(ctx, req, fmt.Sprintf("等待确认 %s（%s: %s）", id, ar.Machine, clip(ar.Detail, 80)))
 		return Approved, true, id, nil
 	}
 	// 剩下两种进本地待批文件通道：显式 ask_via=local，或 stdio auto 且
 	// 客户端不支持弹窗（Remote 的已在上面截走去会话内确认）。
 	id := newAuthID()
 	s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "local", "auth", id)
+	s.tellProgress(ctx, req, fmt.Sprintf("等待人工批准 %s（%s: %s）", id, ar.Machine, clip(ar.Detail, 80)))
 	out, rem, err := s.waitLocal(ctx, req.Session, ar, id)
 	if out == Approved && rem {
 		s.remember(req.Session, ar, id) // 「允许并不再问」记进本会话名单
@@ -385,16 +401,19 @@ func (s *Server) approve(ctx context.Context, req *mcp.CallToolRequest, ar Appro
 	} else {
 		s.auditOutcome(out, ar, id)
 	}
-	s.tellSettled(ctx, req.Session, ar.Machine, id, out, rem)
+	s.tellSettled(ctx, req.Session, id, out, rem)
 	return out, false, id, err
 }
 
 // askViaLLM 记一笔「已发起会话内确认」并让调用方把指引交还给 LLM；
 // 返回值是 Outcome 和这次挂起的授权编号。
 func (s *Server) askViaLLM(req *mcp.CallToolRequest, ar ApprovalRequest) (Outcome, string) {
-	id := newAuthID()
-	s.markPending(req.Session, ar, pendAsk{id: id, via: "llm", at: time.Now()})
-	s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "llm", "auth", id)
+	id, fresh := s.claimPending(req.Session, ar, "llm")
+	if fresh {
+		s.audit("MCP-ASK", "machine", ar.Machine, "kind", ar.Kind, "detail", ar.Detail, "via", "llm", "auth", id)
+	}
+	// fresh=false：并发同键调用复用已在等的授权编号（审计只有一条
+	// MCP-ASK），LLM 照旧拿 AwaitingLLM+同一个 id 去等用户答复。
 	return AwaitingLLM, id
 }
 
@@ -418,11 +437,13 @@ func (s *Server) auditOutcome(out Outcome, ar ApprovalRequest, authID string, ex
 	s.audit(ev, append(kv, extra...)...)
 }
 
-// tellNotice 往各处发一条通知：MCP logging 给远端客户端（看不到对话框
-// 的客户端至少知道发生了什么）、stderr 上的 slog（stdio 走 SSH 时直接
-// 落在远端终端，内嵌模式进服务端日志）、OnPending 钩子（内嵌服务器接
-// 它写进同账号的 SSH 终端）。工具调用阻塞/出结果时远端原本什么迹象都没有。
-func (s *Server) tellNotice(ctx context.Context, sess *mcp.ServerSession, machine, msg string) {
+// tellNotice 给调用方发一条提示：MCP logging 到发起调用的客户端，外加
+// stderr 上的 slog（stdio 走 SSH 时落在远端日志，内嵌模式进服务端日志）。
+// 注意 logging 是尽力投递：客户端没发过 logging/setLevel（新协议里则是
+// 请求 _meta 没带 logLevel）SDK 就静默丢弃，且该特性在 2026-07-28 版
+// 协议起已废弃——确定性通道是工具返回值和 progress 通知，logging 只当
+// 加分项用。
+func (s *Server) tellNotice(ctx context.Context, sess *mcp.ServerSession, msg string) {
 	msg = notify.Clean(msg) // 命令内容不可信：剥掉终端转义再到处发
 	slog.Warn(msg)
 	if sess != nil {
@@ -432,14 +453,29 @@ func (s *Server) tellNotice(ctx context.Context, sess *mcp.ServerSession, machin
 			Data:   msg,
 		})
 	}
-	if s.cfg.OnPending != nil {
-		s.cfg.OnPending(machine, msg)
-	}
 }
 
-// tellSettled 批准出了结果时同步给各处：等在终端前的人能立刻看到刚才
-// 挂着的那个请求是批了、被拒了还是超时了，不用回客户端猜。
-func (s *Server) tellSettled(ctx context.Context, sess *mcp.ServerSession, machine, authID string, out Outcome, remember bool) {
+// tellProgress 走 notifications/progress 给调用方补一条可见信号：没有
+// 级别门，请求 _meta 里带了 progressToken 就能送达（各家客户端常会带），
+// 没带就跳过——同样尽力投递，只是覆盖面比 logging 好得多。pending 期间
+// 用它给「正在等批准」一个客户端可见的落点。
+func (s *Server) tellProgress(ctx context.Context, req *mcp.CallToolRequest, msg string) {
+	if req == nil || req.Session == nil || req.Params == nil {
+		return
+	}
+	ptok := req.Params.GetProgressToken()
+	if ptok == nil {
+		return
+	}
+	_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+		ProgressToken: ptok,
+		Message:       notify.Clean(msg),
+	})
+}
+
+// tellSettled 批准出了结果时同步给会话那头的用户：刚才挂着的那个请求
+// 是批了、被拒了还是超时了，不用回客户端猜。
+func (s *Server) tellSettled(ctx context.Context, sess *mcp.ServerSession, authID string, out Outcome, remember bool) {
 	what := ""
 	switch out {
 	case Approved:
@@ -459,7 +495,7 @@ func (s *Server) tellSettled(ctx context.Context, sess *mcp.ServerSession, machi
 	if what == "" {
 		return
 	}
-	s.tellNotice(ctx, sess, machine, fmt.Sprintf("%s：%s", what, authID))
+	s.tellNotice(ctx, sess, fmt.Sprintf("%s：%s", what, authID))
 }
 
 // humanDur 把时长说成人话：对话框、SSH 提示、报错里给用户看的，
@@ -483,12 +519,16 @@ func humanDur(d time.Duration) string {
 	return fmt.Sprintf("%d小时", int(d.Hours()))
 }
 
-// clip 截断长命令给提示消息用。
+// clip 截断长命令给提示消息用：收在 UTF-8 字符边界上——按字节硬切会
+// 把多字节字符切成两半，落到落盘预览和日志里就是坏字节。
 func clip(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "…"
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.ValidString(s[:n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // waitLocal 是本地批准回退：写 <id>.json、弹桌面通知、每 500ms 看一次
@@ -526,16 +566,17 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 	if req.Preview != "" {
 		notice += "\n" + req.Preview
 	}
-	s.tellNotice(ctx, sess, req.Machine, notice)
+	s.tellNotice(ctx, sess, notice)
 	approved := filepath.Join(dir, id+".approved")
 	denied := filepath.Join(dir, id+".denied")
 	remember := filepath.Join(dir, id+".remember")
 
 	// LocalNotify 开时（stdio 模式、或服务器明确开了 mcp.local_notify）：
-	// 横幅通知 + wall 广播（覆盖本机真实登录的终端——真 sshd、控制台
-	// 都能看见）先发出去保底，同时尝试弹能点的系统对话框——点了就直接落
+	// 先发横幅通知保底，同时尝试弹能点的系统对话框——点了就直接落
 	// .approved/.denied（「允许并不再问」多落一个 .remember）；
-	// 这台机器弹不了（没图形界面/没 zenity）也不亏。
+	// 这台机器弹不了（没图形界面/没 zenity）也不亏。注意永远不往终端
+	// 里写字节：wall 广播会把 vim/top 这类 TUI 的屏幕画花，而且批
+	// 的是发起调用的用户，不该惊动本机上别的登录者。
 	if s.cfg.LocalNotify {
 		dlgCtx, cancelDlg := context.WithCancel(ctx)
 		defer cancelDlg() // 批准结果一出来（包括终端命令批准）就把对话框收掉
@@ -545,9 +586,9 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 				detail = detail[:80] + "…"
 			}
 			title := "towstrap 需要批准"
-			// 分行排版：对话框/通知/wall 都是给人看的，一眼能扫到机器、
+			// 分行排版：对话框/通知都是给人看的，一眼能扫到机器、
 			// 命令、编号，比挤成一行清楚。对话框有自己的三个按钮，
-			// 不需要终端命令；通知和 wall 点不了，得给出命令行批准方式。
+			// 不需要终端命令；横幅通知点不了，得给出命令行批准方式。
 			extra := ""
 			if req.Preview != "" {
 				extra = req.Preview + "\n"
@@ -563,7 +604,6 @@ func (s *Server) waitLocal(ctx context.Context, sess *mcp.ServerSession, req App
 				req.Machine, detail, ctxLine, extra, id, humanDur(s.cfg.Policy.AskTimeout))
 			hint := fmt.Sprintf("\n\n也可在终端运行：\n%s %s", s.cfg.ApproveCmd, id)
 			notify.Desktop(title, base+hint)
-			notify.Wall(title + "：" + base + hint)
 			ans, answered := notify.Confirm(dlgCtx, title, base, s.cfg.Policy.AskTimeout)
 			if !answered {
 				return

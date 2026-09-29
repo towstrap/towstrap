@@ -11,17 +11,17 @@ func TestMCPClientCRUD(t *testing.T) {
 	s := openTest(t)
 
 	// 空 machines 不批（fail-closed：不给「什么都不能看」的客户端）
-	if _, _, err := s.MCPAdd("empty", nil, nil); err == nil {
+	if _, _, err := s.MCPAdd("empty", "", nil, nil); err == nil {
 		t.Fatal("空 machines 应该报错")
 	}
-	if _, _, err := s.MCPAdd("bad", []string{"../evil"}, nil); err == nil {
+	if _, _, err := s.MCPAdd("bad", "", []string{"../evil"}, nil); err == nil {
 		t.Fatal("非法机器名应该报错")
 	}
-	if _, _, err := s.MCPAdd("bad name!", []string{"bot"}, nil); err == nil {
+	if _, _, err := s.MCPAdd("bad name!", "", []string{"bot"}, nil); err == nil {
 		t.Fatal("非法客户端名应该报错")
 	}
 
-	c, tok, err := s.MCPAdd("laptop", []string{"bot"}, nil)
+	c, tok, err := s.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestMCPClientCRUD(t *testing.T) {
 
 func TestMCPClientStar(t *testing.T) {
 	s := openTest(t)
-	_, tok, err := s.MCPAdd("all", []string{"*"}, nil)
+	_, tok, err := s.MCPAdd("all", "", []string{"*"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestMCPClientStar(t *testing.T) {
 // 同样命中 demo/local、demo/* 别名写法。
 func TestMCPGrantsSlashAlias(t *testing.T) {
 	s := openTest(t)
-	c, _, err := s.MCPAdd("one", []string{"demo+local"}, nil)
+	c, _, err := s.MCPAdd("one", "", []string{"demo+local"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestMCPGrantsSlashAlias(t *testing.T) {
 		t.Fatal("单台机器授权不该扩到整个账号")
 	}
 
-	c2, _, err := s.MCPAdd("wild", []string{"demo/*"}, nil)
+	c2, _, err := s.MCPAdd("wild", "", []string{"demo/*"}, nil)
 	if err != nil {
 		t.Fatalf("demo/* 写法应合法: %v", err)
 	}
@@ -141,10 +141,10 @@ func TestMCPGrantsSlashAlias(t *testing.T) {
 
 func TestMCPClientAllowIPsAndList(t *testing.T) {
 	s := openTest(t)
-	if _, _, err := s.MCPAdd("x", []string{"bot"}, []string{"10.0.0.0/33"}); err == nil {
+	if _, _, err := s.MCPAdd("x", "", []string{"bot"}, []string{"10.0.0.0/33"}); err == nil {
 		t.Fatal("非法 allow_ips 应该报错")
 	}
-	if _, _, err := s.MCPAdd("x", []string{"bot"}, []string{"10.0.0.0/8"}); err != nil {
+	if _, _, err := s.MCPAdd("x", "", []string{"bot"}, []string{"10.0.0.0/8"}); err != nil {
 		t.Fatal(err)
 	}
 	c, ok := s.MCPGet("x")
@@ -163,7 +163,7 @@ func TestMCPClientPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, tok, err := s.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := s.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestMCPClientTokenEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	_, tok, err := s.MCPAdd("laptop", []string{"bot"}, nil)
+	_, tok, err := s.MCPAdd("laptop", "", []string{"bot"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

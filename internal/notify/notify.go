@@ -1,7 +1,11 @@
-// Package notify 提供系统级提醒：桌面通知 + wall 广播到所有已登录终端。
+// Package notify 提供系统级提醒：桌面通知 + 可点的批准对话框。
 // 全部 best-effort——发不出去（headless 机器、没装 notify-send、通知权限没批）
 // 也不影响调用方；审计日志才是保底。agent 的会话通知和 towstrap-mcp 的
 // 本地批准提醒共用这套。
+//
+// 这里刻意不提供终端广播：往登录终端写字节会把 vim/top 这类 TUI 的屏幕
+// 画花，而批准的对象是发起调用的那个用户，不是本机上别的登录者——别
+// 拿别人的终端当通知栏。
 package notify
 
 import (
@@ -32,8 +36,22 @@ func Clean(s string) string {
 	}, s)
 }
 
+// Disabled 时所有对外通知（桌面通知、对话框）都静默跳过。
+// 由 TOWSTRAP_NO_NOTIFY 环境变量控制——测试进程和不想被打扰的环境设 1 关掉，
+// 免得跑个 go test 就往真机弹系统对话框。
+func Disabled() bool {
+	switch strings.ToLower(os.Getenv("TOWSTRAP_NO_NOTIFY")) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
 // Desktop 发一条桌面通知（macOS 用 osascript，Linux 用 notify-send）。
 func Desktop(title, body string) {
+	if Disabled() {
+		return
+	}
 	title, body = Clean(title), Clean(body)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -66,6 +84,9 @@ const rememberLabel = "允许并不再问"
 // 返回 answered=false 表示弹不了（没图形界面、没装 zenity、对话框自己超时
 // 没人点），调用方退到普通通知。ctx 取消会杀掉对话框进程。
 func Confirm(ctx context.Context, title, body string, givingUp time.Duration) (Answer, bool) {
+	if Disabled() {
+		return Deny, false // 没弹 = 没答复，调用方退到文件轮询
+	}
 	title, body = Clean(title), Clean(body)
 	switch runtime.GOOS {
 	case "darwin":
@@ -144,17 +165,6 @@ func Confirm(ctx context.Context, title, body string, givingUp time.Duration) (A
 	default:
 		return Deny, false
 	}
-}
-
-// Wall 用 wall(1) 广播：headless 多用户机器上桌面通知到不了，
-// 登录着的终端总能看到。
-func Wall(msg string) {
-	msg = Clean(msg)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "wall")
-	cmd.Stdin = strings.NewReader(msg + "\n")
-	_ = cmd.Run()
 }
 
 // quoteApple 转成 AppleScript 字符串字面量（转义反斜杠和双引号；换行转成

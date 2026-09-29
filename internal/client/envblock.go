@@ -14,9 +14,9 @@ import (
 // EINVAL），而环境块恰恰就是一堆 NUL 拼的——用它会让 startPty 永远
 // 挂（真实报错过：invalid argument）。utf16.Encode 不查 NUL 也不补
 // 结尾，结尾靠块里的双 NUL。
-func envBlock(env []string) *uint16 {
+func envBlock(env []string) []uint16 {
 	sorted := append([]string(nil), env...)
-	sort.Slice(sorted, func(i, j int) bool {
+	sort.SliceStable(sorted, func(i, j int) bool {
 		return strings.ToUpper(envKey(sorted[i])) < strings.ToUpper(envKey(sorted[j]))
 	})
 	var b strings.Builder
@@ -25,8 +25,7 @@ func envBlock(env []string) *uint16 {
 		b.WriteByte(0)
 	}
 	b.WriteByte(0)
-	u16 := utf16.Encode([]rune(b.String()))
-	return &u16[0]
+	return utf16.Encode([]rune(b.String()))
 }
 
 func envKey(kv string) string {
